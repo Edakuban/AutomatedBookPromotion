@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Einstellungen · Book Promotion{% endblock %}
+{% block content %}
+  <div class="page-heading"><h1>Einstellungen</h1><span class="badge">Einrichtungsstatus</span></div>
+  <p class="intro">Die Zugangsdaten werden aus der lokalen <code>.env</code> geladen. Änderungen werden nach einem Neustart der Anwendung übernommen.</p>
+  <p class="notice">{% if database_enabled %}Supabase-Zugriff ist aktiviert. Die Buchübersicht prüft Schema und Lesezugriff beim Laden.{% else %}Supabase-Zugriff ist bis zur Einrichtung in Schritt 3.2 deaktiviert – auch bei bereits eingetragenen Zugangsdaten.{% endif %}</p>
+  <div class="settings-grid">
+    {% for service in services %}
+    <section class="panel" aria-labelledby="service-{{ loop.index }}">
+      <div class="panel-heading">
+        <h2 id="service-{{ loop.index }}">{{ service.name }}</h2>
+        <span class="badge {% if service.complete %}badge-ready{% endif %}">{% if service.complete %}Vollständig eingetragen{% else %}Noch einzurichten{% endif %}</span>
+      </div>
+      <dl class="setting-list">
+        {% for field in service.fields %}
+        <div><dt>{{ field.label }}</dt><dd class="{% if field.present %}present{% else %}muted{% endif %}">{% if field.present %}Eingetragen{% else %}Fehlt{% endif %}</dd></div>
+        {% endfor %}
+      </dl>
+    </section>
+    {% endfor %}
+  </div>
+  <p class="notice">Oben wird nur angezeigt, ob Einstellungen vorhanden sind. Die Zugangsdaten sind damit noch nicht geprüft. Den Open-WebUI-Test kannst du hier starten.</p>
+  <section class="panel next-settings" id="openwebui-settings" data-check-url="{{ url_for('check_openwebui') }}" data-model-url="{{ url_for('select_openwebui_model') }}" data-test-url="{{ url_for('test_openwebui') }}" aria-labelledby="openwebui-title">
+    <h2 id="openwebui-title">Open WebUI verbinden</h2>
+    <p>Lade die verfügbaren Modelle und wähle eines für die spätere Buchanalyse. Die Auswahl wird in deiner lokalen ENV-Datei gespeichert.</p>
+    <div class="form-actions"><button type="button" id="openwebui-check">Verbindung prüfen und Modelle laden</button><button type="button" id="openwebui-test">Testantwort erzeugen</button></div>
+    <p class="muted small">Die Testantwort ist ein kurzer technischer Text. Sie kann beim Modellanbieter Kosten verursachen; Buchtexte werden dabei nicht übertragen.</p>
+    <p id="openwebui-message" class="notice" role="status" aria-live="polite" hidden></p>
+    <div id="openwebui-model-picker" hidden>
+      <label for="openwebui-filter">Modelle durchsuchen</label>
+      <input id="openwebui-filter" type="search" placeholder="Modellname oder ID">
+      <label for="openwebui-model">Verfügbares Modell</label>
+      <select id="openwebui-model" size="8" aria-describedby="openwebui-selection"></select>
+      <p id="openwebui-selection" class="muted small"></p>
+      <div class="form-actions"><button type="button" id="openwebui-save">Modell speichern</button></div>
+    </div>
+    <noscript><p>Für Modellwahl und Verbindungstest in dieser Ansicht bitte JavaScript aktivieren. Alternativ steht der CLI-Befehl check-openwebui zur Verfügung.</p></noscript>
+  </section>
+  <section class="panel next-settings" aria-labelledby="promotion-title">
+    <h2 id="promotion-title">Promotion</h2>
+    <p>Die Auswahl zwischen einem festen Buch und zufälligen Büchern folgt mit der n8n-Anbindung.</p>
+    <p class="muted">Bilder, Begleittexte und die Telegram-Freigabe werden später in n8n verarbeitet.</p>
+  </section>
+{% endblock %}

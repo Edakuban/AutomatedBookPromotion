@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Book Promotion{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', path='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+  <script src="{{ url_for('static', path='app.js') }}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Zum Inhalt</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="{{ url_for('books') }}">Book Promotion</a>
+      <nav aria-label="Hauptnavigation">
+        <a href="{{ url_for('books') }}" {% if active_page == 'books' %}aria-current="page"{% endif %}>Bücher</a>
+        <a href="{{ url_for('settings') }}" {% if active_page == 'settings' %}aria-current="page"{% endif %}>Einstellungen</a>
+      </nav>
+      <span class="local-label">Lokale Anwendung</span>
+    </div>
+  </header>
+  <main id="content" class="container" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="container site-footer">
+    <span>Book Promotion</span>
+    <span>Analysetool · Schritt 9 von 9 · Lokale Ablage</span>
+  </footer>
+</body>
+</html>

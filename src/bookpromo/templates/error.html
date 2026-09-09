@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ error_title }} · Book Promotion{% endblock %}
+{% block content %}
+  <h1>{{ error_title }}</h1>
+  <p>{{ error_message | default('Diese Seite oder Aktion steht hier nicht zur Verfügung.') }}</p>
+  <a class="button-link" href="{{ url_for('books') }}">Zur Buchübersicht</a>
+{% endblock %}

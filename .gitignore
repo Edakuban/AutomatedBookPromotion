@@ -1,0 +1,45 @@
+# Credentials: only the empty example belongs in Git.
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+
+# Private books, generated content and local runtime files.
+/data/
+/uploads/
+/outputs/
+/logs/
+/backups/
+*.docx
+*.doc
+*.pdf
+*.epub
+*.sqlite*
+*.db
+*.db-*
+*.dump
+*.bak
+*.log
+*.pem
+*.key
+
+# Python and development tools.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.uv-cache/
+/supabase/.temp/
+/supabase/.branches/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

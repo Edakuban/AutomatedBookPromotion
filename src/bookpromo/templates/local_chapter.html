@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ chapter.title }} · Book Promotion{% endblock %}
+{% block content %}
+  <p class="breadcrumb"><a href="{{ url_for('local_book', book_id=book.id) }}">← {{ book.title }}</a></p>
+  <div class="page-heading"><h1>{{ chapter.title }}</h1><span class="badge">{{ record.status }}</span></div>
+  <p class="intro">Originalzitate prüfen und für die spätere Promotion sperren. Der Zitattext bleibt unverändert.</p>
+  <section class="panel next-settings" aria-labelledby="quotes-title">
+    <h2 id="quotes-title">Zitate</h2>
+    <nav class="quote-filters" aria-label="Zitatfilter">
+      {% for key, label in filters.items() %}<a href="?filter={{ key }}#quotes-title" {% if filter == key %}aria-current="page"{% endif %}>{{ label }} ({{ filter_counts[key] }})</a>{% endfor %}
+    </nav>
+    {% if usage_error %}<p class="muted small">{{ usage_error }} Nutzungsfilter zeigen nur bestätigte Daten.</p>{% endif %}
+    {% if analysis and analysis.result %}
+      {% for item in quote_items %}
+        {% set quote = item.quote %}
+        <article class="quote-card">
+          <p><span class="badge">{{ 'Gesperrt' if item.blocked else 'Nutzbar' if item.usable else 'Nicht geeignet' }}</span> <span class="muted small">Bewertung {{ '%.2f' | format(quote.scores.average) }}/5 · Spoiler: {{ {'none':'keine','low':'gering','high':'hoch'}[quote.spoiler] }}</span></p>
+          <blockquote class="book-text">{{ quote.text }}</blockquote>
+          <p>{{ quote.reason }}</p>
+          <p class="muted small">Letzter Post: {% if item.usage %}{{ item.usage.last_published_at | berlin_time }}{% if item.usage.reserved %} · Aktuell für einen Post reserviert{% endif %}{% else %}Noch nicht synchronisiert oder Status nicht erreichbar{% endif %}</p>
+          <p class="muted small">Verständlichkeit {{ quote.scores.clarity }} · Neugier {{ quote.scores.curiosity }} · Emotion {{ quote.scores.emotion }} · Bildpotenzial {{ quote.scores.imagery }}</p>
+          <p class="muted small">Originalabsatz {{ quote.paragraph_ids[0][1:] | int }} · Zeichen {{ quote.source_start }}–{{ quote.source_end }} · Wortgetreu geprüft</p>
+          <details><summary>Originalkontext</summary><p class="book-text">{{ quote.context_before }}<mark>{{ quote.text }}</mark>{{ quote.context_after }}</p></details>
+          <form method="post" action="{{ url_for('set_quote_block', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" class="form-actions">
+            <input type="hidden" name="run_id" value="{{ management.suggestion_id }}">
+            <input type="hidden" name="revision" value="{{ item.revision }}">
+            <input type="hidden" name="blocked" value="{{ 'false' if item.blocked else 'true' }}">
+            <input type="hidden" name="filter" value="{{ filter }}">
+            <input type="hidden" name="quote_page" value="{{ quote_page }}">
+            <button type="submit">{{ 'Sperre aufheben' if item.blocked else 'Zitat sperren' }}</button>
+          </form>
+          {% if not quote.usable %}<p class="muted small">Die KI stuft dieses Zitat als nicht geeignet ein. Eine aufgehobene manuelle Sperre ändert diese Einstufung nicht.</p>{% endif %}
+        </article>
+      {% else %}<p>Keine Zitate für diesen Filter auf dieser Seite.</p>{% endfor %}
+      {% if quote_page > 1 or quote_more %}<nav class="pagination" aria-label="Zitatseiten">
+        {% if quote_page > 1 %}<a href="?filter={{ filter }}&amp;quote_page={{ quote_page - 1 }}#quotes-title">← Zurück</a>{% endif %}
+        <span>Seite {{ quote_page }}</span>
+        {% if quote_more %}<a href="?filter={{ filter }}&amp;quote_page={{ quote_page + 1 }}#quotes-title">Weiter →</a>{% endif %}
+      </nav>{% endif %}
+      {% if summary %}<details><summary>Interne Kapitelzusammenfassung · enthält Spoiler</summary><p class="book-text">{{ summary.summary }}</p></details>{% endif %}
+    {% else %}<p>{{ analysis.label if analysis else 'Noch nicht analysiert' }}. Die KI-Analyse kannst du auf der Buchseite starten.</p>{% endif %}
+  </section>
+  <section class="panel next-settings" aria-label="Kapiteltext">
+    {% for paragraph in chapter.paragraphs %}
+      <div class="source-paragraph"><span class="muted small">Absatz {{ paragraph.id[1:] | int }}</span><p class="book-text">{{ chapter.source_text[paragraph.start:paragraph.end] }}</p></div>
+    {% endfor %}
+  </section>
+{% endblock %}

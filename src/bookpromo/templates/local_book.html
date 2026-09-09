@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}{{ book.title }} · Book Promotion{% endblock %}
+{% block content %}
+  <p class="breadcrumb"><a href="{{ url_for('books') }}">← Bücher</a></p>
+  <div class="page-heading"><h1>{{ book.title }}</h1><span class="badge">{{ job.label if job else record.status if record else 'Datei gespeichert' }}</span></div>
+  <p><a href="{{ url_for('book_settings', book_id=book.id) }}">Bucheinstellungen bearbeiten</a> · {{ 'Für Promotion vorgemerkt' if management.details.promotion_enabled else 'Promotion pausiert' }}{% if management.details.author %} · {{ management.details.author }}{% endif %}</p>
+  <section class="panel" aria-labelledby="file-title">
+    <div class="panel-heading"><h2 id="file-title">Word-Dokument</h2></div>
+    <dl class="setting-list">
+      <div><dt>Datei</dt><dd>{{ book.filename }}</dd></div>
+      <div><dt>Größe</dt><dd>{{ '%.1f' | format(book.size_bytes / 1024) }} KB</dd></div>
+      <div><dt>Hochgeladen</dt><dd>{{ book.created_at | berlin_time }}</dd></div>
+      <div><dt>Speicherung</dt><dd>Lokal{% if sync_receipt %} · Übertragung bestätigt (Stand {{ sync_receipt.revision }}). Änderungen danach bitte erneut übertragen.{% else %} · Noch nicht an Supabase übertragen{% endif %}</dd></div>
+    </dl>
+  </section>
+  {% if job and job.active %}
+    <section class="panel next-settings" id="import-progress" data-status-url="{{ url_for('import_status', book_id=book.id) }}" aria-live="polite">
+      <h2>Import im Hintergrund</h2>
+      <p id="import-stage">{{ job.stage }}</p>
+      <progress id="import-meter" aria-label="Importfortschritt" {% if job.total %}max="{{ job.total }}" value="{{ job.completed }}"{% endif %}></progress>
+      <p id="import-count" class="small muted">{% if job.total %}Absatz {{ job.completed }} von {{ job.total }}{% endif %}</p>
+      <p class="muted small">Du kannst die Seite verlassen. Die Verarbeitung läuft weiter, solange die Anwendung geöffnet ist.</p>
+      <noscript><p>Bitte die Seite neu laden, um den aktuellen Stand zu sehen.</p></noscript>
+    </section>
+  {% elif not result %}
+    <section class="panel next-settings">
+      <h2>Text und Kapitel</h2>
+      <p>{{ job.error if job and job.error else record.error if record and record.error else 'Kapitel und Text wurden noch nicht ausgelesen.' }}</p>
+      <form action="{{ url_for('extract_book', book_id=book.id) }}" method="post" class="extract-form">
+        <button type="submit">{{ 'Erneut einlesen' if record or job else 'Text und Kapitel einlesen' }}</button>
+      </form>
+    </section>
+  {% else %}
+    <details id="chapter-review" class="panel next-settings" {% if result.needs_review %}open{% endif %}>
+      <summary>Kapitelaufteilung prüfen und korrigieren</summary>
+      <p>Die Absatznummern findest du im Text des jeweiligen Kapitels. Die Startabsätze stehen auch in der Kapitelübersicht. Jede Zeile beginnt ein Kapitel; es endet vor dem nächsten Kapitelanfang. Die erste Zeile muss beim ersten Textabsatz beginnen.</p>
+      <p>„Überschriftabsätze“: 0 übernimmt den Text ab dem Kapitelanfang; 1 oder 2 lässt dort die Überschrift beziehungsweise Nummer und Titel aus dem späteren Zitattext aus.</p>
+      <form action="{{ url_for('correct_chapters', book_id=book.id) }}" method="post" id="chapter-form">
+        <input type="hidden" name="revision" value="{{ record.revision }}">
+        <div id="chapter-rows">
+          {% for boundary in result.boundaries %}
+          <div class="chapter-row">
+            <label>Ab Absatz <input name="start" type="number" min="1" value="{{ boundary.paragraph_id[1:] | int }}" required></label>
+            <label>Kapiteltitel <input name="title" value="{{ boundary.title }}" maxlength="200" required></label>
+            <label>Überschriftabsätze <input name="heading_count" type="number" min="0" max="2" value="{{ boundary.heading_count }}" required></label>
+            <button type="button" class="remove-chapter">Entfernen</button>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="form-actions"><button type="button" id="add-chapter">Kapitel hinzufügen</button><button type="submit">Aufteilung speichern und bestätigen</button></div>
+        <p class="muted small">Hinweise zu unvollständig lesbaren Word-Inhalten bleiben bestehen. Solche Stellen bitte in Word korrigieren und die bereinigte Datei neu importieren.</p>
+      </form>
+      <template id="chapter-row-template"><div class="chapter-row">
+        <label>Ab Absatz <input name="start" type="number" min="1" required></label>
+        <label>Kapiteltitel <input name="title" maxlength="200" required></label>
+        <label>Überschriftabsätze <input name="heading_count" type="number" min="0" max="2" value="0" required></label>
+        <button type="button" class="remove-chapter">Entfernen</button>
+      </div></template>
+    </details>
+    {% if result.warnings %}
+      <aside class="notice" aria-label="Hinweise zum Einlesen">
+        {% for warning in result.warnings %}
+          {% if warning.blocking or not (result.reviewed and warning.code.startswith('chapter_')) %}
+            <p>{{ warning.message }}</p>
+          {% endif %}
+        {% endfor %}
+        {% if result.reviewed %}<p>Die Kapitelaufteilung wurde manuell bestätigt.</p>{% endif %}
+      </aside>
+    {% endif %}
+    <section class="panel" aria-labelledby="chapter-title">
+      <div class="panel-heading"><h2 id="chapter-title">{{ result.chapters | length }} Kapitel</h2><span class="muted small">Zitate über den Kapitelnamen öffnen</span></div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Kapitel</th><th>Ab Absatz</th><th>Status</th><th>Textabsätze</th><th>Zeichen</th><th>Zitate</th></tr></thead>
+        <tbody>{% for chapter in result.chapters %}
+          <tr><td><a href="{{ url_for('local_chapter', book_id=book.id, chapter_id=chapter.id) }}">{{ chapter.position }}. {{ chapter.title }}</a></td>
+          <td>{{ result.boundaries[loop.index0].paragraph_id[1:] | int }}</td>
+          <td>{{ 'Buchprüfung nötig' if result.needs_review else 'Text eingelesen' }}</td>
+          <td>{{ chapter.paragraphs | length }}</td><td>{{ chapter.source_text | length }}</td><td>{% if chapter.id in chapter_quote_counts %}{{ chapter_quote_counts[chapter.id] }} nutzbar · {{ chapter_blocked_counts[chapter.id] }} gesperrt{% else %}Noch nicht analysiert{% endif %}</td></tr>
+        {% endfor %}</tbody>
+      </table></div>
+    </section>
+    <section class="panel next-settings" aria-labelledby="analysis-title" {% if analysis and analysis.active %}id="analysis-progress" data-status-url="{{ url_for('analysis_status', book_id=book.id) }}"{% endif %}>
+      <h2 id="analysis-title">KI-Buchanalyse</h2>
+      {% if analysis %}
+        <p><strong>{{ analysis.label }}</strong></p>
+        {% if analysis.active %}
+          <p data-analysis-stage aria-live="polite">{{ analysis.stage }}</p>
+          <progress aria-label="KI-Analyse läuft"></progress>
+          <p class="muted small">Die Analyse läuft im Hintergrund. Du kannst die Seite verlassen.</p>
+        {% elif analysis.state == 'failed' %}<p class="notice error">{{ analysis.error }}</p>
+        {% elif analysis.state == 'stale' %}<p class="notice">Die Kapitelaufteilung wurde geändert. Bitte den aktuellen Textstand neu analysieren.</p>
+        {% elif analysis.state == 'empty' %}<p class="notice">Die Analyse ist abgeschlossen, hat aber keine geeigneten Zitate ergeben. Dieses Ergebnis bedeutet keine Promotionsbereitschaft.</p>{% endif %}
+        <p data-analysis-count class="muted small">{{ analysis.completed_steps }} Zwischenstände gespeichert · {{ analysis.calls_started }} KI-Anfragen gestartet</p>
+        {% if analysis.state == 'failed' %}<p class="muted small">Beim Fortsetzen mit gleicher Konfiguration bleiben fertige Abschnitte erhalten. Nur der noch nicht gespeicherte Schritt wird erneut angefragt.</p>{% endif %}
+      {% endif %}
+      {% if result.needs_review %}
+        <p class="notice">Vor der KI-Analyse bitte die offenen Hinweise zur Textextraktion klären.</p>
+      {% elif not analysis_configured %}
+        <p>Bitte zuerst <a href="{{ url_for('settings') }}">Open WebUI und das Modell einrichten</a>.</p>
+      {% elif not analysis or not analysis.active %}
+        <p>Die Analyse überträgt Buchabschnitte an dein konfiguriertes Open WebUI. Sie erstellt internen Buchkontext und wählt Originalzitate aus. Dabei entstehen Modellaufrufe.</p>
+        <form method="post" action="{{ url_for('analyze_book', book_id=book.id) }}" class="analysis-start-form">
+          <div class="form-actions"><button type="submit">{% if analysis and analysis.state == 'failed' %}KI-Analyse fortsetzen{% elif analysis and analysis.state in ['done','empty'] %}Mit aktueller Konfiguration analysieren{% else %}KI-Analyse starten{% endif %}</button></div>
+        </form>
+        <p class="small muted">Identische fertige Analyseläufe werden wiederverwendet. Geänderte Modell- oder Analyseeinstellungen erzeugen einen neuen Lauf.</p>
+      {% endif %}
+      {% if analysis and analysis.result %}
+        {% if analysis.result.rejected_candidates %}
+          <details class="notice">
+            <summary>{{ analysis.result.rejected_candidates | length }} Zitatvorschläge wegen unklarer Originalfundstelle übersprungen</summary>
+            <p>Die übrigen Zitate wurden weiterverarbeitet. Übernommen werden ausschließlich wortgetreu belegte Originalstellen.</p>
+            <ul>{% for issue in analysis.result.rejected_candidates %}<li>{% for chapter in result.chapters if chapter.id == issue.chapter_id %}{{ chapter.position }}. {{ chapter.title }} · {% endfor %}Absatz {{ issue.paragraph_id[1:] | int }}: {{ issue.reason }}</li>{% endfor %}</ul>
+          </details>
+        {% endif %}
+        <details class="analysis-profile">
+          <summary>Buchkontext und Profilvorschlag · enthält Spoiler</summary>
+          <dl class="setting-list">
+            <div><dt>Genre</dt><dd>{{ analysis.result.profile.genre }}</dd></div>
+            <div><dt>Stimmung</dt><dd>{{ analysis.result.profile.mood }}</dd></div>
+          </dl>
+          <h3>Interne Zusammenfassung</h3><p class="book-text">{{ analysis.result.profile.internal_summary }}</p>
+          <h3>Welt und Figuren</h3><p class="book-text">{{ analysis.result.profile.world }}</p>
+          <ul>{% for character in analysis.result.profile.characters %}<li>{{ character }}</li>{% endfor %}</ul>
+          <h3>Interne Spoilerhinweise</h3><ul>{% for spoiler in analysis.result.profile.spoilers %}<li>{{ spoiler }}</li>{% else %}<li>Keine zentralen Spoilerhinweise ermittelt.</li>{% endfor %}</ul>
+          <h3>Vorschlag für die Bildprompt-Basis</h3><p class="book-text">{{ analysis.result.profile.image_prompt_base }}</p>
+          <h3>Vorschlag für Caption-Vorgaben</h3><p class="book-text">{{ analysis.result.profile.caption_guidelines }}</p>
+          <p class="muted small">KI-Vorschläge. Dein bearbeitetes Profil liegt unter <a href="{{ url_for('book_settings', book_id=book.id) }}">Bucheinstellungen</a> und wird durch eine neue Analyse nicht überschrieben.</p>
+        </details>
+      {% endif %}
+    </section>
+  {% endif %}
+  {% if sync_enabled and analysis and analysis.result %}
+    <form method="post" action="{{ url_for('sync_book', book_id=book.id) }}" class="form-actions">
+      <button type="submit">Buchstand nach Supabase übertragen</button>
+      <span class="muted small">Übernimmt Kapitel, Zitate, Profil und Sperren gemeinsam. Ein offener Post verhindert Änderungen.</span>
+    </form>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Bucheinstellungen · {{ book.title }}{% endblock %}
+{% block content %}
+  <p class="breadcrumb"><a href="{{ url_for('local_book', book_id=book.id) }}">← {{ book.title }}</a></p>
+  <h1>Bucheinstellungen</h1>
+  <p class="intro">Buchdaten und Vorgaben für die spätere Promotion. Gespeicherte Änderungen bleiben bei einer neuen KI-Analyse erhalten.</p>
+  {% if saved %}<p class="notice" role="status">Bucheinstellungen gespeichert.</p>{% endif %}
+  {% if form_error %}<p class="notice" role="alert">{{ form_error }}</p>{% endif %}
+  {% if management.preview_ai and management.suggestion_id %}
+    <p class="notice">Der aktuelle KI-Vorschlag ist zur Bearbeitung eingesetzt. Erst „Bucheinstellungen speichern“ ersetzt dein gespeichertes Profil. Titel, Autor, Zieladresse und Promotion-Auswahl bleiben dabei erhalten.</p>
+  {% elif not management.manual %}
+    <p class="notice">{% if management.suggestion_id %}Die Profilfelder sind mit dem aktuellen KI-Vorschlag vorbelegt.{% else %}Du kannst die Buchdaten schon vor der Analyse speichern. Den späteren KI-Vorschlag kannst du hier zur Bearbeitung übernehmen.{% endif %}</p>
+  {% endif %}
+  <section class="panel next-settings" id="profile-generator"
+           data-start-url="{{ url_for('start_profile', book_id=book.id) }}"
+           data-status-url="{{ url_for('profile_status', book_id=book.id) }}"
+           data-result-url="{{ url_for('profile_result', book_id=book.id) }}">
+    <h2>Profil mit KI ausfüllen</h2>
+    <p>Erstellt ausschließlich Vorschläge für die acht Profilfelder, mit je einem eigenen KI-Aufruf. Ein passender gespeicherter Buchkontext wird wiederverwendet. Fehlt er, wird er einmalig aus dem Buchtext vorbereitet. Kapitel und Zitate werden dabei nicht verändert.</p>
+    <p class="muted small">Verwendet dein Open-WebUI-Modell und verursacht Modellaufrufe. <a href="{{ url_for('local_book', book_id=book.id) }}#chapter-review">Kapitelaufteilung und Importhinweise prüfen</a>. Titel, Autor, Zieladresse und Promotion-Auswahl bearbeitest du selbst.</p>
+    <p data-profile-status role="status">Profilstatus wird geladen …</p>
+    <progress data-profile-progress aria-label="Profilanalyse läuft" hidden></progress>
+    <div class="form-actions">
+      <button type="button" data-profile-start>Profilfelder mit KI erstellen</button>
+      <button type="button" data-profile-apply hidden>Vorschläge in die acht Profilfelder einsetzen</button>
+    </div>
+    <p class="muted small">Einsetzen ersetzt die acht Profilfelder im Formular. Erst „Bucheinstellungen speichern“ übernimmt sie dauerhaft. Fertige identische Analysen werden wiederverwendet; unterbrochene Analysen lassen sich fortsetzen.</p>
+    <noscript><p>Zum Starten und Einsetzen der Vorschläge bitte JavaScript aktivieren.</p></noscript>
+  </section>
+  <form method="post" action="{{ url_for('save_book_settings', book_id=book.id) }}" class="book-settings-form">
+    <input type="hidden" name="revision" value="{{ management.revision }}">
+    <input type="hidden" name="suggestion_id" value="{{ management.suggestion_id }}">
+    <input type="hidden" name="profile_run_id" value="{{ profile_run_id | default('') }}">
+    <section class="panel settings-fields">
+      <h2>Buchdaten</h2>
+      <label>Titel <input name="title" value="{{ details.title }}" maxlength="240" required></label>
+      <label>Autor <input name="author" value="{{ details.author }}" maxlength="200"></label>
+      <label>Zieladresse zum Buch <input name="target_url" type="url" value="{{ details.target_url }}" maxlength="2000" placeholder="https://…"></label>
+      <label class="checkbox-label"><input name="promotion_enabled" type="checkbox" {% if details.promotion_enabled %}checked{% endif %}> Für die spätere Promotion vormerken</label>
+      <p class="muted small">Diese Auswahl wird lokal gespeichert. Übertrage den fertigen Buchstand anschließend auf der Buchseite nach Supabase.</p>
+    </section>
+    <section class="panel next-settings settings-fields">
+      <h2>Buchprofil · intern, kann Spoiler enthalten</h2>
+      <label>Genre <input name="genre" value="{{ details.genre }}" maxlength="200"></label>
+      <label>Stimmung <input name="mood" value="{{ details.mood }}" maxlength="200"></label>
+      <label>Interne Zusammenfassung <textarea name="internal_summary" rows="6" maxlength="8000">{{ details.internal_summary }}</textarea></label>
+      <label>Welt und Schauplätze <textarea name="world" rows="4" maxlength="4000">{{ details.world }}</textarea></label>
+      <label>Figuren · eine Beschreibung pro Zeile <textarea name="characters" rows="4" maxlength="6000">{{ details.characters }}</textarea></label>
+      <label>Spoilerhinweise · ein Hinweis pro Zeile <textarea name="spoilers" rows="4" maxlength="4000">{{ details.spoilers }}</textarea></label>
+      <p class="muted small">Der interne Kontext ist für die Verarbeitung gedacht und kein öffentlicher Begleittext.</p>
+    </section>
+    <section class="panel next-settings settings-fields">
+      <h2>Vorgaben für Bild und Begleittext</h2>
+      <label>Bildprompt-Basis <textarea name="image_prompt_base" rows="5" maxlength="4000">{{ details.image_prompt_base }}</textarea></label>
+      <label>Caption-Vorgaben <textarea name="caption_guidelines" rows="5" maxlength="4000">{{ details.caption_guidelines }}</textarea></label>
+      <h3>Bild-Overlay</h3>
+      <p class="muted small">Der Buchtitel wird links oben auf das fertige Bild gesetzt. Kapitelname und Bildmotiv bleiben davon getrennt.</p>
+      <label>Schriftart für den Buchtitel <input name="overlay_title_font" value="{{ details.overlay_title_font }}" maxlength="200" list="overlay-fonts" placeholder="Name einer lokal installierten Schriftart"></label>
+      <datalist id="overlay-fonts">{% for font in font_names %}<option value="{{ font }}">{% endfor %}</datalist>
+      <label>Titelfarbe <input name="overlay_title_color" type="color" value="{{ details.overlay_title_color }}"></label>
+      {% if overlay_preview %}<figure class="overlay-preview"><img src="{{ url_for('book_overlay', book_id=book.id) }}" alt="Vorschau des Buchtitel-Overlays"><figcaption>Transparente 4:5-Overlay-Vorschau · Kapitelname folgt später im Workflow rechts unten.</figcaption></figure>{% endif %}
+      <div class="form-actions"><button type="submit">Bucheinstellungen speichern</button><a href="{{ url_for('local_book', book_id=book.id) }}">Zurück zum Buch</a></div>
+    </section>
+  </form>
+  {% if management.manual and management.suggestion_id %}
+    <p class="page-note"><a href="{{ url_for('book_settings', book_id=book.id) }}?preview=ai">Aktuellen KI-Profilvorschlag zur Bearbeitung laden</a> · Verlässt dieses Formular; noch nicht gespeicherte Eingaben gehen verloren. Der gespeicherte Stand bleibt bis zum erneuten Speichern erhalten.</p>
+  {% endif %}
+{% endblock %}

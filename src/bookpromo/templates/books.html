@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Bücher · Book Promotion{% endblock %}
+{% block content %}
+  <div class="page-heading">
+    <h1>Bücher</h1>
+    <span class="badge">Lokaler Upload</span>
+  </div>
+
+  <form id="upload-form" class="upload-panel" action="{{ url_for('upload_book') }}" method="post" enctype="multipart/form-data" aria-labelledby="upload-title" aria-describedby="upload-help" data-max-bytes="{{ max_upload_mb * 1024 * 1024 }}">
+    <div>
+      <h2 id="upload-title">Neues Buch hinzufügen</h2>
+      <p id="upload-help">Word-Dokument hier ablegen oder eine Datei auswählen.</p>
+      <p class="muted small">DOCX · Maximal {{ max_upload_mb }} MB · Eine Datei pro Upload</p>
+    </div>
+    <div class="upload-controls">
+      <label class="file-label" for="word-file">Word-Datei auswählen</label>
+      <input id="word-file" type="file" name="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
+      <button id="upload-submit" type="submit">Buch anlegen</button>
+    </div>
+  </form>
+  <div id="upload-feedback" class="notice" role="status" aria-live="polite" hidden>
+    <p id="upload-message"></p>
+    <progress id="upload-progress" max="100" value="0" aria-label="Uploadfortschritt" hidden></progress>
+  </div>
+  <p class="intro">Die Datei wird lokal gespeichert und im Hintergrund in Text und Kapitel aufgeteilt. Öffne das Buch, prüfe die Kapitel und starte die KI-Zitatauswahl.</p>
+  <section class="panel" aria-labelledby="local-library-title">
+    <div class="panel-heading"><h2 id="local-library-title">Lokale Buchprojekte</h2></div>
+    {% if local_error %}<p class="notice">{{ local_error }}</p>{% else %}
+    <div class="table-scroll" role="region" aria-label="Lokale Buchprojekte" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">Buch</th><th scope="col">Import</th><th scope="col">Kapitel</th><th scope="col">Zitate</th><th scope="col">Promotion</th><th scope="col">Hochgeladen</th></tr></thead>
+        <tbody>
+        {% for book in local_books %}
+          {% set job = local_jobs.get(book.id) %}
+          {% set managed = local_management.get(book.id) %}
+          <tr {% if not job or job.active %}data-import-row="{{ url_for('import_status', book_id=book.id) }}"{% endif %}><td><a href="{{ url_for('local_book', book_id=book.id) }}"><strong>{{ book.title }}</strong></a></td>
+            <td><span class="badge" data-import-label>{{ job.label if job else 'Datei gespeichert' }}</span></td>
+            <td data-chapter-count>{{ job.chapter_count if job and job.chapter_count is not none else '—' }}</td>
+            <td>{% if managed and managed.suggestion_id %}{{ managed.usable_count }} nutzbar · {{ managed.blocked_count }} gesperrt{% else %}{{ {'queued':'Analyse wartet','running':'Analyse läuft','failed':'Analyse fehlgeschlagen','stale':'Analyse veraltet'}.get(managed.analysis_state if managed else '', 'Noch nicht analysiert') }}{% endif %}</td>
+            <td><a href="{{ url_for('book_settings', book_id=book.id) }}">{{ 'Vorgemerkt' if managed and managed.details.promotion_enabled else 'Pausiert' }}</a></td>
+            <td>{{ book.created_at | berlin_time }}</td></tr>
+        {% else %}
+          <tr><td colspan="6" class="empty-state"><strong>Noch kein Buch hochgeladen.</strong><p>Lege oben dein erstes Word-Dokument ab.</p></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>{% endif %}
+  </section>
+  {% if local_page > 1 or local_has_more %}
+  <nav class="pagination" aria-label="Lokale Buchseiten">
+    {% if local_page > 1 %}<a href="{{ url_for('books') }}?local_page={{ local_page - 1 }}&amp;page={{ page }}">← Zurück</a>{% endif %}
+    <span>Seite {{ local_page }}</span>
+    {% if local_has_more %}<a href="{{ url_for('books') }}?local_page={{ local_page + 1 }}&amp;page={{ page }}">Weiter →</a>{% endif %}
+  </nav>
+  {% endif %}
+  {% if not show_remote %}<p class="page-note">{{ database_error }} Deine lokalen Uploads bleiben gespeichert.</p>{% endif %}
+
+  {% if show_remote %}
+  <section class="panel" aria-labelledby="library-title">
+    <div class="panel-heading"><h2 id="library-title">Bücher in Supabase</h2></div>
+    <div class="table-scroll" role="region" aria-label="Buchübersicht" tabindex="0">
+      <table>
+        <thead><tr>
+          <th scope="col">Buch</th>
+          <th scope="col">Status</th>
+          <th scope="col">Kapitel</th>
+          <th scope="col">Zitate</th>
+          <th scope="col">Letzter Post</th>
+        </tr></thead>
+        <tbody>
+        {% for book in books %}
+        <tr>
+          <td><strong>{{ book.title }}</strong>{% if book.author %}<br><span class="muted small">{{ book.author }}</span>{% endif %}</td>
+          <td>{{ {'new':'Neu','queued':'Wartet','extracting':'Wird eingelesen','analyzing':'Wird analysiert','needs_review':'Prüfung nötig','ready':'Bereit','failed':'Fehlgeschlagen'}[book.status] }}</td>
+          <td>{{ book.chapter_count }}</td><td>{{ book.quote_count }}</td>
+          <td>{{ book.last_published_at | berlin_time }}</td>
+        </tr>
+        {% else %}<tr><td colspan="5" class="empty-state">
+          <strong>{% if database_connected %}Noch keine Bücher auf dieser Seite.{% else %}Buchübersicht noch nicht verbunden.{% endif %}</strong>
+          <p>{% if database_error %}{{ database_error }}{% else %}Die Datenbank ist erreichbar. Lokale Uploads wurden noch nicht nach Supabase übertragen.{% endif %}</p>
+          <a href="{{ url_for('settings') }}">Einrichtungsstatus ansehen <span aria-hidden="true">→</span></a>
+        </td></tr>{% endfor %}</tbody>
+      </table>
+    </div>
+  </section>
+  {% if page > 1 or has_more %}
+  <nav class="pagination" aria-label="Buchseiten">
+    {% if page > 1 %}<a href="{{ url_for('books') }}?page={{ page - 1 }}">← Zurück</a>{% endif %}
+    <span>Seite {{ page }}</span>
+    {% if has_more %}<a href="{{ url_for('books') }}?page={{ page + 1 }}">Weiter →</a>{% endif %}
+  </nav>
+  {% endif %}
+  {% endif %}
+{% endblock %}
