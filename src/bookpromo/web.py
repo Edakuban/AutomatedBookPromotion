@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from typing import Literal
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException
@@ -30,6 +30,8 @@ from .analysis import AnalysisOptions
 from .analysis_store import AnalysisStore
 from .management import BookDetails, FILTERS, ManagementStore
 from .overlay import OverlayError, OverlayStore, font_names
+from .book_assets import BookAssetStore, MAX_ASSET_BYTES
+from .carousel_end_slide import render_book_carousel_end_slide
 from .sync import SyncStore
 from pydantic import ValidationError
 
@@ -47,13 +49,18 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
 
     app = FastAPI(title="Book Promotion", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     max_bytes = settings.app_max_upload_mb * 1024 * 1024
-    app.add_middleware(UploadLimitMiddleware, max_bytes=max_bytes + 1024 * 1024)
+    app.add_middleware(
+        UploadLimitMiddleware,
+        max_bytes=max_bytes + 1024 * 1024,
+        asset_max_bytes=MAX_ASSET_BYTES + 1024 * 1024,
+    )
     local_store = LocalUploadStore(settings.app_data_dir, max_bytes)
     extraction_store = ExtractionStore(local_store)
     job_store = JobStore(local_store)
     analysis_store = AnalysisStore(local_store)
     management_store = ManagementStore(local_store)
     overlay_store = OverlayStore(local_store)
+    asset_store = BookAssetStore(local_store)
     sync_store = SyncStore(local_store)
     sync_lock = asyncio.Lock()
     webui_lock = asyncio.Lock()
@@ -116,6 +123,21 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             or request.headers.get("sec-fetch-site") == "cross-site"
             or (origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}")):
             raise UploadError("Bitte diese Aktion direkt in der lokalen Book-Promotion-Oberfläche ausführen.", 403)
+
+    async def book_settings_context(book, management, details, *, saved=False, form_error=None,
+                                    profile_run_id="", asset_saved=""):
+        assets = await run_in_threadpool(asset_store.list, str(book.id))
+        missing = (
+            await run_in_threadpool(asset_store.configuration_errors, str(book.id), details)
+            if isinstance(details, BookDetails) else ["ungespeicherte Einstellungen"]
+        )
+        carousel_preview = not missing
+        return {"active_page": "books", "book": book, "management": management,
+                "details": details, "saved": saved, "form_error": form_error,
+                "profile_run_id": profile_run_id, "font_names": font_names(),
+                "overlay_preview": bool(getattr(details, "overlay_title_font", "")) and overlay_store.preview_exists(book.id),
+                "assets": assets, "asset_saved": asset_saved,
+                "carousel_preview": carousel_preview}
 
     @app.post("/uploads", name="upload_book")
     async def upload_book(request: Request):
@@ -279,18 +301,16 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                      "summary": analysis["result"].chapter_summaries.get(chapter.id) if analysis and analysis["result"] else None})
 
     @app.get("/books/local/{book_id}/settings", response_class=HTMLResponse, name="book_settings")
-    async def book_settings(request: Request, book_id: UUID, preview: Literal["saved", "ai"] = "saved", saved: bool = False):
+    async def book_settings(request: Request, book_id: UUID, preview: Literal["saved", "ai"] = "saved", saved: bool = False,
+                            asset_saved: Literal["", "cover_front", "logo"] = ""):
         try:
             book = await run_in_threadpool(local_store.get_book, book_id)
             if book is None: raise HTTPException(404)
             management = await run_in_threadpool(management_store.get, str(book_id), prefer_ai=preview == "ai")
         except (OSError, sqlite3.Error):
             raise UploadError("Die Bucheinstellungen konnten nicht gelesen werden.", 503) from None
-        return templates.TemplateResponse(request=request, name="book_settings.html",
-            context={"active_page": "books", "book": book, "management": management,
-                     "details": management["details"], "saved": saved, "form_error": None,
-                     "font_names": font_names(),
-                     "overlay_preview": bool(management["details"].overlay_title_font) and overlay_store.preview_exists(book_id)})
+        context = await book_settings_context(book, management, management["details"], saved=saved, asset_saved=asset_saved)
+        return templates.TemplateResponse(request=request, name="book_settings.html", context=context)
 
     @app.post("/books/local/{book_id}/settings", name="save_book_settings")
     async def save_book_settings(request: Request, book_id: UUID):
@@ -298,7 +318,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         try:
             book = await run_in_threadpool(local_store.get_book, book_id)
             if book is None: raise HTTPException(404)
-            async with request.form(max_files=0, max_fields=20) as form:
+            async with request.form(max_files=0, max_fields=24) as form:
                 allowed = set(BookDetails.model_fields) | {"revision", "suggestion_id", "profile_run_id"}
                 if (set(form) - allowed or allowed - {"promotion_enabled", "profile_run_id"} - set(form)
                     or any(len(form.getlist(k)) != 1 or not isinstance(form[k], str) for k in form)):
@@ -314,21 +334,39 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             except ValidationError:
                 management = await run_in_threadpool(management_store.get, str(book_id))
                 management.update(revision=revision, suggestion_id=suggestion_id)
-                return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400,
-                    context={"active_page": "books", "book": book, "management": management, "details": raw, "saved": False,
-                             "profile_run_id": profile_run_id,
-                             "font_names": font_names(), "overlay_preview": bool(raw.get("overlay_title_font")) and overlay_store.preview_exists(book_id),
-                             "form_error": "Bitte Titel, Feldlängen, Schriftname, Titelfarbe und eine vollständige HTTP-/HTTPS-Zieladresse ohne Zugangsdaten prüfen. Deine Eingaben wurden noch nicht gespeichert."})
+                context = await book_settings_context(book, management, raw, profile_run_id=profile_run_id,
+                    form_error="Bitte Titel, Feldlängen, Freigabemodus, Schriftname, Titelfarbe und eine vollständige HTTP-/HTTPS-Zieladresse ohne Zugangsdaten prüfen. Deine Eingaben wurden noch nicht gespeichert.")
+                return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400, context=context)
             try:
                 overlay = await run_in_threadpool(overlay_store.prepare, details)
             except OverlayError as error:
                 management = await run_in_threadpool(management_store.get, str(book_id))
                 management.update(revision=revision, suggestion_id=suggestion_id)
-                return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400,
-                    context={"active_page": "books", "book": book, "management": management, "details": raw, "saved": False,
-                             "profile_run_id": profile_run_id, "font_names": font_names(),
-                             "overlay_preview": bool(raw.get("overlay_title_font")) and overlay_store.preview_exists(book_id),
-                             "form_error": str(error)})
+                context = await book_settings_context(book, management, raw, profile_run_id=profile_run_id,
+                                                      form_error=str(error))
+                return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400, context=context)
+            missing = await run_in_threadpool(asset_store.configuration_errors, str(book_id), details)
+            if details.promotion_enabled and missing:
+                management = await run_in_threadpool(management_store.get, str(book_id))
+                management.update(revision=revision, suggestion_id=suggestion_id)
+                context = await book_settings_context(book, management, details, profile_run_id=profile_run_id,
+                    form_error="Für die Promotion bitte zuerst: " + ", ".join(missing) + ".")
+                return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400, context=context)
+            if details.promotion_enabled:
+                try:
+                    await run_in_threadpool(
+                        render_book_carousel_end_slide, asset_store, str(book_id), details, overlay
+                    )
+                except (UploadError, OverlayError) as error:
+                    management = await run_in_threadpool(management_store.get, str(book_id))
+                    management.update(revision=revision, suggestion_id=suggestion_id)
+                    context = await book_settings_context(
+                        book, management, details, profile_run_id=profile_run_id,
+                        form_error="Die Carousel-Schlussseite konnte nicht erstellt werden: " + str(error),
+                    )
+                    return templates.TemplateResponse(
+                        request=request, name="book_settings.html", status_code=400, context=context
+                    )
             await run_in_threadpool(management_store.save, str(book_id), revision, details, suggestion_id, profile_run_id)
             if overlay is not None:
                 await run_in_threadpool(overlay_store.save, str(book_id), overlay)
@@ -337,6 +375,66 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         except (OSError, sqlite3.Error):
             raise UploadError("Die Bucheinstellungen konnten nicht gespeichert werden.", 503) from None
         return RedirectResponse(str(request.url_for("book_settings", book_id=book_id)) + "?saved=true", status_code=303)
+
+    @app.post("/books/local/{book_id}/settings/assets/{kind}", name="upload_book_asset")
+    async def upload_book_asset(request: Request, book_id: UUID, kind: Literal["cover_front", "logo"]):
+        require_local_origin(request)
+        if not request.headers.get("content-type", "").startswith("multipart/form-data"):
+            raise UploadError("Bitte genau eine Bilddatei auswählen.", 415)
+        try:
+            book = await run_in_threadpool(local_store.get_book, book_id)
+            if book is None:
+                raise HTTPException(404)
+            async with request.form(max_files=1, max_fields=1) as form:
+                if (set(form) != {"file", "revision"} or len(form.getlist("file")) != 1
+                    or len(form.getlist("revision")) != 1 or not isinstance(form["file"], UploadFile)
+                    or not isinstance(form["revision"], str)):
+                    raise UploadError("Bitte genau eine Bilddatei aus dem aktuellen Formular auswählen.")
+                revision = int(form["revision"])
+                upload = form["file"]
+                await run_in_threadpool(asset_store.save, str(book_id), kind, upload.file, upload.filename, revision)
+        except (ValueError, TypeError):
+            raise UploadError("Die Bildansicht ist veraltet. Bitte die Seite neu öffnen.", 409) from None
+        except (OSError, sqlite3.Error):
+            raise UploadError("Das Bild konnte nicht gespeichert werden. Bitte die lokale Ablage prüfen.", 503) from None
+        destination = str(request.url_for("book_settings", book_id=book_id)) + f"?asset_saved={kind}"
+        return RedirectResponse(destination, status_code=303)
+
+    @app.get("/books/local/{book_id}/settings/assets/{kind}.png", name="book_asset")
+    async def book_asset(book_id: UUID, kind: Literal["cover_front", "logo"]):
+        try:
+            if await run_in_threadpool(local_store.get_book, book_id) is None:
+                raise HTTPException(404)
+            asset = await run_in_threadpool(asset_store.get, str(book_id), kind)
+            if asset is None:
+                raise HTTPException(404)
+            path = asset_store.path(asset)
+            if not path.is_file():
+                raise HTTPException(404)
+        except (OSError, sqlite3.Error):
+            raise UploadError("Das Bild konnte nicht gelesen werden.", 503) from None
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/books/local/{book_id}/carousel-end.jpg", name="carousel_end_preview")
+    async def carousel_end_preview(book_id: UUID):
+        try:
+            if await run_in_threadpool(local_store.get_book, book_id) is None:
+                raise HTTPException(404)
+            management = await run_in_threadpool(management_store.get, str(book_id))
+            details = management["details"]
+            if await run_in_threadpool(asset_store.configuration_errors, str(book_id), details):
+                raise HTTPException(404)
+            overlay = await run_in_threadpool(overlay_store.prepare, details)
+            if overlay is None:
+                raise HTTPException(404)
+            rendered = await run_in_threadpool(
+                render_book_carousel_end_slide, asset_store, str(book_id), details, overlay
+            )
+        except OverlayError as error:
+            raise UploadError(str(error), 409) from None
+        except (OSError, sqlite3.Error):
+            raise UploadError("Die Carousel-Vorschau konnte nicht erzeugt werden.", 503) from None
+        return Response(rendered.data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/books/local/{book_id}/overlay.png", name="book_overlay")
     async def book_overlay(book_id: UUID):

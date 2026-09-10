@@ -48,7 +48,8 @@ def test_saved_profile_survives_reanalysis_and_preview_is_read_only(setup):
     assert current['details'].genre == 'Roman'
     original_run = current['suggestion_id']
     edited = current['details'].model_copy(update={'title': 'Neuer Titel', 'author': 'Autor', 'genre': 'Mein Genre',
-                                                 'image_prompt_base': 'Mein Bildstil', 'promotion_enabled': True})
+                                                 'image_prompt_base': 'Mein Bildstil', 'publication_mode': 'auto',
+                                                 'carousel_end_text': 'Jetzt entdecken'})
     store.save(book.id, 0, edited, original_run)
     assert uploads.get_book(UUID(book.id)).title == 'Neuer Titel'
     settings.openwebui_model = 'different-model'
@@ -59,7 +60,8 @@ def test_saved_profile_survives_reanalysis_and_preview_is_read_only(setup):
     assert current['details'] == edited
     preview = store.get(book.id, prefer_ai=True)
     assert preview['details'].genre == 'Roman' and preview['details'].title == 'Neuer Titel'
-    assert preview['details'].promotion_enabled
+    assert preview['details'].publication_mode == 'auto'
+    assert preview['details'].carousel_end_text == 'Jetzt entdecken'
     assert store.get(book.id)['details'] == edited
     store.save(book.id, current['revision'], preview['details'], preview['suggestion_id'])
     assert store.get(book.id)['details'].genre == 'Roman'
@@ -180,18 +182,17 @@ def test_settings_and_quotes_web_round_trip_filters_and_origin(setup):
     with TestClient(create_app(settings, start_worker=False), base_url='http://127.0.0.1:8000') as client:
         fields = form_data(current)
         fields.update(title='Neuer Titel <script>alert(1)</script>', author='Autor', target_url='https://example.org/buch',
-                      overlay_title_font=selected_font, overlay_title_color='#102030', promotion_enabled='on')
+                      overlay_title_font=selected_font, overlay_title_color='#102030')
         assert client.get(url+'/settings').status_code == 200
         assert client.post(url+'/settings', data=fields, headers={'Origin':'https://foreign.example'}).status_code == 403
         response = client.post(url+'/settings', data=fields)
         assert response.status_code == 200 and 'Bucheinstellungen gespeichert' in response.text
         assert '<script>alert(1)</script>' not in response.text and '&lt;script&gt;' in response.text
-        assert store.get(book.id)['details'].promotion_enabled
+        assert not store.get(book.id)['details'].promotion_enabled
         assert store.get(book.id)['details'].overlay_title_font == selected_font
         assert store.get(book.id)['details'].overlay_title_color == '#102030'
         overlay = client.get(url + '/overlay.png')
         assert overlay.status_code == 200 and overlay.headers['content-type'] == 'image/png'
-        assert 'Vorgemerkt' in client.get('/').text
         quote = current['quotes'][0]['quote']
         chapter = url+'/chapters/'+quote.chapter_id
         action = chapter+'/quotes/'+quote.id+'/block'

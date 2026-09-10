@@ -5,6 +5,8 @@
   <h1>Bucheinstellungen</h1>
   <p class="intro">Buchdaten und Vorgaben für die spätere Promotion. Gespeicherte Änderungen bleiben bei einer neuen KI-Analyse erhalten.</p>
   {% if saved %}<p class="notice" role="status">Bucheinstellungen gespeichert.</p>{% endif %}
+  {% if asset_saved == 'cover_front' %}<p class="notice" role="status">Frontcover gespeichert.</p>{% endif %}
+  {% if asset_saved == 'logo' %}<p class="notice" role="status">Logo gespeichert.</p>{% endif %}
   {% if form_error %}<p class="notice" role="alert">{{ form_error }}</p>{% endif %}
   {% if management.preview_ai and management.suggestion_id %}
     <p class="notice">Der aktuelle KI-Vorschlag ist zur Bearbeitung eingesetzt. Erst „Bucheinstellungen speichern“ ersetzt dein gespeichertes Profil. Titel, Autor, Zieladresse und Promotion-Auswahl bleiben dabei erhalten.</p>
@@ -36,8 +38,14 @@
       <label>Titel <input name="title" value="{{ details.title }}" maxlength="240" required></label>
       <label>Autor <input name="author" value="{{ details.author }}" maxlength="200"></label>
       <label>Zieladresse zum Buch <input name="target_url" type="url" value="{{ details.target_url }}" maxlength="2000" placeholder="https://…"></label>
-      <label class="checkbox-label"><input name="promotion_enabled" type="checkbox" {% if details.promotion_enabled %}checked{% endif %}> Für die spätere Promotion vormerken</label>
-      <p class="muted small">Diese Auswahl wird lokal gespeichert. Übertrage den fertigen Buchstand anschließend auf der Buchseite nach Supabase.</p>
+      <label>Freigabemodus
+        <select name="publication_mode">
+          <option value="review" {% if details.publication_mode == 'review' %}selected{% endif %}>Telegram-Prüfung</option>
+          <option value="auto" {% if details.publication_mode == 'auto' %}selected{% endif %}>Automatisch veröffentlichen</option>
+        </select>
+      </label>
+      <label class="checkbox-label"><input name="promotion_enabled" type="checkbox" {% if details.promotion_enabled %}checked{% endif %}> Instagram-Carousel verwenden und für Promotion aktivieren</label>
+      <p class="muted small">Die Promotion lässt sich erst mit Frontcover, Logo, Schlussseitentext und Buchtitel-Overlay aktivieren. Übertrage den fertigen Buchstand anschließend auf der Buchseite nach Supabase.</p>
     </section>
     <section class="panel next-settings settings-fields">
       <h2>Buchprofil · intern, kann Spoiler enthalten</h2>
@@ -53,6 +61,7 @@
       <h2>Vorgaben für Bild und Begleittext</h2>
       <label>Bildprompt-Basis <textarea name="image_prompt_base" rows="5" maxlength="4000">{{ details.image_prompt_base }}</textarea></label>
       <label>Caption-Vorgaben <textarea name="caption_guidelines" rows="5" maxlength="4000">{{ details.caption_guidelines }}</textarea></label>
+      <label>Text auf der Carousel-Schlussseite <textarea name="carousel_end_text" rows="4" maxlength="500" placeholder="Jetzt entdecken …">{{ details.carousel_end_text }}</textarea></label>
       <h3>Bild-Overlay</h3>
       <p class="muted small">Der Buchtitel wird links oben auf das fertige Bild gesetzt. Kapitelname und Bildmotiv bleiben davon getrennt.</p>
       <label>Schriftart für den Buchtitel <input name="overlay_title_font" value="{{ details.overlay_title_font }}" maxlength="200" list="overlay-fonts" placeholder="Name einer lokal installierten Schriftart"></label>
@@ -62,6 +71,50 @@
       <div class="form-actions"><button type="submit">Bucheinstellungen speichern</button><a href="{{ url_for('local_book', book_id=book.id) }}">Zurück zum Buch</a></div>
     </section>
   </form>
+  <section class="panel next-settings settings-fields">
+    <h2>Carousel-Schlussseite</h2>
+    <p>Aus dem Frontcover erzeugt die Anwendung einen perspektivischen 2.5D-Buch-Mockup. Cover und Logo bleiben lokal; die Vorschau kombiniert sie mit dem gespeicherten Schlussseitentext und Buchtitel-Overlay.</p>
+    <div class="asset-grid">
+      {% set cover = assets.get('cover_front') %}
+      <div class="asset-card">
+        <h3>Frontcover</h3>
+        {% if cover %}
+          <img src="{{ url_for('book_asset', book_id=book.id, kind='cover_front') }}" alt="Gespeichertes Frontcover">
+          <p class="muted small">{{ cover.original_filename }} · {{ cover.width }} × {{ cover.height }} px</p>
+        {% else %}
+          <p class="muted small">Noch kein Frontcover gespeichert.</p>
+        {% endif %}
+        <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_book_asset', book_id=book.id, kind='cover_front') }}">
+          <input type="hidden" name="revision" value="{{ cover.revision if cover else 0 }}">
+          <label>Frontcover für 3D-Darstellung auswählen <input type="file" name="file" accept="image/png,image/jpeg,image/webp" required></label>
+          <button type="submit">Frontcover speichern</button>
+        </form>
+      </div>
+      {% set logo = assets.get('logo') %}
+      <div class="asset-card">
+        <h3>Logo</h3>
+        {% if logo %}
+          <img src="{{ url_for('book_asset', book_id=book.id, kind='logo') }}" alt="Gespeichertes Logo">
+          <p class="muted small">{{ logo.original_filename }} · {{ logo.width }} × {{ logo.height }} px</p>
+        {% else %}
+          <p class="muted small">Noch kein Logo gespeichert. Ein transparentes PNG oder WebP liefert das beste Ergebnis; JPEG besitzt keinen transparenten Hintergrund.</p>
+        {% endif %}
+        <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_book_asset', book_id=book.id, kind='logo') }}">
+          <input type="hidden" name="revision" value="{{ logo.revision if logo else 0 }}">
+          <label>Logo auswählen <input type="file" name="file" accept="image/png,image/jpeg,image/webp" required></label>
+          <button type="submit">Logo speichern</button>
+        </form>
+      </div>
+    </div>
+    {% if carousel_preview %}
+      <figure class="carousel-preview">
+        <img src="{{ url_for('carousel_end_preview', book_id=book.id) }}" alt="Vorschau der Carousel-Schlussseite">
+        <figcaption>Automatisch erzeugte 4:5-Schlussseite</figcaption>
+      </figure>
+    {% else %}
+      <p class="muted small">Für die Vorschau zuerst Frontcover und Logo hochladen sowie Schlussseitentext und Overlay-Schriftart speichern.</p>
+    {% endif %}
+  </section>
   {% if management.manual and management.suggestion_id %}
     <p class="page-note"><a href="{{ url_for('book_settings', book_id=book.id) }}?preview=ai">Aktuellen KI-Profilvorschlag zur Bearbeitung laden</a> · Verlässt dieses Formular; noch nicht gespeicherte Eingaben gehen verloren. Der gespeicherte Stand bleibt bis zum erneuten Speichern erhalten.</p>
   {% endif %}

@@ -85,7 +85,8 @@ def test_profile_web_preview_explicit_save_and_stale_source(setup):
     settings, uploads, book, record, store = setup
     management = ManagementStore(uploads)
     current = management.get(book.id)
-    details = current['details'].model_copy(update={'author': 'Mein Autor', 'target_url': 'https://example.org/buch', 'genre': 'Eigene Angabe', 'promotion_enabled': True})
+    details = current['details'].model_copy(update={'author': 'Mein Autor', 'target_url': 'https://example.org/buch',
+                                                     'genre': 'Eigene Angabe', 'publication_mode': 'auto'})
     management.save(book.id, 0, details, '')
     url = f'/books/local/{book.id}/settings'
     headers = {'Accept': 'application/json', 'Origin': 'http://127.0.0.1:8000'}
@@ -108,7 +109,8 @@ def test_profile_web_preview_explicit_save_and_stale_source(setup):
         assert client.post(url, data=fields).status_code == 200
         saved = management.get(book.id)['details']
         assert saved.genre == profile().genre
-        assert saved.author == details.author and saved.target_url == details.target_url and saved.promotion_enabled
+        assert saved.author == details.author and saved.target_url == details.target_url
+        assert saved.publication_mode == 'auto' and not saved.promotion_enabled
         fields = form_data(management.get(book.id))
         fields['profile_run_id'] = suggestion['id']
         ExtractionStore(uploads).correct(book.id, record.revision, record.result.boundaries)

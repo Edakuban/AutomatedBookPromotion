@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import time
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -21,6 +22,8 @@ class BookDetails(BaseModel):
     author: str = Field(default="", max_length=200)
     target_url: str = Field(default="", max_length=2000)
     promotion_enabled: bool = False
+    publication_mode: Literal["review", "auto"] = "review"
+    carousel_end_text: str = Field(default="", max_length=500)
     genre: str = Field(default="", max_length=200)
     mood: str = Field(default="", max_length=200)
     internal_summary: str = Field(default="", max_length=8000)
@@ -136,6 +139,24 @@ class ManagementStore:
             raise UploadError("Die gespeicherten Bucheinstellungen oder Analyseergebnisse sind beschädigt. Bitte die Datensicherung prüfen.", 503) from None
 
     def save(self, book_id, revision, details: BookDetails, suggestion_id, profile_run_id=""):
+        if details.promotion_enabled:
+            # Imported lazily so the renderer can use BookDetails without a
+            # module-import cycle.
+            from .book_assets import BookAssetStore
+            from .carousel_end_slide import render_book_carousel_end_slide
+            from .overlay import OverlayError, OverlayStore
+
+            asset_store = BookAssetStore(self.uploads)
+            missing = asset_store.configuration_errors(book_id, details)
+            if missing:
+                raise UploadError("Für die Promotion bitte zuerst: " + ", ".join(missing) + ".", 409)
+            try:
+                overlay = OverlayStore(self.uploads).prepare(details)
+                if overlay is None:
+                    raise UploadError("Bitte zuerst das Buchtitel-Overlay konfigurieren.", 409)
+                render_book_carousel_end_slide(asset_store, book_id, details, overlay)
+            except OverlayError as error:
+                raise UploadError(str(error), 409) from None
         with closing(self.connection()) as connection, connection:
             self.schema(connection)
             connection.execute("begin immediate")

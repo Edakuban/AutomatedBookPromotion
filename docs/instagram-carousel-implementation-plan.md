@@ -1,6 +1,8 @@
 # Implementierungsplan: Instagram-Carousels
 
-Stand: 09.09.2026
+Stand: 10.09.2026
+
+Implementierungsstand: Phase 1 (lokale Assets und CTA-Renderer) ist im Python-Projekt umgesetzt und getestet. Supabase-Sync, Schema und n8n bleiben bewusst für die folgenden Phasen offen.
 
 ## 1. Ziel und verbindliche Produktentscheidungen
 
@@ -23,6 +25,9 @@ Weitere Festlegungen:
 - Ein Klick auf „Text + Bild neu“ erzeugt zuerst eine neue Caption beziehungsweise einen neuen Bildprompt und anschließend ein komplett neues Carousel.
 - Es entstehen zwei getrennte n8n-Hauptworkflows: ein Review-Workflow mit Telegram-Freigaben und ein Auto-Workflow ohne Wartezustände.
 - Beide n8n-Exporte werden aus gemeinsamen Builder-Funktionen erzeugt, damit Rendering, Validierung und Instagram-Publishing nicht doppelt gepflegt werden.
+- Alle postbezogenen Carousel-JPEGs werden vor Freigabe in einem privaten Supabase-Storage-Bucket zwischengespeichert. Der bisherige externe anonyme Bildhost entfällt.
+- Telegram und Meta erhalten ausschließlich kurzlebige Signed URLs. Gespeichert wird nur der private Objektpfad, niemals die Signed URL selbst.
+- Postbezogene Bilder werden erst nach einem bestätigten Instagram-Publish und dem erfolgreichen Speichern des `published`-Zustands gelöscht. Bei `publish_uncertain` bleiben sie für den Abgleich erhalten.
 - Zunächst bleibt höchstens ein nicht abgeschlossener Entwurf je Instagram-Konto erlaubt. Ein offener Review-Entwurf blockiert deshalb den Auto-Workflow für dasselbe Konto.
 - Rückwärtskompatibilität mit dem bisherigen Einzelbild-Workflow ist nicht erforderlich. Vor der Schemaumstellung werden ausschließlich die wenigen vorhandenen Test-Posts und deren Veröffentlichungszustände gezielt entfernt; Bücher, Kapitel, Zitate und Buchprofile bleiben erhalten.
 
@@ -79,6 +84,7 @@ Supabase
   ├─ unveränderlicher Buchprofil-Snapshot pro Post
   ├─ Post-/Freigabezustand
   ├─ geordnete post_media-Zeilen für alle Slides
+  ├─ private, temporäre Carousel-JPEGs pro Post und Revision
   └─ Parent- und Child-Container-IDs
 
 n8n Review oder Auto
@@ -87,9 +93,9 @@ n8n Review oder Auto
   ├─ ein Grundmotiv erzeugen und auf 1080 × 1350 normalisieren
   ├─ Hero- und Zitat-Slides rendern
   ├─ CTA-Slide laden
-  ├─ alle Slides öffentlich bereitstellen
+  ├─ alle Slides privat in Supabase Storage hochladen
   ├─ optional Telegram-Freigaben durchführen
-  └─ Child-Container → Parent-Container → Publish
+  └─ Signed URLs → Child-Container → Parent-Container → Publish → Cleanup
 ```
 
 ## 4. Python: lokale Daten, Uploads und Buchverwaltung
@@ -120,42 +126,42 @@ local_book_assets
 
 Aufgaben:
 
-- [ ] Tabelle ausschließlich bei einer Schreibaktion anlegen; lesende Seitenaufrufe verändern die Datenbank nicht.
-- [ ] Asset-Revisionen in den vorhandenen Konfliktschutz der Bucheinstellungen einbeziehen.
-- [ ] Ablage unter einem privaten Unterverzeichnis von `APP_DATA_DIR`, beispielsweise `data/book-assets/<book_id>/`.
-- [ ] Dateinamen serverseitig erzeugen und nie aus dem hochgeladenen Namen als Pfad übernehmen.
-- [ ] Alte Assets erst ersetzen, nachdem die neue Datei vollständig validiert und atomar gespeichert wurde.
-- [ ] Beim Löschen/Ersetzen keine Datei außerhalb des aufgelösten Asset-Verzeichnisses akzeptieren.
+- [x] Tabelle ausschließlich bei einer Schreibaktion anlegen; lesende Seitenaufrufe verändern die Datenbank nicht.
+- [x] Asset-Revisionen in den vorhandenen Konfliktschutz der Bucheinstellungen einbeziehen.
+- [x] Ablage unter einem privaten Unterverzeichnis von `APP_DATA_DIR`, beispielsweise `data/book-assets/<book_id>/`.
+- [x] Dateinamen serverseitig erzeugen und nie aus dem hochgeladenen Namen als Pfad übernehmen.
+- [x] Alte Assets erst ersetzen, nachdem die neue Datei vollständig validiert und atomar gespeichert wurde.
+- [x] Beim Löschen/Ersetzen keine Datei außerhalb des aufgelösten Asset-Verzeichnisses akzeptieren.
 
 ### 4.2 Uploadvalidierung
 
 Für das Frontcover:
 
-- [ ] PNG, JPEG und WebP als Eingabe erlauben.
-- [ ] Datei tatsächlich mit Pillow dekodieren; Dateiendung und Browser-MIME-Type allein reichen nicht.
-- [ ] Maximale Dateigröße und maximale Pixelzahl definieren, um Dekompressionsbomben zu verhindern.
-- [ ] EXIF-Ausrichtung anwenden.
-- [ ] Alpha-Kanal erhalten, sofern vorhanden.
-- [ ] Eine Mindestauflösung festlegen, empfohlen mindestens 800 Pixel Breite.
+- [x] PNG, JPEG und WebP als Eingabe erlauben.
+- [x] Datei tatsächlich mit Pillow dekodieren; Dateiendung und Browser-MIME-Type allein reichen nicht.
+- [x] Maximale Dateigröße und maximale Pixelzahl definieren, um Dekompressionsbomben zu verhindern.
+- [x] EXIF-Ausrichtung anwenden.
+- [x] Alpha-Kanal erhalten, sofern vorhanden.
+- [x] Eine Mindestauflösung festlegen, empfohlen mindestens 800 Pixel Breite.
 
 Für das Logo:
 
-- [ ] PNG und WebP unterstützen; transparentes PNG in der Oberfläche empfehlen.
-- [ ] JPEG optional akzeptieren, aber auf den fehlenden transparenten Hintergrund hinweisen.
-- [ ] Dieselben Größen-, Pixel- und Dekodierungsprüfungen wie beim Cover verwenden.
+- [x] PNG und WebP unterstützen; transparentes PNG in der Oberfläche empfehlen.
+- [x] JPEG optional akzeptieren, aber auf den fehlenden transparenten Hintergrund hinweisen.
+- [x] Dieselben Größen-, Pixel- und Dekodierungsprüfungen wie beim Cover verwenden.
 
 ### 4.3 Oberfläche
 
 `src/bookpromo/templates/book_settings.html` wird erweitert um:
 
-- [ ] Checkbox „Instagram-Carousel verwenden“.
-- [ ] Auswahl „Freigabemodus: Telegram-Prüfung / automatisch veröffentlichen“.
-- [ ] Uploadfeld „Frontcover für 3D-Darstellung“.
-- [ ] Uploadfeld „Logo“.
-- [ ] Textarea „Text auf der Schlussseite“.
-- [ ] Anzeige des jeweils gespeicherten Dateinamens und der Bildabmessungen.
-- [ ] Vorschau des erzeugten CTA-Slides.
-- [ ] Verständliche Hinweise bei fehlenden Assets.
+- [x] Checkbox „Instagram-Carousel verwenden“.
+- [x] Auswahl „Freigabemodus: Telegram-Prüfung / automatisch veröffentlichen“.
+- [x] Uploadfeld „Frontcover für 3D-Darstellung“.
+- [x] Uploadfeld „Logo“.
+- [x] Textarea „Text auf der Schlussseite“.
+- [x] Anzeige des jeweils gespeicherten Dateinamens und der Bildabmessungen.
+- [x] Vorschau des erzeugten CTA-Slides.
+- [x] Verständliche Hinweise bei fehlenden Assets.
 
 Formular-/Routing-Entscheidung:
 
@@ -167,11 +173,11 @@ Formular-/Routing-Entscheidung:
 
 `promotion_enabled=true` darf nur gespeichert beziehungsweise nach Supabase übertragen werden, wenn:
 
-- [ ] ein gültiges Frontcover vorhanden ist,
-- [ ] ein gültiges Logo vorhanden ist,
-- [ ] `carousel_end_text` nicht leer ist,
-- [ ] das Buchtitel-Overlay erfolgreich gerendert werden kann,
-- [ ] der CTA-Slide erfolgreich als 1080 × 1350 JPEG erzeugt werden kann.
+- [x] ein gültiges Frontcover vorhanden ist,
+- [x] ein gültiges Logo vorhanden ist,
+- [x] `carousel_end_text` nicht leer ist,
+- [x] das Buchtitel-Overlay erfolgreich gerendert werden kann,
+- [x] der CTA-Slide erfolgreich als 1080 × 1350 JPEG erzeugt werden kann.
 
 Bei unvollständiger Konfiguration bleibt die Promotion für dieses Buch deaktiviert. Es gibt keinen Rückfall auf einen Einzelbild-Post.
 
@@ -179,7 +185,12 @@ Bei unvollständiger Konfiguration bleibt die Promotion für dieses Buch deaktiv
 
 ### 5.1 Neues Rendering-Modul
 
-Ein neues Modul, beispielsweise `src/bookpromo/carousel.py`, kapselt das Rendering. Es verwendet Pillow, das bereits Projektabhängigkeit ist.
+Die Zuständigkeiten sind auf zwei eindeutig benannte Module verteilt:
+
+- `src/bookpromo/book_assets.py` kapselt Validierung, Revisionen und lokale Ablage von Frontcover und Logo.
+- `src/bookpromo/carousel_end_slide.py` kapselt ausschließlich 2.5D-Cover, CTA-Schlussseite, Ausgabevalidierung und Render-Cache.
+
+Das Rendering verwendet Pillow, das bereits Projektabhängigkeit ist. Hero- und Zitat-Slides sowie das vollständige Carousel entstehen weiterhin erst in n8n.
 
 Öffentliche Kernfunktionen:
 
@@ -191,14 +202,14 @@ validate_carousel_end_slide(bytes) -> metadata
 
 ### 5.2 2.5D-Cover
 
-- [ ] Frontcover auf ein perspektivisches Viereck transformieren.
-- [ ] Einen künstlichen Buchrücken mit einer Breite von zunächst 8–12 % der Frontcoverbreite ergänzen.
-- [ ] Rückenfarbe aus dem linken Rand beziehungsweise einer robust bestimmten Coverfarbe ableiten.
-- [ ] Rücken gegenüber dem Frontcover abdunkeln und leicht mit einem Verlauf versehen.
-- [ ] Obere/untere Papierkante dezent ergänzen.
-- [ ] Weichen Schlagschatten mit `GaussianBlur` rendern.
-- [ ] Ergebnis auf transparentem RGBA-Hintergrund zurückgeben.
-- [ ] Keine Rückenbeschriftung erfinden; mit nur einem Frontcover ist es bewusst ein optischer 2.5D-Mockup und kein vollständiges Buchmodell.
+- [x] Frontcover auf ein perspektivisches Viereck transformieren.
+- [x] Einen künstlichen Buchrücken mit einer Breite von zunächst 8–12 % der Frontcoverbreite ergänzen.
+- [x] Rückenfarbe aus dem linken Rand beziehungsweise einer robust bestimmten Coverfarbe ableiten.
+- [x] Rücken gegenüber dem Frontcover abdunkeln und leicht mit einem Verlauf versehen.
+- [x] Obere/untere Papierkante dezent ergänzen.
+- [x] Weichen Schlagschatten mit `GaussianBlur` rendern.
+- [x] Ergebnis auf transparentem RGBA-Hintergrund zurückgeben.
+- [x] Keine Rückenbeschriftung erfinden; mit nur einem Frontcover ist es bewusst ein optischer 2.5D-Mockup und kein vollständiges Buchmodell.
 
 ### 5.3 CTA-Layout
 
@@ -207,19 +218,20 @@ Erste feste Layoutvorgabe:
 - Canvas: 1080 × 1350.
 - Titel-Overlay: unverändert bei 0/0 zusammensetzen.
 - CTA-Text: links, unterhalb des reservierten Titelbereichs.
+- Textdarstellung: ohne Kasten frei auf dem dunklen Hintergrund, mit einer schmalen vertikalen Akzentlinie in der Titelfarbe.
 - 2.5D-Cover: rechts beziehungsweise rechtsmittig.
 - Logo: rechts unten mit festem Sicherheitsabstand.
 - Hintergrund: zunächst eine im Code definierte neutrale/markengerechte Fläche; spätere Konfigurierbarkeit ist nicht Teil des ersten Schritts.
-- Text automatisch umbrechen und Schriftgröße innerhalb definierter Grenzen reduzieren; unterhalb der Mindestgröße mit einem verständlichen Validierungsfehler abbrechen.
+- CTA-Text fest in Arial setzen, automatisch umbrechen und die Schriftgröße innerhalb definierter Grenzen reduzieren; überlange Einzelwörter mit sichtbarem `-` trennen und unterhalb der Mindestgröße mit einem verständlichen Validierungsfehler abbrechen.
 - Alle Elemente innerhalb einer Safe Area von mindestens 64 Pixeln halten.
 
 ### 5.4 Determinismus und Cache
 
-- [ ] Digest über Cover, Logo, CTA-Text, Titel-Overlay und Renderer-Version bilden.
-- [ ] Fertige CTA-Slides unter einem digestbasierten Dateinamen speichern.
-- [ ] Bei unverändertem Digest den vorhandenen Render wiederverwenden.
-- [ ] Renderer-Version im Digest berücksichtigen, damit Layoutänderungen neue Dateien erzeugen.
-- [ ] Ausgabe explizit nach sRGB konvertieren und ohne problematische Metadaten als JPEG speichern.
+- [x] Digest über Cover, Logo, CTA-Text, Titel-Overlay und Renderer-Version bilden.
+- [x] Fertige CTA-Slides unter einem digestbasierten Dateinamen speichern.
+- [x] Bei unverändertem Digest den vorhandenen Render wiederverwenden.
+- [x] Renderer-Version im Digest berücksichtigen, damit Layoutänderungen neue Dateien erzeugen.
+- [x] Ausgabe explizit nach sRGB konvertieren und ohne problematische Metadaten als JPEG speichern.
 
 ## 6. Python → Supabase: Asset-Sync
 
@@ -257,9 +269,11 @@ post_media
   position                  -- 0 bis 9
   kind                      -- hero | quote | cta
   text_fragment             -- nur für quote, optional
-  public_url
+  storage_path              -- privater, revisionsgebundener Objektpfad
+  sha256
+  signed_url_expires_at     -- optionales Auditfeld; URL selbst nicht speichern
   instagram_container_id
-  status                    -- generated | uploaded | container_ready | failed
+  status                    -- generated | uploaded | container_ready | cleanup_pending | deleted | failed
   error
   created_at
   updated_at
@@ -280,6 +294,9 @@ Constraints und Indizes:
 - [ ] Die nicht mehr benötigte Spalte `posts.image_path` entfernen. Medien-URLs gehören ausschließlich in `post_media`.
 - [ ] Nicht mehr benötigte Einzelbild-Constraints, Transitionzweige und Indizes entfernen statt sie als Kompatibilitätsschicht fortzuführen.
 - [ ] `posts.instagram_container_id` speichert die Parent-Carousel-ID.
+- [ ] Einen privaten, ausschließlich serverseitig beschreibbaren Bucket `book-promotion-media` für temporäre Postmedien anlegen.
+- [ ] Objektpfade an Post-ID, Postrevision, Position und Digest binden, beispielsweise `<post_id>/<revision>/<position>-<sha256>.jpg`.
+- [ ] Das dauerhafte `book-promotion-assets` mit Titel-Overlay und CTA-Quelle strikt vom temporären Postmedien-Bucket trennen.
 
 ### 7.2 Reservierung
 
@@ -308,6 +325,7 @@ Der Zustandsautomat wird modeabhängig erweitert:
   - Auto: automatische Freigabe protokollieren und direkt zu `approved` wechseln.
 - `retry_text` und `retry_image`:
   - vorhandene `post_media`-Zeilen und noch nicht veröffentlichte Containerinformationen kontrolliert verwerfen beziehungsweise als ersetzt markieren,
+  - ersetzte, noch nicht an Instagram übergebene Storage-Objekte kontrolliert löschen,
   - Revision erhöhen,
   - alte Callback-Tokens ungültig machen.
 - `carousel_container_ready`:
@@ -326,6 +344,7 @@ Automatische Freigaben werden eindeutig protokolliert, beispielsweise mit `appro
 - [ ] RPC zum einmaligen Speichern einer Child-Container-ID pro Position ergänzen.
 - [ ] Wiederholte identische Aufrufe idempotent beantworten.
 - [ ] Eine abweichende zweite Container-ID für dieselbe Position als Konflikt behandeln.
+- [ ] RPC für revisionsgeschütztes Markieren von `cleanup_pending` und bestätigtem `deleted` ergänzen; die eigentliche Storage-Löschung erfolgt über die serverseitigen n8n-Credentials.
 
 ## 8. n8n: gemeinsame Builder-Bausteine
 
@@ -448,21 +467,31 @@ Für jedes Item des Split-Nodes:
 - [ ] Für jedes Element einen passenden Alternativtext erzeugen, ohne Spoilerkontext oder interne Buchprofile zu veröffentlichen.
 - [ ] Finales Manifest vor Upload und erneut vor Instagram-Erstellung validieren.
 
-## 12. Öffentliche Medienbereitstellung
+## 12. Temporäre Medienbereitstellung über Supabase Storage
 
-Für den produktiven Auto-Workflow sollte der bisherige anonyme temporäre Upload nicht die einzige Abhängigkeit bleiben.
+Supabase Storage ersetzt den bisherigen externen anonymen Upload vollständig. Der Bucket `book-promotion-media` bleibt privat. Meta kann keine Supabase-Authorization-Header mitsenden und lädt `image_url` selbst vom angegebenen Server; deshalb erzeugt n8n erst unmittelbar vor dem jeweiligen externen Abruf eine zeitlich begrenzte Signed URL.
 
-Empfohlene Umsetzung:
+Verbindlicher Ablauf:
 
-- [ ] Generierte Slides in einen privaten Supabase-Storage-Bucket für Veröffentlichungsmedien hochladen.
-- [ ] Pro Objekt eine nicht erratbare, zeitlich begrenzte HTTPS-Signed-URL erzeugen.
-- [ ] Gültigkeit mindestens 48 Stunden, damit Meta alle Dateien sicher vor Containerablauf abrufen kann.
-- [ ] URLs ohne zusätzliche Header mit einem normalen GET testen.
-- [ ] MIME-Type `image/jpeg` und Content-Length prüfen.
-- [ ] Nach erfolgreicher Veröffentlichung beziehungsweise nach einem definierten Aufbewahrungszeitraum bereinigen.
-- [ ] Der bisherige Uguu-Upload darf vorübergehend als Development-Fallback bleiben, aber nicht als Voraussetzung für den unbeaufsichtigten Produktionsbetrieb.
+- [ ] Nach dem Rendern alle 3–10 finalen JPEGs in den privaten Bucket hochladen und jeden `storage_path` samt SHA-256 revisionsgeschützt in `post_media` speichern.
+- [ ] Auch den CTA-Slide als postbezogene Kopie hochladen. Das dauerhafte CTA-Asset des Buchs wird niemals durch den Post-Cleanup gelöscht.
+- [ ] Im Review-Flow erst nach erfolgreichem Upload das Telegram-Album senden und anschließend auf Freigabe warten.
+- [ ] Für Telegram bei Bedarf eigene kurzlebige Signed URLs erzeugen; abgelaufene URLs jederzeit aus `storage_path` neu erzeugen.
+- [ ] Nach der Freigabe für Meta neue Signed URLs erzeugen. Eine Gültigkeit von zunächst 60 Minuten ist konfigurierbar und muss den gesamten Child-Upload samt Polling abdecken.
+- [ ] Signed URLs vor Übergabe an Meta mit einem normalen GET ohne zusätzliche Header prüfen; JPEG-Kennung, MIME-Type, Content-Length, SHA-256 und 1080 × 1350 erneut validieren.
+- [ ] Signed URLs weder in `post_media` noch in Logs, Fehlermeldungen oder versionierten n8n-Exporten speichern. Persistiert werden nur private Objektpfade und optional der Ablaufzeitpunkt.
+- [ ] Der bisherige Drittanbieter-Upload wird aus beiden neuen Workflows entfernt und nicht als Produktions-Fallback mitgeführt.
 
-Die Medienhost-Implementierung wird im Builder gekapselt, damit ein späterer Wechsel nicht beide Workflows verändert.
+Bereinigung:
+
+- [ ] Erst `media_publish` erfolgreich abschließen und eine gültige Instagram-Medien-ID erhalten.
+- [ ] Danach den Post revisionsgeschützt als `published` speichern.
+- [ ] Erst nach erfolgreicher Datenbanktransition alle postbezogenen Objekte aus `book-promotion-media` löschen und die Medienzeilen als `deleted` markieren.
+- [ ] Schlägt die Löschung fehl, bleibt der Post `published`; die Medien wechseln auf `cleanup_pending` und werden idempotent erneut bereinigt.
+- [ ] Bei Timeout oder unklarer Antwort von `media_publish` `publish_uncertain` speichern und keine Bilder löschen.
+- [ ] Verworfene Entwürfe und eindeutig vor Instagram gescheiterte Revisionen ebenfalls bereinigen; sobald Container erstellt wurden, bis zur eindeutigen Klärung oder einem definierten Ablaufzeitraum aufbewahren.
+
+Die Upload-, Signed-URL- und Cleanup-Implementierung wird im Builder gekapselt, damit Review- und Auto-Workflow denselben sicheren Lebenszyklus verwenden.
 
 ## 13. n8n Review-Workflow
 
@@ -475,8 +504,8 @@ Ablauf:
 3. Caption und Bildprompt erzeugen und validieren.
 4. Caption über Telegram freigeben lassen.
 5. Grundmotiv und gesamtes Carousel erzeugen.
-6. Medienmanifest speichern.
-7. Slides in Telegram als Album anzeigen.
+6. Alle Slides in Supabase Storage hochladen und Medienmanifest speichern.
+7. Slides aus Supabase Storage in Telegram als Album anzeigen.
 8. Danach eine separate Nachricht mit Inline-Buttons senden.
 9. Bei Freigabe Child-Container, Parent-Container und Veröffentlichung ausführen.
 
@@ -507,10 +536,11 @@ Ablauf:
 4. Modeabhängige automatische Textfreigabe in Supabase protokollieren.
 5. Grundmotiv und gesamtes Carousel erzeugen.
 6. Alle Medien und das Manifest validieren.
-7. Modeabhängige automatische Medienfreigabe protokollieren.
-8. Child-Container und Parent-Container erstellen.
-9. Parent-Status prüfen und veröffentlichen.
-10. Erfolg oder Fehler an Telegram melden; keine wartende Freigabenachricht erzeugen.
+7. Alle Slides in Supabase Storage hochladen.
+8. Modeabhängige automatische Medienfreigabe protokollieren.
+9. Child-Container und Parent-Container erstellen.
+10. Parent-Status prüfen, veröffentlichen, `published` speichern und temporäre Slides bereinigen.
+11. Erfolg oder Fehler an Telegram melden; keine wartende Freigabenachricht erzeugen.
 
 Sicherheitsregeln:
 
@@ -528,10 +558,12 @@ Sicherheitsregeln:
 
 - [ ] Manifest positionssortiert laden.
 - [ ] Für jedes Medium `POST /media` mit `image_url`, `is_carousel_item=true`, optional `alt_text` und Token senden.
+- [ ] `image_url` unmittelbar davor als neue Signed URL aus dem privaten `storage_path` erzeugen.
 - [ ] Keine Caption und kein `is_ai_generated` an Child-Container senden.
 - [ ] Jede Child-ID unmittelbar revisionsgeschützt in `post_media` speichern.
 - [ ] Einen bereits gespeicherten Child-Container bei einer Wiederaufnahme nicht erneut erzeugen.
 - [ ] Bei Teilfehler Parent-Container noch nicht erstellen.
+- [ ] Jeden Child-Container bis `FINISHED` prüfen; erst danach den Parent erstellen.
 
 ### 15.2 Parent-Container
 
@@ -552,6 +584,14 @@ Sicherheitsregeln:
 - [ ] Instagram-Medien-ID speichern und, wenn verfügbar, Permalink nachladen.
 - [ ] Carousel zählt nach bestätigtem Publish als eine Zitatnutzung.
 
+### 15.4 Post-Publish-Cleanup
+
+- [ ] Eine gültige Antwort von `media_publish` allein löst noch keine Löschung aus: zuerst Instagram-Medien-ID und Zustand `published` atomar speichern.
+- [ ] Danach alle `storage_path`-Objekte dieser Postrevision idempotent löschen.
+- [ ] Erfolgreich entfernte Medien als `deleted`, fehlgeschlagene Löschungen als `cleanup_pending` markieren.
+- [ ] `publish_uncertain`, unbekannte Containerzustände und Datenbanktimeouts nach `media_publish` bewahren sämtliche Objekte für den externen Abgleich.
+- [ ] Ein wiederaufgenommener Cleanup darf niemals `media_publish` erneut aufrufen.
+
 ## 16. Dokumentation und Konfiguration
 
 - [ ] `README.md` um Carousel-Funktion und beide Betriebsmodi ergänzen.
@@ -566,16 +606,16 @@ Sicherheitsregeln:
 
 ### 17.1 Python
 
-- [ ] Speichern und erneutes Laden von `publication_mode` und CTA-Text.
-- [ ] Revisionskonflikte bei gleichzeitigen Text- und Assetänderungen.
-- [ ] Gültige PNG-/JPEG-/WebP-Uploads.
-- [ ] Ablehnung falscher Dateisignaturen, beschädigter Bilder, zu großer Dateien und zu vieler Pixel.
-- [ ] Sichere Pfade und atomarer Assettausch.
-- [ ] Deterministischer Digest und Cachetreffer.
-- [ ] CTA-Ausgabe exakt 1080 × 1350, JPEG, sRGB und unter 8 MiB.
-- [ ] Rendering mit Hoch-, Quer- und ungewöhnlich schmalen Frontcovern.
-- [ ] Transparente und nicht transparente Logos.
-- [ ] Sehr kurzer, mehrzeiliger und zu langer CTA-Text.
+- [x] Speichern und erneutes Laden von `publication_mode` und CTA-Text.
+- [x] Revisionskonflikte bei gleichzeitigen Text- und Assetänderungen.
+- [x] Gültige PNG-/JPEG-/WebP-Uploads.
+- [x] Ablehnung falscher Dateisignaturen, beschädigter Bilder, zu großer Dateien und zu vieler Pixel.
+- [x] Sichere Pfade und atomarer Assettausch.
+- [x] Deterministischer Digest und Cachetreffer.
+- [x] CTA-Ausgabe exakt 1080 × 1350, JPEG, sRGB und unter 8 MiB.
+- [x] Rendering mit Hoch-, Quer- und ungewöhnlich schmalen Frontcovern.
+- [x] Transparente und nicht transparente Logos.
+- [x] Sehr kurzer, mehrzeiliger und zu langer CTA-Text.
 - [ ] Sync überträgt nur fertiges CTA-Bild und Profilpfade, nicht Cover-/Logo-Rohdateien.
 
 ### 17.2 Supabase/SQL
@@ -591,6 +631,9 @@ Sicherheitsregeln:
 - [ ] Manifest mit 2 oder 11 Elementen wird abgelehnt.
 - [ ] Retry entfernt beziehungsweise entwertet veraltete Medienzustände.
 - [ ] `publish_uncertain` bewahrt alle IDs.
+- [ ] `publish_uncertain` bewahrt außerdem sämtliche privaten Storage-Objekte.
+- [ ] `published` wird vor dem Storage-Cleanup gespeichert; ein Cleanup-Fehler ändert den Publish-Erfolg nicht.
+- [ ] Wiederholter Cleanup ist idempotent und löscht niemals das dauerhafte Buchasset.
 
 ### 17.3 n8n-Strukturchecks
 
@@ -600,6 +643,9 @@ Sicherheitsregeln:
 - [ ] Auto enthält keine wartenden Telegram-Nodes.
 - [ ] Beide verwenden identische Carousel-Render- und Instagram-Bausteine.
 - [ ] Nur Parent-Container enthält Caption und `is_ai_generated`.
+- [ ] Kein Drittanbieter-Upload ist mehr enthalten; Upload, Signed URL und Delete verwenden ausschließlich Supabase Storage.
+- [ ] Signed URLs werden nicht im Workflow-Export oder in persistierten Medienzeilen abgelegt.
+- [ ] Storage-Cleanup ist ausschließlich hinter einer bestätigten `published`-Transition erreichbar.
 - [ ] Alle Child-Container enthalten `is_carousel_item=true`.
 - [ ] Maximal zehn Manifestelemente gelangen zum Instagram-Zweig.
 - [ ] Dry-Run-Gate blockiert `media_publish` in beiden Flows.
@@ -636,11 +682,11 @@ Die folgende Reihenfolge minimiert blockierende Zwischenstände:
 
 ### Phase 1: Lokale Assets und CTA-Renderer
 
-- [ ] Lokales Assetmodell und sichere Uploads.
-- [ ] Neue Buchfelder und UI.
-- [ ] 2.5D-Cover-Renderer.
-- [ ] CTA-Slide und Vorschau.
-- [ ] Python-Tests.
+- [x] Lokales Assetmodell und sichere Uploads.
+- [x] Neue Buchfelder und UI.
+- [x] 2.5D-Cover-Renderer.
+- [x] CTA-Slide und Vorschau.
+- [x] Python-Tests für Phase 1.
 
 **Fertig, wenn:** Ein Buch lokal vollständig für ein Carousel konfiguriert werden kann und ein reproduzierbares 1080 × 1350-CTA-JPEG entsteht.
 
@@ -659,6 +705,7 @@ Die folgende Reihenfolge minimiert blockierende Zwischenstände:
 - [ ] Satzsegmentierung und Slidebudget.
 - [ ] Hero-, Zitat- und CTA-Zweige.
 - [ ] Manifest und Medienhosting.
+- [ ] Privater Supabase-Upload, Signed-URL-Erzeugung und URL-Validierung.
 - [ ] Strukturchecks.
 
 **Fertig, wenn:** Ein manueller Dry-Run 3 bis 10 validierte, öffentlich erreichbare Slides in korrekter Reihenfolge erzeugt.
@@ -669,6 +716,7 @@ Die folgende Reihenfolge minimiert blockierende Zwischenstände:
 - [ ] Carousel als Telegram-Album senden.
 - [ ] Medienfreigabe und Retries anbinden.
 - [ ] Instagram-Child-/Parent-Erstellung.
+- [ ] Post-Publish-Cleanup mit `cleanup_pending`-Wiederaufnahme.
 - [ ] Review-Livetest.
 
 **Fertig, wenn:** Das vollständige Carousel nach zwei gültigen Freigaben genau einmal auf Instagram erscheint und die Nutzung gespeichert wird.
@@ -686,6 +734,7 @@ Die folgende Reihenfolge minimiert blockierende Zwischenstände:
 
 - [ ] Unterbrechungs- und Wiederaufnahmetests.
 - [ ] Medienbereinigung.
+- [ ] Tests für abgelaufene Signed URLs, `publish_uncertain` und fehlgeschlagenen Cleanup.
 - [ ] Dokumentation abschließen.
 - [ ] Auto-Workflow erst danach aktivieren.
 

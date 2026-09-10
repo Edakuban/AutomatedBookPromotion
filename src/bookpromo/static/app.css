@@ -95,10 +95,18 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 1rem; }
 .analysis-profile h3 { font-size: 1rem; margin-bottom: .4rem; }
 .settings-fields { padding: 1.3rem; }
 .settings-fields label { display: flex; flex-direction: column; gap: .4rem; margin: 1rem 0; }
-.settings-fields input, .settings-fields textarea { width: 100%; min-width: 0; padding: .6rem; font: inherit; border: 1px solid #a3afbd; border-radius: 4px; }
+.settings-fields input, .settings-fields textarea, .settings-fields select { width: 100%; min-width: 0; padding: .6rem; font: inherit; border: 1px solid #a3afbd; border-radius: 4px; background: #fff; }
 .settings-fields textarea { resize: vertical; word-break: normal; overflow-wrap: normal; }
 .settings-fields .checkbox-label { flex-direction: row; align-items: center; }
 .settings-fields input[type="checkbox"] { width: auto; }
+.asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; margin-top: 1rem; }
+.asset-card { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 6px; background: #fafbfc; }
+.asset-card h3 { margin-top: 0; }
+.asset-card > img { display: block; width: auto; max-width: 100%; height: 220px; object-fit: contain; margin: .8rem 0; background: repeating-conic-gradient(#edf0f4 0 25%, #fff 0 50%) 50% / 20px 20px; }
+.asset-card form { margin-top: 1rem; }
+.carousel-preview { margin: 1.5rem 0 0; }
+.carousel-preview img { display: block; width: min(100%, 432px); aspect-ratio: 4 / 5; object-fit: contain; border: 1px solid #a3afbd; background: #111923; }
+.carousel-preview figcaption { margin-top: .5rem; color: var(--muted); font-size: .875rem; }
 .quote-filters { display: flex; flex-wrap: wrap; gap: .6rem 1.1rem; margin: 1rem 0; }
 .quote-filters a[aria-current="page"] { font-weight: 700; text-decoration-thickness: 3px; }
 #openwebui-model-picker label { display: block; margin-top: 1rem; margin-bottom: .3rem; }
@@ -112,6 +120,7 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 1rem; }
   .page-heading, .upload-panel { align-items: flex-start; flex-direction: column; }
   .upload-panel { padding: 1.2rem; }
   .settings-grid { grid-template-columns: 1fr; }
+  .asset-grid { grid-template-columns: 1fr; }
   .chapter-row { grid-template-columns: 1fr; }
   .empty-state { padding: 2rem 1rem; }
   .site-footer { flex-wrap: wrap; justify-content: flex-start; padding-top: 1rem; padding-bottom: 1rem; }

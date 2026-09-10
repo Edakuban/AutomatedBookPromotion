@@ -2,13 +2,21 @@
 
 ## Bedienung
 
-Unter **Buch → Bucheinstellungen bearbeiten** stehen Titel, Autor, Zieladresse, Promotion-Vormerkung, Genre, Stimmung, interner Buchkontext, Bildprompt-Basis und Caption-Vorgaben. Die Einstellungsseite wird nicht automatisch neu geladen. Das Formular kann auch vor der KI-Analyse verwendet werden.
+Unter **Buch → Bucheinstellungen bearbeiten** stehen Titel, Autor, Zieladresse, Freigabemodus, Carousel-Aktivierung, Genre, Stimmung, interner Buchkontext, Bildprompt-Basis, Caption-Vorgaben und der Text für die Carousel-Schlussseite. Die Einstellungsseite wird nicht automatisch neu geladen. Das Formular kann auch vor der KI-Analyse verwendet werden.
 
 ## Bild-Overlay
 
 Die Einstellungen enthalten zusätzlich eine Auswahlliste der lokal installierten Schriftarten und eine Titelfarbe. Beim Speichern erzeugt das Tool ein transparentes PNG im Instagram-Hochformat 1080×1350 (4:5): Buchtitel links oben, mit leichtem Schatten für wechselnde Bildhintergründe. Der Kapitelname gehört bewusst nicht in diese Datei; n8n ergänzt die gespeicherte Kapitelposition rechts unten als `Kapitel X` in einer normalen Schrift. Ohne Schriftart bleibt das Overlay deaktiviert.
 
 Die PNG-Vorschau liegt nur in der lokalen Buchablage. Beim nächsten **Buchstand nach Supabase übertragen** rendert das Tool sie erneut und lädt sie in den privaten Bucket `book-promotion-assets`. Im Buchprofil steht `overlay_path`; n8n muss die Datei mit seinem Supabase-Credential laden. Der Bucket ist nicht öffentlich und enthält keine Buchtexte.
+
+## Carousel-Schlussseite
+
+Im Bereich **Carousel-Schlussseite** werden Frontcover und Logo getrennt von den Texteinstellungen hochgeladen. Erlaubt sind PNG, JPEG und WebP bis 10 MB. Pillow prüft den tatsächlichen Dateiinhalt, Pixelzahl und Mindestgröße, wendet die EXIF-Ausrichtung an und normalisiert gültige Dateien intern nach PNG. Für Logos empfiehlt sich ein transparentes PNG oder WebP; JPEG besitzt keinen transparenten Hintergrund. Jeder Upload besitzt eine eigene Revision, sodass ein veraltetes Browserfenster kein neueres Asset überschreiben kann.
+
+Aus dem Frontcover rendert Python einen optischen 2.5D-Buch-Mockup mit nahezu vollständig sichtbarer Front, leichter Perspektive, schmaler Papierkante rechts und unten sowie Schlagschatten. Die vollständige Schlussseite kombiniert diesen Mockup rechts mit dem frei gepflegten CTA-Text links, dem bestehenden Buchtitel-Overlay und dem Logo rechts unten. Der CTA-Text steht ohne Kasten frei auf dem dunklen Hintergrund; eine schmale vertikale Linie in der Titelfarbe verbindet ihn optisch mit der Covergestaltung. Der Text verwendet fest Arial, und überlange Einzelwörter erhalten beim Umbruch einen sichtbaren Trennstrich. Das Ergebnis ist ein RGB-JPEG mit exakt 1080×1350 Pixeln und höchstens 8 MiB. Der Digest berücksichtigt Cover, Logo, CTA-Text, Titel-Overlay, CTA-Schriftdatei und Renderer-Version; unveränderte Vorschauen werden aus dem lokalen Cache geladen.
+
+**Instagram-Carousel verwenden und für Promotion aktivieren** kann nur gespeichert werden, wenn Cover, Logo, CTA-Text und Overlay-Schrift vorhanden sind und die Schlussseite tatsächlich erfolgreich gerendert wurde. Es gibt keinen Rückfall auf einen Einzelbild-Post. Der Freigabemodus wird bereits lokal als **Telegram-Prüfung** oder **Automatisch veröffentlichen** gespeichert. Supabase-Sync und n8n werten die neuen Carousel-Daten erst nach den folgenden Implementierungsphasen aus.
 
 Ohne gespeichertes Profil erscheinen die aktuellen KI-Vorschläge als Vorbelegung. Nach dem ersten Speichern gehört das gesamte Profil der manuellen Verwaltung und bleibt bei neuen Analysen unverändert. Ein neues KI-Profil kann über **Aktuellen KI-Profilvorschlag zur Bearbeitung laden** angesehen, bearbeitet und ausdrücklich gespeichert werden. Dieser Aufruf liest nur; er ändert weder die Datenbank noch Titel, Autor, Zieladresse oder Promotion-Auswahl. Das Laden verlässt allerdings das aktuelle Formular und verwirft dessen ungespeicherte Eingaben.
 
@@ -33,13 +41,14 @@ Technisch sind dies `local_analysis_runs` mit `options_json.purpose = profile`; 
 `management.py` verwendet die bestehende private `uploads.sqlite3`:
 
 - `local_book_settings`: Buch-ID, Revisionsnummer, validierte Buchdaten als JSON und Änderungszeit. Der Titel wird in derselben Transaktion in `local_books` aktualisiert, damit Navigation und doppelte Uploads denselben Titel verwenden.
+- `local_book_assets`: Buch-ID, Assetart (`cover_front` oder `logo`), eigene Revision, ursprünglicher Anzeigename, normalisierte Metadaten, SHA-256 und privater relativer Dateipfad. Die Tabelle entsteht erst beim ersten Bild-Upload.
 - `local_quote_controls`: Buch-ID, Hash der Originalfundstelle, manuelle Sperre, Revision und Änderungszeit. Der Fundstellenhash enthält Buchversions-ID, ursprüngliche Absatz-IDs und exakten Zitattext. Modellwechsel und andere Analyseläufe verändern ihn nicht. Eine Kapitelumbenennung oder geänderte Kapitelgrenze hebt eine Sperre derselben Originalstelle nicht auf.
 
 Lesende Aufrufe legen keine Tabellen an. Beim ersten Speichern entstehen die zusätzlichen Tabellen automatisch. Schreibaktionen laufen in einer SQLite-Transaktion und verlangen den aktuellen Formularstand. Alte Profile, überholte Analysestände, Zitate aus anderen Kapiteln und gleichzeitig veränderte Sperren werden mit einem verständlichen Konflikt abgelehnt. Sperren alter Quellen bleiben gespeichert, werden aber nur auf passende aktuelle Originalstellen angewendet.
 
 Alle Änderungen verlangen die lokale Herkunft. Serverseitige Feldlängen und HTTP-/HTTPS-URL-Prüfung ergänzen die HTML-Formulare. Fehlerhafte Feldeingaben bleiben zur Korrektur sichtbar und werden nicht gespeichert. HTML wird bei der Anzeige maskiert. Neue API-Zugänge oder ENV-Einstellungen sind nicht nötig.
 
-Die Tests prüfen Speicherung über neue Store-Instanzen, doppelte Uploads, Profilübernahme nach erneuter Analyse, manuelle Sperren, ungeeignete Zitate, veraltete Revisionen, ungültige Zieladressen, Formularvalidierung, HTML-Maskierung, Filter und Herkunftsschutz.
+Die Tests prüfen zusätzlich PNG-/JPEG-/WebP-Uploads, EXIF-Ausrichtung, Byte- und Pixelgrenzen, sichere generierte Pfade, Assetrevisionen, atomaren Austausch, ungewöhnliche Coverformate, transparente Logos, CTA-Layout, Ausgabevalidierung, deterministische Digests, Cachetreffer und das vollständige Aktivierungs-Gate.
 
 ## Supabase und Nutzungshistorie
 
