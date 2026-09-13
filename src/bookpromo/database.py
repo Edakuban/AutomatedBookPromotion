@@ -1,5 +1,7 @@
 """Supabase Data and private Storage adapter; schema installation is never automatic."""
 
+import hashlib
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -9,12 +11,12 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from .config import Settings
 from .overlay import OVERLAY_BUCKET
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MESSAGES = {
     "disabled": "Supabase ist bis Schritt 3.2 deaktiviert.",
     "configuration": "Supabase-URL und Server-Schlüssel fehlen oder sind ungeeignet.",
     "credentials": "Supabase hat den Zugriff abgelehnt. Server-Schlüssel und Berechtigungen prüfen.",
-    "schema": "Das Datenbankschema fehlt oder passt nicht. Einrichtung in Schritt 3.2 prüfen.",
+    "schema": "Das Supabase-Schema ist nicht auf Carousel-Version 5. Bitte zuerst die vorbereitete v5-Migration einspielen.",
     "unavailable": "Supabase ist derzeit nicht erreichbar. Verbindung und Server prüfen.",
     "response": "Supabase hat eine unerwartete Antwort geliefert.",
     "conflict": "Supabase enthält einen neueren Stand oder einen offenen Post. Bitte den Datenbankstand prüfen und den offenen Post abschließen.",
@@ -89,11 +91,15 @@ class SupabaseRepository:
         except ValueError:
             raise DatabaseError("response") from None
 
-    async def upload_overlay(self, object_path: str, data: bytes) -> str:
-        """Upload a private object; n8n downloads it with its Supabase credential."""
-        if not object_path or len(data) > 1024 * 1024:
-            raise ValueError("Ungültiges Overlay")
-        headers = {**self._headers, "Content-Type": "image/png", "x-upsert": "true"}
+    async def _upload_book_asset(
+        self, object_path: str, data: bytes, *, content_type: str, limit: int, path_pattern: str,
+    ) -> str:
+        """Upload immutable digest-addressed data with idempotent retry semantics."""
+        match = re.fullmatch(path_pattern, object_path)
+        if (match is None or not data or len(data) > limit
+                or hashlib.sha256(data).hexdigest() != match.group("digest")):
+            raise ValueError("Ungültiges Buchasset")
+        headers = {**self._headers, "Content-Type": content_type, "x-upsert": "true"}
         try:
             async with httpx.AsyncClient(base_url=self._storage_url, headers=headers, timeout=30,
                 follow_redirects=False, trust_env=False, transport=self._transport) as client:
@@ -107,6 +113,24 @@ class SupabaseRepository:
         if not 200 <= response.status_code < 300:
             raise DatabaseError("unavailable")
         return object_path
+
+    async def upload_overlay(self, object_path: str, data: bytes) -> str:
+        """Upload a private transparent 4:5 title overlay."""
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("Ungültiges Overlay")
+        return await self._upload_book_asset(
+            object_path,data,content_type="image/png",limit=1024*1024,
+            path_pattern=r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/(?P<digest>[0-9a-f]{64})\.png",
+        )
+
+    async def upload_carousel_end_slide(self, object_path: str, data: bytes) -> str:
+        """Upload the deterministic private 4:5 CTA JPEG."""
+        if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
+            raise ValueError("Ungültige Carousel-Schlussseite")
+        return await self._upload_book_asset(
+            object_path,data,content_type="image/jpeg",limit=8*1024*1024,
+            path_pattern=r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/carousel/(?P<digest>[0-9a-f]{64})\.jpg",
+        )
 
     async def _read(self, relation: str, params: dict) -> list[dict]:
         try:
@@ -141,7 +165,9 @@ class SupabaseRepository:
             relations = {
                 "books": "id,current_version_id", "book_versions": "id,book_id,file_sha256",
                 "chapters": "id,book_version_id,source_text", "quotes": "id,chapter_id,source_start,source_end",
-                "import_jobs": "id,status,lease_expires_at", "posts": "id,quote_id,published_at,revision",
+                "import_jobs": "id,status,lease_expires_at",
+                "posts": "id,quote_id,published_at,revision,execution_mode,instagram_container_id",
+                "post_media": "post_id,manifest_revision,position,kind,storage_path,sha256,status,instagram_container_id",
                 "promotion_settings": "id,mode,fixed_book_id",
                 "book_overview": "id,title,chapter_count,quote_count,last_published_at",
                 "chapter_overview": "id,quote_count,usable_quote_count",

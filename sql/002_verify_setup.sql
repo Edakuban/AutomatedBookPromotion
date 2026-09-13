@@ -1,15 +1,15 @@
 -- Read-only post-installation checks for step 3.2 (run as postgres).
--- Expected current version: 2 (after all supabase/migrations files).
+-- Expected current version: 5 (after all supabase/migrations files).
 select version, installed_at from public.bookpromo_schema;
 
--- Expected: 8 rows, RLS true, anon/authenticated false, service_read true.
+-- Expected: 9 rows, RLS true, anon/authenticated false, service_read true.
 select c.relname as object, c.relrowsecurity as rls_enabled,
     has_table_privilege('anon', c.oid, 'select') as anon_read,
     has_table_privilege('authenticated', c.oid, 'select') as authenticated_read,
     has_table_privilege('service_role', c.oid, 'select') as service_read
 from pg_class c join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public' and c.relname in (
-    'bookpromo_schema','books','book_versions','chapters','quotes','import_jobs','posts','promotion_settings'
+    'bookpromo_schema','books','book_versions','chapters','quotes','import_jobs','posts','post_media','promotion_settings'
 )
 order by c.relname;
 
@@ -30,4 +30,14 @@ select p.proname,p.prosecdef,
  has_function_privilege('authenticated',p.oid,'execute') as authenticated_execute,
  has_function_privilege('service_role',p.oid,'execute') as service_execute
 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-where n.nspname='public' and p.proname in ('bookpromo_sync','bookpromo_reserve','bookpromo_transition');
+where n.nspname='public' and p.proname in (
+    'bookpromo_sync','bookpromo_reserve','bookpromo_transition',
+    'bookpromo_media_container','bookpromo_media_cleanup'
+);
+
+-- Expected: two private buckets with 8 MiB limits; temporary media is JPEG-only,
+-- durable book assets allow PNG overlays and JPEG CTA slides.
+select id, public, file_size_limit, allowed_mime_types
+from storage.buckets
+where id in ('book-promotion-assets', 'book-promotion-media')
+order by id;

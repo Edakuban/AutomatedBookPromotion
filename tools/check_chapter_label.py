@@ -23,9 +23,9 @@ def main():
     args = parser.parse_args()
     if not args.magick or not args.font.is_file():
         parser.error('ImageMagick and a readable Arial Regular font are required')
-    workflow = json.loads((ROOT / 'n8n/book-promotion.json').read_text(encoding='utf-8'))
+    workflow = json.loads((ROOT / 'n8n/book-promotion-review.json').read_text(encoding='utf-8'))
     nodes = {n['name']: n for n in workflow['nodes']}
-    node = nodes['Add chapter label']
+    node = nodes['Add hero chapter label']
     assert node['typeVersion'] == 1, 'n8n 2.35.4 only provides Edit Image v1'
     assert node['parameters']['operation'] == 'text', 'A default border operation cannot draw a label'
     assert not {'horizontalAlignment', 'verticalAlignment'} & node['parameters'].keys()
@@ -46,7 +46,7 @@ def main():
         input=json.dumps({'parameters': node['parameters'], 'cases': cases}),
         text=True, capture_output=True, check=True)
     params = json.loads(result.stdout)
-    panel = nodes['Chapter label panel']['parameters']
+    panel = nodes['Hero chapter panel']['parameters']
     left, top = panel['startPositionX'], panel['startPositionY']
     right, bottom = panel['endPositionX'], panel['endPositionY']
     centre = ((left + right) / 2, (top + bottom) / 2)

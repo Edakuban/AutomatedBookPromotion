@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from uuid import uuid4
 
 import httpx
@@ -100,8 +101,8 @@ def test_full_check_reads_all_objects_without_writes(settings):
         return httpx.Response(200, json=[{"version": SCHEMA_VERSION}] if seen[-1] == "bookpromo_schema" else [])
     repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
     asyncio.run(repo.check_schema(full=True))
-    assert len(seen) == 11
-    assert "posts" in seen and "quote_overview" in seen
+    assert len(seen) == 12
+    assert "posts" in seen and "post_media" in seen and "quote_overview" in seen
 
 
 def test_book_page_escapes_text_and_formats_berlin_time(settings):
@@ -130,16 +131,51 @@ def test_invalid_rows_are_not_rendered(settings):
 
 def test_upload_overlay_uses_private_write_and_returns_object_path(settings):
     payload = b"\x89PNG\r\n\x1a\nimage"
+    book_id = str(uuid4())
+    digest = hashlib.sha256(payload).hexdigest()
+    object_path = f"{book_id}/{digest}.png"
 
     def respond(request):
         assert request.method == "POST"
-        assert request.url.path == "/storage/v1/object/book-promotion-assets/book-id/title.png"
+        assert request.url.path == "/storage/v1/object/book-promotion-assets/" + object_path
         assert request.headers["apikey"] == "sb_secret_TEST_PRIVATE"
         assert request.headers["content-type"] == "image/png"
         assert request.headers["x-upsert"] == "true"
         assert request.content == payload
-        return httpx.Response(200, json={"Key": "book-id/title.png"})
+        return httpx.Response(200, json={"Key": object_path})
 
     repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
-    url = asyncio.run(repo.upload_overlay("book-id/title.png", payload))
-    assert url == "book-id/title.png"
+    url = asyncio.run(repo.upload_overlay(object_path, payload))
+    assert url == object_path
+
+
+def test_upload_carousel_end_slide_uses_jpeg_type_and_digest_path(settings):
+    payload = b"\xff\xd8carousel-jpeg\xff\xd9"
+    book_id = str(uuid4())
+    digest = hashlib.sha256(payload).hexdigest()
+    object_path = f"{book_id}/carousel/{digest}.jpg"
+
+    def respond(request):
+        assert request.method == "POST"
+        assert request.url.path == "/storage/v1/object/book-promotion-assets/" + object_path
+        assert request.headers["content-type"] == "image/jpeg"
+        assert request.headers["x-upsert"] == "true"
+        assert request.content == payload
+        return httpx.Response(200, json={"Key": object_path})
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    assert asyncio.run(repo.upload_carousel_end_slide(object_path, payload)) == object_path
+
+
+@pytest.mark.parametrize("kind,path,data", [
+    ("overlay", "../outside.png", b"\x89PNG\r\n\x1a\nimage"),
+    ("overlay", f"{uuid4()}/{'0' * 64}.png", b"\x89PNG\r\n\x1a\nimage"),
+    ("carousel", f"{uuid4()}/carousel/{'0' * 64}.jpg", b"not-a-jpeg"),
+])
+def test_private_asset_upload_rejects_invalid_path_digest_or_media(settings, kind, path, data):
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(
+        lambda request: pytest.fail("Invalid assets must not reach Storage")
+    ))
+    operation = repo.upload_overlay if kind == "overlay" else repo.upload_carousel_end_slide
+    with pytest.raises(ValueError):
+        asyncio.run(operation(path, data))

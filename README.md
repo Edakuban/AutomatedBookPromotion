@@ -1,14 +1,14 @@
 # Automated Book Promotion
 
-Schlichte lokale Verwaltung eigener Bücher mit einer FastAPI-Weboberfläche, Word-Import und KI-Zitatauswahl über Open WebUI. Supabase ist die gemeinsame Datenbasis; ein importierbarer n8n-Workflow übernimmt Texte, Bilder, getrennte Telegram-Freigaben und Instagram-Posts.
+Schlichte lokale Verwaltung eigener Bücher mit einer FastAPI-Weboberfläche, Word-Import und KI-Zitatauswahl über Open WebUI. Supabase ist die gemeinsame Datenbasis; zwei importierbare n8n-Workflows übernehmen Texte, Carousel-Bilder, optional getrennte Telegram-Freigaben und Instagram-Posts.
 
 ## Aktueller Stand
 
-**Schritte 1 bis 9 einschließlich 3.2 sind umgesetzt.** Supabase-Schema v4 ist angelegt und die Verbindung aktiviert und geprüft. Fertig analysierte Buchstände können ausdrücklich übertragen werden; Kapitelseiten zeigen danach den letzten bestätigten Post und Reservierungen. Der n8n-Export ist lokal geprüft und inaktiv vorbereitet. Credential-Zuordnung und ein vollständiger n8n-Live-Test stehen noch aus.
+**Lokale Assets, CTA-Renderer, Python-Sync, Supabase-Vertrag v5 sowie die lokalen Review- und Auto-Carousel-Exporte sind umgesetzt und strukturell getestet.** Das Zielprojekt läuft auf v5. Vor der Aktivierung stehen noch der n8n-Import sowie Review-Dry-Run und Livetest aus. Der bisherige Einzelbild-Export wurde ohne Kompatibilitätsschicht entfernt.
 
 Der Upload funktioniert ohne Supabase und legt lokale Buchprojekte an. Ein Klick auf das Buch zeigt Datei, Kapitelaufteilung, Kapitelübersicht und KI-Analyse. Den Text findest du innerhalb der Kapitel. Kapitelgrenzen lassen sich korrigieren und bestätigen. Anschließend lässt sich die KI-Analyse starten; fertige Zitate stehen auf den Kapitelseiten. Vorhandene Supabase-Bücher werden nach Aktivierung separat angezeigt.
 
-Einrichtung: [Supabase](sql/README.md), [Datenübertragung](docs/supabase-integration.md) und [n8n-Import mit Credentials und Testablauf](n8n/README.md). Importdatei: [book-promotion.json](n8n/book-promotion.json).
+Einrichtung: [Supabase](sql/README.md), [Datenübertragung](docs/supabase-integration.md) und [n8n-Import mit Credentials und Testablauf](n8n/README.md). Importdateien: [Review](n8n/book-promotion-review.json) und [Auto](n8n/book-promotion-auto.json).
 
 Der ausführliche Ablauf steht in [IMPLEMENTIERUNGSPLAN.md](IMPLEMENTIERUNGSPLAN.md).
 
@@ -152,7 +152,7 @@ Verifiziert mit automatisierten Tests einschließlich eines echten separaten Wor
 ## Buchprofile und Zitate verwalten (Schritt 9)
 
 - **Buch → Bucheinstellungen bearbeiten:** Titel, Autor, Zieladresse, Freigabemodus, Carousel-Aktivierung sowie Buchprofil, Bildprompt-Basis und Caption-Vorgaben bearbeiten und speichern. Unter **Bild-Overlay** eine lokale Schriftart und Titelfarbe wählen; die Seite rendert eine transparente 1080×1350-Vorschau mit dem Buchtitel links oben. Die Aktivierung startet noch keine Veröffentlichung.
-- **Carousel-Schlussseite:** Frontcover und Logo als PNG, JPEG oder WebP hochladen und einen CTA-Text pflegen. Python erzeugt aus dem Frontcover einen 2.5D-Buch-Mockup und daraus eine reproduzierbare 1080×1350-JPEG-Vorschau mit CTA-Text, Titel-Overlay und Logo. Die Promotion lässt sich erst aktivieren, wenn das vollständige Bild erfolgreich gerendert werden kann. Die Anbindung dieser neuen Carousel-Daten an Supabase und n8n folgt in den nächsten Implementierungsphasen.
+- **Carousel-Schlussseite:** Frontcover und Logo als PNG, JPEG oder WebP hochladen und einen CTA-Text pflegen. Python erzeugt aus dem Frontcover einen 2.5D-Buch-Mockup und daraus eine reproduzierbare 1080×1350-JPEG-Vorschau mit CTA-Text, Titel-Overlay und Logo. Die Promotion lässt sich erst aktivieren, wenn das vollständige Bild erfolgreich gerendert werden kann. Beim ausdrücklichen Buch-Sync rendert Python Overlay und Schlussseite erneut und lädt nur diese fertigen Assets digestbasiert in den privaten Supabase-Bucket; Frontcover und Logo bleiben lokal. Der aktuelle Python-Stand setzt Supabase-Schema v5 voraus.
 - **Profil mit KI ausfüllen:** Die acht Profilfelder mit je einem KI-Aufruf vorschlagen lassen. Ein passender gespeicherter Buchkontext wird wiederverwendet; nur fehlender Kontext wird aus dem Buchtext vorbereitet. Über „Vorschläge in die acht Profilfelder einsetzen“ ins Formular übernehmen, prüfen und speichern. Titel, Autor, Zieladresse und Promotion-Schalter bleiben manuell; Kapitel und bestehende Zitate bleiben erhalten. Der erste Lauf benötigt zusätzliche Kontextaufrufe; Wiederholungen mit vollständigem passendem Kontext nur die acht Feldaufrufe, zuzüglich möglicher Validierungswiederholungen.
 - Das erste Profil ist mit dem aktuellen KI-Vorschlag vorbelegt. Ein gespeichertes Profil bleibt bei erneuter Analyse unverändert. **Aktuellen KI-Profilvorschlag zur Bearbeitung laden** setzt einen neuen Vorschlag ins Formular; erst Speichern übernimmt ihn. Titel, Autor, Zieladresse und Promotion-Vormerkung bleiben dabei erhalten.
 - **Buch → Kapitel:** Zitate sperren oder die manuelle Sperre aufheben. Originaltext und KI-Bewertung bleiben schreibgeschützt. Ein ungeeignetes Zitat wird durch Entsperren nicht nutzbar.
@@ -161,7 +161,7 @@ Verifiziert mit automatisierten Tests einschließlich eines echten separaten Wor
 
 Die Verwaltung nutzt zusätzlich `local_book_settings`, `local_book_assets` und `local_quote_controls` in derselben privaten SQLite-Datei. Cover, Logo und gerenderte Carousel-Vorschauen liegen unter `data/book-assets/`. Es wird keine weitere Konfiguration benötigt. Nach dem Update eine laufende Anwendung neu starten. Details: [docs/book-management.md](docs/book-management.md).
 
-Bei aktiver Supabase-Verbindung werden Veröffentlichungszeiten und Reservierungen für übertragene Zitate geladen. Die zusätzlichen Filter **Unbenutzt** und **Verwendet** berücksichtigen nur bestätigte Datenbankstände. Der fertige n8n-Export setzt **Text erstellen → Telegram-Textfreigabe → Bild erstellen → Titel-Overlay und Kapitelmarke → Telegram-Bildfreigabe → Instagram-Post** um. Er startet täglich um 06:00 Uhr in Europe/Berlin; die Veröffentlichung bleibt für den ersten Test gesperrt. [Einrichtung und Testablauf](n8n/README.md).
+Bei aktiver Supabase-Verbindung werden Veröffentlichungszeiten und Reservierungen für übertragene Zitate geladen. Die zusätzlichen Filter **Unbenutzt** und **Verwendet** berücksichtigen nur bestätigte Datenbankstände. Die beiden n8n-Exporte erzeugen Hero, lesbare Zitat-Slides und CTA, speichern sie temporär privat in Supabase und veröffentlichen sie als Instagram-Carousel. Review wartet auf zwei Telegram-Freigaben; Auto nutzt die in v5 protokollierten automatischen Freigaben. Beide starten inaktiv und mit `publish_enabled:false`. [Einrichtung und Testablauf](n8n/README.md).
 
 ## Einstellungen
 

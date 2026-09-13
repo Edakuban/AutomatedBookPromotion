@@ -2,7 +2,7 @@
 
 Stand: 10.09.2026
 
-Implementierungsstand: Phase 1 (lokale Assets und CTA-Renderer) ist im Python-Projekt umgesetzt und getestet. Supabase-Sync, Schema und n8n bleiben bewusst für die folgenden Phasen offen.
+Implementierungsstand: Phase 1 und 2 sind umgesetzt, getestet und im Zielprojekt migriert. Review- und Auto-Carousel-Workflow sind lokal erzeugt und strukturell getestet; Import, Dry-Run und Livetest in n8n bleiben bewusst ausstehend.
 
 ## 1. Ziel und verbindliche Produktentscheidungen
 
@@ -239,18 +239,18 @@ Der bestehende explizite Buch-Sync bleibt die einzige Aktion, die lokale Assets 
 
 Aufgaben:
 
-- [ ] Vor dem Sync Titel-Overlay und CTA-Slide erneut aus dem aktuellen, revisionsgeschützten Stand rendern.
-- [ ] CTA-Slide in den privaten Bucket `book-promotion-assets` hochladen.
-- [ ] Digestbasierte Objektpfade verwenden, beispielsweise `<book_id>/carousel/<sha256>.jpg`.
-- [ ] `book.profile` beziehungsweise der Sync-Payload erhält:
+- [x] Vor dem Sync Titel-Overlay und CTA-Slide erneut aus dem aktuellen, revisionsgeschützten Stand rendern.
+- [x] CTA-Slide in den privaten Bucket `book-promotion-assets` hochladen.
+- [x] Digestbasierte Objektpfade verwenden, beispielsweise `<book_id>/carousel/<sha256>.jpg`.
+- [x] `book.profile` beziehungsweise der Sync-Payload erhält:
   - `overlay_path`
   - `publication_mode`
   - `carousel_end_text`
   - `carousel_end_slide_path`
-- [ ] Cover und Logo bleiben lokal; nur das fertig gerenderte CTA-Bild wird übertragen.
-- [ ] Der in `posts.book_profile` gespeicherte Snapshot muss diese Felder einfrieren, damit ein offener Entwurf durch spätere Buchänderungen nicht mutiert.
-- [ ] Größen-, MIME- und Pfadprüfungen im Repository analog zum vorhandenen Overlay-Upload ergänzen.
-- [ ] Schema-Version erhöhen und Fehlermeldung für einen veralteten Supabase-Stand ergänzen.
+- [x] Cover und Logo bleiben lokal; nur das fertig gerenderte CTA-Bild wird übertragen.
+- [x] Der in `posts.book_profile` gespeicherte Snapshot muss diese Felder einfrieren, damit ein offener Entwurf durch spätere Buchänderungen nicht mutiert.
+- [x] Größen-, MIME- und Pfadprüfungen im Repository analog zum vorhandenen Overlay-Upload ergänzen.
+- [x] Schema-Version erhöhen und Fehlermeldung für einen veralteten Supabase-Stand ergänzen.
 
 ## 7. Supabase: Schema und Zustandsautomat
 
@@ -266,9 +266,11 @@ posts.execution_mode       -- review | auto
 post_media
   id
   post_id                   -- FK posts(id)
+  manifest_revision         -- Revision, aus der dieses Manifest entstand
   position                  -- 0 bis 9
   kind                      -- hero | quote | cta
   text_fragment             -- nur für quote, optional
+  alt_text
   storage_path              -- privater, revisionsgebundener Objektpfad
   sha256
   signed_url_expires_at     -- optionales Auditfeld; URL selbst nicht speichern
@@ -281,22 +283,22 @@ post_media
 
 Constraints und Indizes:
 
-- [ ] `unique(post_id, position)`.
-- [ ] `unique(instagram_container_id)` für nichtleere Container-IDs.
-- [ ] Position zwischen 0 und 9.
-- [ ] Erlaubte `kind`- und `status`-Werte per Check-Constraint.
-- [ ] Genau ein Hero bei Position 0 und genau ein CTA am Ende durch RPC-Validierung sicherstellen.
-- [ ] Insgesamt 3 bis 10 Medien je vollständigem Manifest verlangen.
-- [ ] RLS, Grants und Trigger entsprechend den bestehenden Anwendungstabellen konfigurieren.
+- [x] `unique(post_id, position)`.
+- [x] `unique(instagram_container_id)` für nichtleere Container-IDs.
+- [x] Position zwischen 0 und 9.
+- [x] Erlaubte `kind`- und `status`-Werte per Check-Constraint.
+- [x] Genau ein Hero bei Position 0 und genau ein CTA am Ende durch RPC-Validierung sicherstellen.
+- [x] Insgesamt 3 bis 10 Medien je vollständigem Manifest verlangen.
+- [x] RLS, Grants und Trigger entsprechend den bestehenden Anwendungstabellen konfigurieren.
 
-- [ ] Vor der Bereinigung die Anzahl und IDs der zu löschenden Test-Posts protokollieren und gegen den erwarteten kleinen Testbestand prüfen.
-- [ ] Ausschließlich `posts` und direkt davon abhängige Veröffentlichungsdaten löschen; keine Buch- oder Zitatdaten bereinigen.
-- [ ] Die nicht mehr benötigte Spalte `posts.image_path` entfernen. Medien-URLs gehören ausschließlich in `post_media`.
-- [ ] Nicht mehr benötigte Einzelbild-Constraints, Transitionzweige und Indizes entfernen statt sie als Kompatibilitätsschicht fortzuführen.
-- [ ] `posts.instagram_container_id` speichert die Parent-Carousel-ID.
-- [ ] Einen privaten, ausschließlich serverseitig beschreibbaren Bucket `book-promotion-media` für temporäre Postmedien anlegen.
-- [ ] Objektpfade an Post-ID, Postrevision, Position und Digest binden, beispielsweise `<post_id>/<revision>/<position>-<sha256>.jpg`.
-- [ ] Das dauerhafte `book-promotion-assets` mit Titel-Overlay und CTA-Quelle strikt vom temporären Postmedien-Bucket trennen.
+- [x] Vor der Bereinigung die Anzahl und IDs der zu löschenden Test-Posts protokollieren und gegen den erwarteten kleinen Testbestand prüfen.
+- [x] Ausschließlich `posts` und direkt davon abhängige Veröffentlichungsdaten löschen; keine Buch- oder Zitatdaten bereinigen.
+- [x] Die nicht mehr benötigte Spalte `posts.image_path` entfernen. Medien-URLs gehören ausschließlich in `post_media`.
+- [x] Nicht mehr benötigte Einzelbild-Constraints, Transitionzweige und Indizes entfernen statt sie als Kompatibilitätsschicht fortzuführen.
+- [x] `posts.instagram_container_id` speichert die Parent-Carousel-ID.
+- [x] Einen privaten, ausschließlich serverseitig beschreibbaren Bucket `book-promotion-media` für temporäre Postmedien anlegen.
+- [x] Objektpfade an Post-ID, Postrevision, Position und Digest binden, beispielsweise `<post_id>/<revision>/<position>-<sha256>.jpg`.
+- [x] Das dauerhafte `book-promotion-assets` mit Titel-Overlay und CTA-Quelle strikt vom temporären Postmedien-Bucket trennen.
 
 ### 7.2 Reservierung
 
@@ -306,11 +308,11 @@ Constraints und Indizes:
 bookpromo_reserve(p_account, p_day, p_execution_mode)
 ```
 
-- [ ] Nur aktive Bücher mit passendem `publication_mode` auswählen.
-- [ ] `execution_mode` beim Post speichern.
-- [ ] Weiterhin höchstens einen offenen Post pro Konto zulassen.
-- [ ] Einen bereits offenen Post nur an den Workflow mit demselben `execution_mode` zurückgeben.
-- [ ] Bei einem offenen Post des anderen Modus einen eindeutigen Ausgang wie `blocked_by_other_mode` liefern.
+- [x] Nur aktive Bücher mit passendem `publication_mode` auswählen.
+- [x] `execution_mode` beim Post speichern.
+- [x] Weiterhin höchstens einen offenen Post pro Konto zulassen.
+- [x] Einen bereits offenen Post nur an den Workflow mit demselben `execution_mode` zurückgeben.
+- [x] Bei einem offenen Post des anderen Modus einen eindeutigen Ausgang wie `blocked_by_other_mode` liefern.
 
 ### 7.3 Transitionen
 
@@ -339,12 +341,12 @@ Automatische Freigaben werden eindeutig protokolliert, beispielsweise mit `appro
 
 ### 7.4 Atomare Medien-RPCs
 
-- [ ] Manifest und Child-Container nicht über ungeschützte Einzelupdates schreiben.
-- [ ] RPC zum Speichern eines vollständigen Medienmanifests mit Post-ID, Revision und Action-Token einführen oder in `bookpromo_transition` integrieren.
-- [ ] RPC zum einmaligen Speichern einer Child-Container-ID pro Position ergänzen.
-- [ ] Wiederholte identische Aufrufe idempotent beantworten.
-- [ ] Eine abweichende zweite Container-ID für dieselbe Position als Konflikt behandeln.
-- [ ] RPC für revisionsgeschütztes Markieren von `cleanup_pending` und bestätigtem `deleted` ergänzen; die eigentliche Storage-Löschung erfolgt über die serverseitigen n8n-Credentials.
+- [x] Manifest und Child-Container nicht über ungeschützte Einzelupdates schreiben.
+- [x] RPC zum Speichern eines vollständigen Medienmanifests mit Post-ID, Revision und Action-Token einführen oder in `bookpromo_transition` integrieren.
+- [x] RPC zum einmaligen Speichern einer Child-Container-ID pro Position ergänzen.
+- [x] Wiederholte identische Aufrufe idempotent beantworten.
+- [x] Eine abweichende zweite Container-ID für dieselbe Position als Konflikt behandeln.
+- [x] RPC für revisionsgeschütztes Markieren von `cleanup_pending` und bestätigtem `deleted` ergänzen; die eigentliche Storage-Löschung erfolgt über die serverseitigen n8n-Credentials.
 
 ## 8. n8n: gemeinsame Builder-Bausteine
 
@@ -620,35 +622,35 @@ Sicherheitsregeln:
 
 ### 17.2 Supabase/SQL
 
-- [ ] Migration auf leerem Schema und auf dem aktuellen Schema mit dem erwarteten kleinen Testbestand.
-- [ ] Die Migration entfernt ausschließlich Test-Posts und bewahrt Bücher, Kapitel, Zitate und Profile.
-- [ ] `post_media`-Constraints und RLS/Grants.
-- [ ] Review- und Auto-Transitionen.
-- [ ] Automatische Freigaben sind eindeutig als solche gespeichert.
-- [ ] Falscher Modus kann keinen vorhandenen Entwurf übernehmen.
-- [ ] Idempotentes erneutes Speichern derselben Child-ID.
-- [ ] Konflikt bei abweichender zweiter Child-ID.
-- [ ] Manifest mit 2 oder 11 Elementen wird abgelehnt.
-- [ ] Retry entfernt beziehungsweise entwertet veraltete Medienzustände.
-- [ ] `publish_uncertain` bewahrt alle IDs.
-- [ ] `publish_uncertain` bewahrt außerdem sämtliche privaten Storage-Objekte.
-- [ ] `published` wird vor dem Storage-Cleanup gespeichert; ein Cleanup-Fehler ändert den Publish-Erfolg nicht.
-- [ ] Wiederholter Cleanup ist idempotent und löscht niemals das dauerhafte Buchasset.
+- [x] Migration auf leerem Schema und auf dem aktuellen Schema mit dem erwarteten kleinen Testbestand.
+- [x] Die Migration entfernt ausschließlich Test-Posts und bewahrt Bücher, Kapitel, Zitate und Profile.
+- [x] `post_media`-Constraints und RLS/Grants.
+- [x] Review- und Auto-Transitionen.
+- [x] Automatische Freigaben sind eindeutig als solche gespeichert.
+- [x] Falscher Modus kann keinen vorhandenen Entwurf übernehmen.
+- [x] Idempotentes erneutes Speichern derselben Child-ID.
+- [x] Konflikt bei abweichender zweiter Child-ID.
+- [x] Manifest mit 2 oder 11 Elementen wird abgelehnt.
+- [x] Retry entfernt beziehungsweise entwertet veraltete Medienzustände.
+- [x] `publish_uncertain` bewahrt alle IDs.
+- [x] `publish_uncertain` bewahrt außerdem sämtliche privaten Storage-Objekte.
+- [x] `published` wird vor dem Storage-Cleanup gespeichert; ein Cleanup-Fehler ändert den Publish-Erfolg nicht.
+- [x] Wiederholter Cleanup ist idempotent und löscht niemals das dauerhafte Buchasset.
 
 ### 17.3 n8n-Strukturchecks
 
-- [ ] Beide JSON-Exporte werden reproduzierbar aus dem Builder erzeugt.
-- [ ] Keine Secrets oder privaten Credentials im Export.
-- [ ] Review enthält beide Telegram-Freigabestufen.
-- [ ] Auto enthält keine wartenden Telegram-Nodes.
-- [ ] Beide verwenden identische Carousel-Render- und Instagram-Bausteine.
-- [ ] Nur Parent-Container enthält Caption und `is_ai_generated`.
-- [ ] Kein Drittanbieter-Upload ist mehr enthalten; Upload, Signed URL und Delete verwenden ausschließlich Supabase Storage.
-- [ ] Signed URLs werden nicht im Workflow-Export oder in persistierten Medienzeilen abgelegt.
-- [ ] Storage-Cleanup ist ausschließlich hinter einer bestätigten `published`-Transition erreichbar.
-- [ ] Alle Child-Container enthalten `is_carousel_item=true`.
-- [ ] Maximal zehn Manifestelemente gelangen zum Instagram-Zweig.
-- [ ] Dry-Run-Gate blockiert `media_publish` in beiden Flows.
+- [x] Beide JSON-Exporte werden reproduzierbar aus dem Builder erzeugt.
+- [x] Keine Secrets oder privaten Credentials im Export.
+- [x] Review enthält beide Telegram-Freigabestufen.
+- [x] Auto enthält keine wartenden Telegram-Nodes.
+- [x] Beide verwenden identische Carousel-Render- und Instagram-Bausteine.
+- [x] Nur Parent-Container enthält Caption und `is_ai_generated`.
+- [x] Kein Drittanbieter-Upload ist mehr enthalten; Upload, Signed URL und Delete verwenden ausschließlich Supabase Storage.
+- [x] Signed URLs werden nicht im Workflow-Export oder in persistierten Medienzeilen abgelegt.
+- [x] Post-Publish-Cleanup ist ausschließlich hinter einer bestätigten `published`-Transition erreichbar.
+- [x] Alle Child-Container enthalten `is_carousel_item=true`.
+- [x] Maximal zehn Manifestelemente gelangen zum Instagram-Zweig.
+- [x] Dry-Run-Gate blockiert `media_publish` in beiden Flows.
 
 ## 18. Manueller Testplan
 
@@ -692,40 +694,40 @@ Die folgende Reihenfolge minimiert blockierende Zwischenstände:
 
 ### Phase 2: Sync und Supabase-Vertrag
 
-- [ ] Asset-Sync und Profilfelder.
-- [ ] Supabase-Migration mit `execution_mode` und `post_media`.
-- [ ] Modeabhängige Reservierung und Transitionen.
-- [ ] SQL- und Integrationstests.
+- [x] Asset-Sync und Profilfelder.
+- [x] Supabase-Migration mit `execution_mode` und `post_media`.
+- [x] Modeabhängige Reservierung und Transitionen.
+- [x] SQL- und Integrationstests.
 
 **Fertig, wenn:** Review- und Auto-Entwürfe mit einem unveränderlichen Carousel-Profil-Snapshot reserviert und atomar fortgeschrieben werden können.
 
 ### Phase 3: Gemeinsame n8n-Carousel-Erzeugung
 
-- [ ] 4:5-Normalisierung.
-- [ ] Satzsegmentierung und Slidebudget.
-- [ ] Hero-, Zitat- und CTA-Zweige.
-- [ ] Manifest und Medienhosting.
-- [ ] Privater Supabase-Upload, Signed-URL-Erzeugung und URL-Validierung.
-- [ ] Strukturchecks.
+- [x] 4:5-Normalisierung.
+- [x] Satzsegmentierung und Slidebudget.
+- [x] Hero-, Zitat- und CTA-Zweige.
+- [x] Manifest und Medienhosting.
+- [x] Privater Supabase-Upload, Signed-URL-Erzeugung und URL-Validierung.
+- [x] Strukturchecks.
 
 **Fertig, wenn:** Ein manueller Dry-Run 3 bis 10 validierte, öffentlich erreichbare Slides in korrekter Reihenfolge erzeugt.
 
 ### Phase 4: Review-Workflow
 
-- [ ] Telegram-Textfreigabe anbinden.
-- [ ] Carousel als Telegram-Album senden.
-- [ ] Medienfreigabe und Retries anbinden.
-- [ ] Instagram-Child-/Parent-Erstellung.
-- [ ] Post-Publish-Cleanup mit `cleanup_pending`-Wiederaufnahme.
+- [x] Telegram-Textfreigabe anbinden.
+- [x] Carousel als Telegram-Album senden.
+- [x] Medienfreigabe und Retries anbinden.
+- [x] Instagram-Child-/Parent-Erstellung.
+- [x] Post-Publish-Cleanup mit `cleanup_pending`-Wiederaufnahme.
 - [ ] Review-Livetest.
 
 **Fertig, wenn:** Das vollständige Carousel nach zwei gültigen Freigaben genau einmal auf Instagram erscheint und die Nutzung gespeichert wird.
 
 ### Phase 5: Auto-Workflow
 
-- [ ] Auto-Orchestrierung aus denselben Builder-Bausteinen erzeugen.
-- [ ] Automatische Freigaben und strenge Gates.
-- [ ] Telegram-Erfolgs-/Fehlermeldung.
+- [x] Auto-Orchestrierung aus denselben Builder-Bausteinen erzeugen.
+- [x] Automatische Freigaben und strenge Gates.
+- [x] Telegram-Erfolgs-/Fehlermeldung.
 - [ ] Dry-Run und kontrollierter Livetest.
 
 **Fertig, wenn:** Ein dafür konfiguriertes Buch ohne Benutzereingriff veröffentlicht wird und jeder Fehler vor beziehungsweise nach einem externen Seiteneffekt korrekt unterscheidbar bleibt.
