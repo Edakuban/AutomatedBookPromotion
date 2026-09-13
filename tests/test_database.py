@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 from uuid import uuid4
 
@@ -127,6 +128,135 @@ def test_invalid_rows_are_not_rendered(settings):
     with pytest.raises(DatabaseError) as exc:
         asyncio.run(repo.list_books())
     assert "PRIVATE_VALUE" not in str(exc.value)
+
+
+def test_promotion_settings_and_eligible_books_are_read(settings):
+    settings_id, book_id = uuid4(), uuid4()
+    updated_at = "2026-09-13T08:15:00+00:00"
+
+    def respond(request):
+        relation = request.url.path.rsplit("/", 1)[-1]
+        if relation == "promotion_settings":
+            assert request.url.params["limit"] == "2"
+            return httpx.Response(200, json=[{
+                "id": str(settings_id), "active": True, "mode": "fixed_book",
+                "fixed_book_id": str(book_id), "updated_at": updated_at,
+            }])
+        assert relation == "book_overview"
+        assert request.url.params["active"] == "eq.true"
+        return httpx.Response(200, json=[{"id": str(book_id), "title": "Sonderbuch", "author": "Autorin"}])
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    promotion = asyncio.run(repo.get_promotion_settings())
+    books = asyncio.run(repo.list_promotion_books())
+    assert promotion is not None and promotion.fixed_book_id == book_id
+    assert books[0].title == "Sonderbuch"
+
+
+def test_promotion_settings_update_is_validated_and_optimistic(settings):
+    settings_id, book_id = uuid4(), uuid4()
+    revision = datetime(2026, 9, 13, 8, 15, tzinfo=timezone.utc)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.method == "GET":
+            assert request.url.params["id"] == f"eq.{book_id}"
+            assert request.url.params["active"] == "eq.true"
+            return httpx.Response(200, json=[{"id": str(book_id)}])
+        assert request.method == "PATCH"
+        assert request.headers["prefer"] == "return=representation"
+        assert request.url.params["id"] == f"eq.{settings_id}"
+        assert request.url.params["updated_at"] == "eq.2026-09-13T08:15:00+00:00"
+        assert request.url.params["select"] == "id,active,mode,fixed_book_id,updated_at"
+        assert request.content == ('{"mode":"fixed_book","fixed_book_id":"' + str(book_id) + '"}').encode()
+        return httpx.Response(200, json=[{
+            "id": str(settings_id), "active": True, "mode": "fixed_book",
+            "fixed_book_id": str(book_id), "updated_at": "2026-09-13T08:16:00+00:00",
+        }])
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    saved = asyncio.run(repo.update_promotion_settings(settings_id, revision, "fixed_book", book_id))
+    assert saved.fixed_book_id == book_id and len(requests) == 2
+
+
+def test_promotion_settings_update_rejects_stale_revision(settings):
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=[])
+    ))
+    with pytest.raises(DatabaseError) as exc:
+        asyncio.run(repo.update_promotion_settings(
+            uuid4(), datetime(2026, 9, 13, tzinfo=timezone.utc), "random_book", None,
+        ))
+    assert exc.value.code == "conflict"
+
+
+def test_promotion_selection_can_be_changed_on_settings_page(settings):
+    settings_id, book_id = uuid4(), uuid4()
+    state = {
+        "id": str(settings_id), "active": True, "mode": "random_book",
+        "fixed_book_id": None, "updated_at": "2026-09-13T08:15:00+00:00",
+    }
+
+    def respond(request):
+        relation = request.url.path.rsplit("/", 1)[-1]
+        if relation == "bookpromo_schema":
+            return httpx.Response(200, json=[{"version": SCHEMA_VERSION}])
+        if relation == "promotion_settings":
+            if request.method == "PATCH":
+                payload = __import__("json").loads(request.content)
+                state.update(payload, updated_at="2026-09-13T08:16:00+00:00")
+            return httpx.Response(200, json=[state])
+        if request.url.params.get("select") == "id":
+            return httpx.Response(200, json=[{"id": str(book_id)}])
+        return httpx.Response(200, json=[{"id": str(book_id), "title": "Sonderbuch", "author": "Autorin"}])
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    with TestClient(create_app(settings, repository=repo, start_worker=False), base_url="http://127.0.0.1:8000") as client:
+        page = client.get("/settings")
+        assert page.status_code == 200
+        assert "Zufällig aus allen aktivierten Büchern" in page.text
+        assert "Sonderbuch · Autorin" in page.text
+        assert f'name="revision" value="{state["updated_at"]}"' in page.text
+
+        blocked = client.post("/settings/promotion", data={
+            "settings_id": str(settings_id), "revision": state["updated_at"],
+            "mode": "fixed_book", "fixed_book_id": str(book_id),
+        }, headers={"Origin": "https://foreign.example"})
+        assert blocked.status_code == 403 and state["mode"] == "random_book"
+
+        saved = client.post("/settings/promotion", data={
+            "settings_id": str(settings_id), "revision": state["updated_at"],
+            "mode": "fixed_book", "fixed_book_id": str(book_id),
+        })
+        assert saved.status_code == 200
+        assert "Buchauswahl gespeichert" in saved.text
+        assert state["mode"] == "fixed_book" and state["fixed_book_id"] == str(book_id)
+
+
+def test_fixed_promotion_requires_an_eligible_book(settings):
+    settings_id = uuid4()
+    state = {
+        "id": str(settings_id), "active": True, "mode": "random_book",
+        "fixed_book_id": None, "updated_at": "2026-09-13T08:15:00+00:00",
+    }
+
+    def respond(request):
+        relation = request.url.path.rsplit("/", 1)[-1]
+        if relation == "bookpromo_schema":
+            return httpx.Response(200, json=[{"version": SCHEMA_VERSION}])
+        if relation == "promotion_settings":
+            return httpx.Response(200, json=[state])
+        return httpx.Response(200, json=[])
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    with TestClient(create_app(settings, repository=repo, start_worker=False), base_url="http://127.0.0.1:8000") as client:
+        response = client.post("/settings/promotion", data={
+            "settings_id": str(settings_id), "revision": state["updated_at"],
+            "mode": "fixed_book", "fixed_book_id": "",
+        })
+        assert response.status_code == 400
+        assert "muss ein Buch ausgewählt werden" in response.text
 
 
 def test_upload_overlay_uses_private_write_and_returns_object_path(settings):

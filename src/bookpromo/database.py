@@ -49,6 +49,22 @@ class QuoteUsage(BaseModel):
     reserved: bool
 
 
+class PromotionSettings(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+    id: UUID
+    active: bool
+    mode: Literal["fixed_book", "random_book"]
+    fixed_book_id: UUID | None
+    updated_at: AwareDatetime
+
+
+class PromotionBook(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+    id: UUID
+    title: str
+    author: str
+
+
 class SupabaseRepository:
     def __init__(self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None):
         if not settings.supabase_enabled:
@@ -156,6 +172,32 @@ class SupabaseRepository:
             raise DatabaseError("response")
         return value
 
+    async def _patch(self, relation: str, params: dict, payload: dict) -> list[dict]:
+        headers = {**self._headers, "Prefer": "return=representation", "Content-Type": "application/json"}
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._url, headers=headers, timeout=httpx.Timeout(10.0, connect=5.0),
+                follow_redirects=False, trust_env=False, transport=self._transport,
+            ) as client:
+                response = await client.patch(relation, params=params, json=payload)
+        except httpx.HTTPError:
+            raise DatabaseError("unavailable") from None
+        if response.status_code in (401, 403):
+            raise DatabaseError("credentials")
+        if response.status_code == 409:
+            raise DatabaseError("conflict")
+        if response.status_code in (400, 404):
+            raise DatabaseError("schema")
+        if not 200 <= response.status_code < 300:
+            raise DatabaseError("unavailable")
+        try:
+            value = response.json()
+        except ValueError:
+            raise DatabaseError("response") from None
+        if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+            raise DatabaseError("response")
+        return value
+
     async def check_schema(self, *, full: bool = False) -> None:
         rows = await self._read("bookpromo_schema", {"select": "version", "limit": "2"})
         if len(rows) != 1 or type(rows[0].get("version")) is not int or rows[0]["version"] != SCHEMA_VERSION:
@@ -189,6 +231,56 @@ class SupabaseRepository:
         except ValidationError:
             raise DatabaseError("response") from None
         return books, len(rows) > page_size
+
+    async def get_promotion_settings(self) -> PromotionSettings | None:
+        rows = await self._read("promotion_settings", {
+            "select": "id,active,mode,fixed_book_id,updated_at", "order": "created_at.asc,id.asc", "limit": "2",
+        })
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise DatabaseError("response")
+        try:
+            return PromotionSettings.model_validate(rows[0])
+        except ValidationError:
+            raise DatabaseError("response") from None
+
+    async def list_promotion_books(self) -> list[PromotionBook]:
+        rows = await self._read("book_overview", {
+            "select": "id,title,author", "active": "eq.true", "order": "title.asc,id.asc", "limit": "501",
+        })
+        if len(rows) > 500:
+            raise DatabaseError("response")
+        try:
+            return [PromotionBook.model_validate(row) for row in rows]
+        except ValidationError:
+            raise DatabaseError("response") from None
+
+    async def update_promotion_settings(
+        self, settings_id: UUID, updated_at: AwareDatetime, mode: Literal["fixed_book", "random_book"],
+        fixed_book_id: UUID | None,
+    ) -> PromotionSettings:
+        if mode == "fixed_book":
+            if fixed_book_id is None:
+                raise ValueError("Für die feste Promotion muss ein Buch ausgewählt werden.")
+            eligible = await self._read("book_overview", {
+                "select": "id", "id": f"eq.{fixed_book_id}", "active": "eq.true", "limit": "1",
+            })
+            if len(eligible) != 1 or eligible[0].get("id") != str(fixed_book_id):
+                raise ValueError("Das ausgewählte Buch ist nicht für die Promotion aktiviert oder nicht mehr vorhanden.")
+        else:
+            fixed_book_id = None
+
+        rows = await self._patch("promotion_settings", {
+            "id": f"eq.{settings_id}", "updated_at": f"eq.{updated_at.isoformat()}",
+            "select": "id,active,mode,fixed_book_id,updated_at",
+        }, {"mode": mode, "fixed_book_id": str(fixed_book_id) if fixed_book_id else None})
+        if len(rows) != 1:
+            raise DatabaseError("conflict")
+        try:
+            return PromotionSettings.model_validate(rows[0])
+        except ValidationError:
+            raise DatabaseError("response") from None
 
     async def quote_usage(self, ids: list[str]) -> dict[str, QuoteUsage]:
         if not ids: return {}

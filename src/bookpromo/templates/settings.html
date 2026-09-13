@@ -36,9 +36,46 @@
     </div>
     <noscript><p>Für Modellwahl und Verbindungstest in dieser Ansicht bitte JavaScript aktivieren. Alternativ steht der CLI-Befehl check-openwebui zur Verfügung.</p></noscript>
   </section>
-  <section class="panel next-settings" aria-labelledby="promotion-title">
-    <h2 id="promotion-title">Promotion</h2>
-    <p>Die Auswahl zwischen einem festen Buch und zufälligen Büchern folgt mit der n8n-Anbindung.</p>
-    <p class="muted">Bilder, Begleittexte und die Telegram-Freigabe werden später in n8n verarbeitet.</p>
+  <section class="panel next-settings" id="promotion" aria-labelledby="promotion-title">
+    <div class="panel-heading promotion-heading">
+      <h2 id="promotion-title">Buchauswahl für den täglichen Flow</h2>
+      {% if promotion %}<span class="badge {% if promotion.active %}badge-ready{% endif %}">{{ 'Flow aktiv' if promotion.active else 'Flow pausiert' }}</span>{% endif %}
+    </div>
+    {% if promotion_saved %}<p class="notice" role="status">Buchauswahl gespeichert. Der nächste neue Entwurf verwendet diese Einstellung.</p>{% endif %}
+    {% if promotion_form_error %}<p class="notice error" role="alert">{{ promotion_form_error }}</p>{% endif %}
+    {% if promotion_error %}
+      <p class="notice error">Die Promotion-Einstellung konnte nicht geladen werden: {{ promotion_error }}</p>
+    {% elif not database_enabled %}
+      <p>Richte zuerst den Supabase-Zugriff ein und aktiviere ihn. Danach kannst du die globale Buchauswahl hier ändern.</p>
+    {% elif not promotion %}
+      <p>In Supabase ist noch kein Instagram-Konto unter <code>promotion_settings</code> eingerichtet. Lege zuerst die n8n-Grundkonfiguration an.</p>
+    {% else %}
+      <form method="post" action="{{ url_for('save_promotion_settings') }}" class="settings-fields promotion-settings-form">
+        <input type="hidden" name="settings_id" value="{{ promotion.id }}">
+        <input type="hidden" name="revision" value="{{ promotion.updated_at.isoformat() }}">
+        <fieldset>
+          <legend>Welche Bücher dürfen berücksichtigt werden?</legend>
+          <label class="radio-label">
+            <input type="radio" name="mode" value="random_book" {% if promotion_form.mode == 'random_book' %}checked{% endif %}>
+            <span><strong>Zufällig aus allen aktivierten Büchern</strong><small>Jedes geeignete Buch hat die gleiche Chance. Pausierte Bücher werden übersprungen.</small></span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="mode" value="fixed_book" {% if promotion_form.mode == 'fixed_book' %}checked{% endif %} {% if not promotion_books %}disabled{% endif %}>
+            <span><strong>Nur ein bestimmtes Buch</strong><small>Geeignet für eine zeitlich begrenzte Sonderpromotion.</small></span>
+          </label>
+        </fieldset>
+        <label for="fixed-book">Buch für die Sonderpromotion
+          <select id="fixed-book" name="fixed_book_id">
+            <option value="">Bitte auswählen</option>
+            {% for book in promotion_books %}
+              <option value="{{ book.id }}" {% if promotion_form.fixed_book_id == book.id|string %}selected{% endif %}>{{ book.title }}{% if book.author %} · {{ book.author }}{% endif %}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% if not promotion_books %}<p class="muted small">Noch kein nach Supabase übertragenes Buch ist für die Promotion aktiviert.</p>{% endif %}
+        <p class="muted small">Die Änderung betrifft neue Reservierungen. Ein bereits offener Entwurf wird zuerst abgeschlossen oder verworfen.</p>
+        <div class="form-actions"><button type="submit">Buchauswahl speichern</button></div>
+      </form>
+    {% endif %}
   </section>
 {% endblock %}

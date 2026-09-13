@@ -99,6 +99,14 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 1rem; }
 .settings-fields textarea { resize: vertical; word-break: normal; overflow-wrap: normal; }
 .settings-fields .checkbox-label { flex-direction: row; align-items: center; }
 .settings-fields input[type="checkbox"] { width: auto; }
+.promotion-heading { margin: -1.3rem -1.3rem 1.3rem; }
+.next-settings .promotion-heading h2 { margin: 0; }
+.promotion-settings-form fieldset { margin: 1rem 0; padding: .3rem 1rem; border: 1px solid var(--border); border-radius: 6px; }
+.promotion-settings-form legend { padding: 0 .35rem; font-weight: 600; }
+.settings-fields .radio-label { flex-direction: row; align-items: flex-start; gap: .7rem; padding: .65rem 0; }
+.settings-fields .radio-label input { width: auto; margin-top: .3rem; }
+.radio-label span { display: flex; flex-direction: column; gap: .15rem; }
+.radio-label small { color: var(--muted); }
 .asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; margin-top: 1rem; }
 .asset-card { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 6px; background: #fafbfc; }
 .asset-card h3 { margin-top: 0; }

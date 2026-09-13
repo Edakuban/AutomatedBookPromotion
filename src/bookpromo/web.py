@@ -3,6 +3,7 @@
 from pathlib import Path
 from contextlib import asynccontextmanager
 import asyncio
+from datetime import datetime
 import sqlite3
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -515,8 +516,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             context={"active_page": "books", "error_title": "Upload oder Buchablage nicht verfügbar",
                      "error_message": str(exc)}, status_code=exc.status)
 
-    @app.get("/settings", response_class=HTMLResponse, name="settings")
-    async def settings_page(request: Request):
+    async def settings_context(*, promotion_saved=False, promotion_form=None, promotion_form_error=None):
         # Only safe presence flags cross the template boundary. Never pass Settings.
         services = [
             {
@@ -537,9 +537,79 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 )),
             )
         ]
+        promotion, promotion_books, promotion_error = None, [], None
+        if settings.supabase_enabled or repository is not None:
+            try:
+                db = repository or SupabaseRepository(settings)
+                await db.check_schema()
+                promotion = await db.get_promotion_settings()
+                promotion_books = await db.list_promotion_books()
+            except DatabaseError as exc:
+                promotion_error = str(exc)
+        if promotion_form is None and promotion is not None:
+            promotion_form = {
+                "mode": promotion.mode,
+                "fixed_book_id": str(promotion.fixed_book_id) if promotion.fixed_book_id else "",
+            }
+        return {
+            "active_page": "settings", "services": services,
+            "database_enabled": settings.supabase_enabled or repository is not None,
+            "promotion": promotion, "promotion_books": promotion_books,
+            "promotion_error": promotion_error, "promotion_form": promotion_form or {},
+            "promotion_saved": promotion_saved, "promotion_form_error": promotion_form_error,
+        }
+
+    @app.get("/settings", response_class=HTMLResponse, name="settings")
+    async def settings_page(request: Request, promotion_saved: bool = False):
         return templates.TemplateResponse(
             request=request, name="settings.html",
-            context={"active_page": "settings", "services": services, "database_enabled": settings.supabase_enabled},
+            context=await settings_context(promotion_saved=promotion_saved),
+        )
+
+    @app.post("/settings/promotion", response_class=HTMLResponse, name="save_promotion_settings")
+    async def save_promotion_settings(request: Request):
+        require_local_origin(request)
+        form_values = {}
+        try:
+            async with request.form(max_files=0, max_fields=4) as form:
+                required = {"settings_id", "revision", "mode", "fixed_book_id"}
+                if set(form) != required or any(
+                    len(form.getlist(name)) != 1 or not isinstance(form[name], str) for name in required
+                ):
+                    raise ValueError("Bitte das vollständige Promotion-Formular verwenden.")
+                form_values = {name: form[name] for name in required}
+            if form_values["mode"] not in {"random_book", "fixed_book"}:
+                raise ValueError("Bitte eine gültige Buchauswahl wählen.")
+            settings_id = UUID(form_values["settings_id"])
+            if len(form_values["revision"]) > 64:
+                raise ValueError("Die Einstellungsseite ist veraltet. Bitte neu laden.")
+            revision = datetime.fromisoformat(form_values["revision"])
+            if revision.tzinfo is None or revision.utcoffset() is None:
+                raise ValueError("Die Einstellungsseite ist veraltet. Bitte neu laden.")
+            fixed_book_id = UUID(form_values["fixed_book_id"]) if form_values["fixed_book_id"] else None
+            db = repository or SupabaseRepository(settings)
+            await db.update_promotion_settings(settings_id, revision, form_values["mode"], fixed_book_id)
+        except ValueError as exc:
+            context = await settings_context(
+                promotion_form={
+                    "mode": form_values.get("mode", "random_book"),
+                    "fixed_book_id": form_values.get("fixed_book_id", ""),
+                },
+                promotion_form_error=str(exc),
+            )
+            return templates.TemplateResponse(request=request, name="settings.html", context=context, status_code=400)
+        except DatabaseError as exc:
+            context = await settings_context(
+                promotion_form={
+                    "mode": form_values.get("mode", "random_book"),
+                    "fixed_book_id": form_values.get("fixed_book_id", ""),
+                },
+                promotion_form_error=str(exc),
+            )
+            status = 409 if exc.code == "conflict" else 503
+            return templates.TemplateResponse(request=request, name="settings.html", context=context, status_code=status)
+        return RedirectResponse(
+            str(request.url_for("settings")) + "?promotion_saved=true#promotion", status_code=303,
         )
 
     @app.get("/health", include_in_schema=False)
