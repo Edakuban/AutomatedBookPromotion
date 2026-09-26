@@ -4,7 +4,9 @@
   <p class="breadcrumb"><a href="{{ url_for('local_book', book_id=book.id) }}">← {{ book.title }}</a></p>
   <h1>Bucheinstellungen</h1>
   <p class="intro">Buchdaten und Vorgaben für die spätere Promotion. Gespeicherte Änderungen bleiben bei einer neuen KI-Analyse erhalten.</p>
-  {% if saved %}<p class="notice" role="status">Bucheinstellungen gespeichert.</p>{% endif %}
+  {% if promotion_missing %}
+    <p class="notice" role="status">Bucheinstellungen gespeichert. Die Promotion bleibt deaktiviert. Bitte zuerst: {{ promotion_missing | join(', ') }}.</p>
+  {% elif saved %}<p class="notice" role="status">Bucheinstellungen gespeichert.</p>{% endif %}
   {% if asset_saved == 'cover_front' %}<p class="notice" role="status">Frontcover gespeichert.</p>{% endif %}
   {% if asset_saved == 'logo' %}<p class="notice" role="status">Logo gespeichert.</p>{% endif %}
   {% if form_error %}<p class="notice" role="alert">{{ form_error }}</p>{% endif %}
@@ -45,7 +47,7 @@
         </select>
       </label>
       <label class="checkbox-label"><input name="promotion_enabled" type="checkbox" {% if details.promotion_enabled %}checked{% endif %}> Instagram-Carousel verwenden und für Promotion aktivieren</label>
-      <p class="muted small">Die Promotion lässt sich erst mit Frontcover, Logo, Schlussseitentext und Buchtitel-Overlay aktivieren. Übertrage den fertigen Buchstand anschließend auf der Buchseite nach Supabase.</p>
+      <p class="muted small">Buchdaten werden immer gespeichert. Die Promotion lässt sich erst mit Frontcover, Logo, Schlussseitentext und Buchtitel-Overlay aktivieren. Übertrage den fertigen Buchstand anschließend auf der Buchseite nach Supabase.</p>
     </section>
     <section class="panel next-settings settings-fields">
       <h2>Buchprofil · intern, kann Spoiler enthalten</h2>

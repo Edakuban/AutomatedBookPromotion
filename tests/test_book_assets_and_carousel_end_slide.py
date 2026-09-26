@@ -236,10 +236,18 @@ def test_web_uploads_assets_enforces_setup_and_renders_preview(setup):
         assert "Frontcover für 3D-Darstellung" in page.text
         assert 'name="publication_mode"' in page.text
         fields = form_data(management.get(book.id))
-        fields.update(promotion_enabled="on", publication_mode="auto", carousel_end_text="Jetzt entdecken",
-                      overlay_title_font=name)
+        fields.update(author="Autorin", target_url="https://example.org/buch", promotion_enabled="on",
+                      publication_mode="auto", carousel_end_text="Jetzt entdecken", overlay_title_font=name)
         blocked = client.post(base, data=fields)
-        assert blocked.status_code == 400 and "Frontcover hochladen" in blocked.text and "Logo hochladen" in blocked.text
+        assert blocked.status_code == 200
+        assert "Bucheinstellungen gespeichert" in blocked.text
+        assert "Promotion bleibt deaktiviert" in blocked.text
+        assert "Frontcover hochladen" in blocked.text and "Logo hochladen" in blocked.text
+        pending = management.get(book.id)
+        assert pending["details"].author == "Autorin"
+        assert pending["details"].target_url == "https://example.org/buch"
+        assert pending["details"].publication_mode == "auto"
+        assert not pending["details"].promotion_enabled
 
         cover = noisy_jpeg()
         assert len(cover) > 256 * 1024
@@ -252,6 +260,8 @@ def test_web_uploads_assets_enforces_setup_and_renders_preview(setup):
         assert client.post(base + "/assets/logo", data={"revision": "0"},
                            files={"file": ("logo.png", logo, "image/png")}).status_code == 409
 
+        fields = form_data(management.get(book.id))
+        fields["promotion_enabled"] = "on"
         saved = client.post(base, data=fields)
         assert saved.status_code == 200 and "Bucheinstellungen gespeichert" in saved.text
         details = management.get(book.id)["details"]

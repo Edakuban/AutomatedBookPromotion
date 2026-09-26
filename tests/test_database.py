@@ -55,6 +55,7 @@ def test_auth_headers_and_pagination(settings, key, bearer):
             assert request.headers["authorization"] == f"Bearer {key}"
         assert request.url.params["offset"] == "2"
         assert request.url.params["limit"] == "3"
+        assert request.url.params["order"] == "title.asc,id.asc"
         assert request.method == "GET"
         assert key not in str(request.url)
         return httpx.Response(200, json=rows)

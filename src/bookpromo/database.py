@@ -223,7 +223,7 @@ class SupabaseRepository:
             raise ValueError("Ungültige Seitengröße oder Seitennummer.")
         rows = await self._read("book_overview", {
             "select": "id,title,author,active,displayed_version_id,status,chapter_count,quote_count,last_published_at",
-            "order": "created_at.desc,id.asc", "offset": str((page - 1) * page_size),
+            "order": "title.asc,id.asc", "offset": str((page - 1) * page_size),
             "limit": str(page_size + 1),
         })
         try:

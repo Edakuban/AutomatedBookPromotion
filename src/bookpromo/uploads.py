@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 from typing import BinaryIO
+import unicodedata
 from uuid import UUID, uuid4
 import zipfile
 import zlib
@@ -107,14 +108,21 @@ class LocalUploadStore:
     def _read_connection(self):
         connection = sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.create_collation("unicode_nocase", self._compare_titles)
         return connection
+
+    @staticmethod
+    def _compare_titles(left: str, right: str) -> int:
+        left_key = unicodedata.normalize("NFKD", left).casefold()
+        right_key = unicodedata.normalize("NFKD", right).casefold()
+        return (left_key > right_key) - (left_key < right_key)
 
     def list_books(self, page: int = 1, page_size: int = 50) -> tuple[list[LocalBook], bool]:
         if not self.db_path.is_file():
             return [], False
         with closing(self._read_connection()) as connection:
             rows = connection.execute(
-                "select * from local_books order by created_at desc, id limit ? offset ?",
+                "select * from local_books order by title collate unicode_nocase, title, id limit ? offset ?",
                 (page_size + 1, (page - 1) * page_size),
             ).fetchall()
         return [LocalBook.from_row(row) for row in rows[:page_size]], len(rows) > page_size

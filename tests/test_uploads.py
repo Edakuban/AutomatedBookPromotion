@@ -72,6 +72,18 @@ def test_duplicate_and_renamed_file_open_same_book(client, settings):
     assert len(list((settings.app_data_dir / "originals").iterdir())) == 1
 
 
+def test_local_books_are_sorted_by_title_case_insensitively(settings):
+    store = LocalUploadStore(settings.app_data_dir, 1024 * 1024)
+    for index, name in enumerate(("Zeta.docx", "beta.docx", "Ähre.docx", "Alpha.docx")):
+        store.save(BytesIO(docx_bytes(f"Inhalt {index}")), name)
+
+    first_page, more = store.list_books(page=1, page_size=2)
+    second_page, second_more = store.list_books(page=2, page_size=2)
+
+    assert [book.title for book in first_page + second_page] == ["Alpha", "Ähre", "beta", "Zeta"]
+    assert more and not second_more
+
+
 def test_concurrent_duplicate_is_stored_once(settings):
     def save(_):
         return LocalUploadStore(settings.app_data_dir, 1024 * 1024).save(BytesIO(docx_bytes()), "Roman.docx")

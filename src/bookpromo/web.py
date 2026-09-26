@@ -126,7 +126,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise UploadError("Bitte diese Aktion direkt in der lokalen Book-Promotion-Oberfläche ausführen.", 403)
 
     async def book_settings_context(book, management, details, *, saved=False, form_error=None,
-                                    profile_run_id="", asset_saved=""):
+                                    profile_run_id="", asset_saved="", promotion_pending=False):
         assets = await run_in_threadpool(asset_store.list, str(book.id))
         missing = (
             await run_in_threadpool(asset_store.configuration_errors, str(book.id), details)
@@ -138,7 +138,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 "profile_run_id": profile_run_id, "font_names": font_names(),
                 "overlay_preview": bool(getattr(details, "overlay_title_font", "")) and overlay_store.preview_exists(book.id),
                 "assets": assets, "asset_saved": asset_saved,
-                "carousel_preview": carousel_preview}
+                "carousel_preview": carousel_preview,
+                "promotion_missing": missing if promotion_pending else []}
 
     @app.post("/uploads", name="upload_book")
     async def upload_book(request: Request):
@@ -303,14 +304,17 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
 
     @app.get("/books/local/{book_id}/settings", response_class=HTMLResponse, name="book_settings")
     async def book_settings(request: Request, book_id: UUID, preview: Literal["saved", "ai"] = "saved", saved: bool = False,
-                            asset_saved: Literal["", "cover_front", "logo"] = ""):
+                            asset_saved: Literal["", "cover_front", "logo"] = "", promotion_pending: bool = False):
         try:
             book = await run_in_threadpool(local_store.get_book, book_id)
             if book is None: raise HTTPException(404)
             management = await run_in_threadpool(management_store.get, str(book_id), prefer_ai=preview == "ai")
         except (OSError, sqlite3.Error):
             raise UploadError("Die Bucheinstellungen konnten nicht gelesen werden.", 503) from None
-        context = await book_settings_context(book, management, management["details"], saved=saved, asset_saved=asset_saved)
+        context = await book_settings_context(
+            book, management, management["details"], saved=saved, asset_saved=asset_saved,
+            promotion_pending=promotion_pending,
+        )
         return templates.TemplateResponse(request=request, name="book_settings.html", context=context)
 
     @app.post("/books/local/{book_id}/settings", name="save_book_settings")
@@ -348,11 +352,12 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400, context=context)
             missing = await run_in_threadpool(asset_store.configuration_errors, str(book_id), details)
             if details.promotion_enabled and missing:
-                management = await run_in_threadpool(management_store.get, str(book_id))
-                management.update(revision=revision, suggestion_id=suggestion_id)
-                context = await book_settings_context(book, management, details, profile_run_id=profile_run_id,
-                    form_error="Für die Promotion bitte zuerst: " + ", ".join(missing) + ".")
-                return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400, context=context)
+                # Metadata must not be lost merely because promotion assets are
+                # incomplete. Persist everything else and leave activation off.
+                details = details.model_copy(update={"promotion_enabled": False})
+                promotion_pending = True
+            else:
+                promotion_pending = False
             if details.promotion_enabled:
                 try:
                     await run_in_threadpool(
@@ -375,7 +380,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise UploadError("Bitte die Bucheinstellungen neu öffnen und gültige Werte eintragen.") from None
         except (OSError, sqlite3.Error):
             raise UploadError("Die Bucheinstellungen konnten nicht gespeichert werden.", 503) from None
-        return RedirectResponse(str(request.url_for("book_settings", book_id=book_id)) + "?saved=true", status_code=303)
+        query = "?saved=true" + ("&promotion_pending=true" if promotion_pending else "")
+        return RedirectResponse(str(request.url_for("book_settings", book_id=book_id)) + query, status_code=303)
 
     @app.post("/books/local/{book_id}/settings/assets/{kind}", name="upload_book_asset")
     async def upload_book_asset(request: Request, book_id: UUID, kind: Literal["cover_front", "logo"]):
