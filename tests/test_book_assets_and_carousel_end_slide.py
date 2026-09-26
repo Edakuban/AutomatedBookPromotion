@@ -173,8 +173,26 @@ def test_cover_mockup_and_end_slide_are_deterministic_4_by_5_jpegs():
     with Image.open(BytesIO(first.data)) as rendered:
         assert rendered.format == "JPEG" and rendered.mode == "RGB" and rendered.size == (1080, 1350)
         assert rendered.info.get("icc_profile")
+        top = rendered.getpixel((10, 10))
+        bottom = rendered.getpixel((10, 1339))
+        assert max(top) <= 3
+        assert all(abs(actual - expected) <= 3 for actual, expected in zip(bottom, (92, 74, 30)))
     metadata = validate_carousel_end_slide(first.data)
     assert metadata.width == 1080 and metadata.height == 1350 and metadata.media_type == "image/jpeg"
+
+    custom_details = details.model_copy(update={
+        "carousel_background_top_color": "#102030",
+        "carousel_background_bottom_color": "#405060",
+    })
+    custom = render_carousel_end_slide(custom_details, cover, logo, overlay, fonts=fonts)
+    assert custom.digest != first.digest
+    with Image.open(BytesIO(custom.data)) as rendered:
+        assert all(abs(actual - expected) <= 3 for actual, expected in zip(
+            rendered.getpixel((10, 10)), (16, 32, 48)
+        ))
+        assert all(abs(actual - expected) <= 3 for actual, expected in zip(
+            rendered.getpixel((10, 1339)), (64, 80, 96)
+        ))
 
 
 @pytest.mark.parametrize("size", [(900, 2600), (1600, 800)])

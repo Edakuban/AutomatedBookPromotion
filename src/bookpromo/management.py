@@ -9,9 +9,10 @@ import time
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .analysis import AnalysisResult
+from .colors import darken_hex_color
 from .uploads import UploadError
 
 
@@ -35,6 +36,14 @@ class BookDetails(BaseModel):
     overlay_title_text: str = Field(default="", max_length=500)
     overlay_title_font: str = Field(default="", max_length=200)
     overlay_title_color: str = "#FFFFFF"
+    carousel_background_top_color: str = "#000000"
+    carousel_background_bottom_color: str | None = None
+
+    @model_validator(mode="after")
+    def default_carousel_background(self):
+        if self.carousel_background_bottom_color is None:
+            object.__setattr__(self, "carousel_background_bottom_color", darken_hex_color(self.overlay_title_color))
+        return self
 
     @field_validator("target_url")
     @classmethod
@@ -57,9 +66,13 @@ class BookDetails(BaseModel):
             raise ValueError("Bitte nur den Namen einer lokal installierten Schriftart angeben.")
         return value
 
-    @field_validator("overlay_title_color")
+    @field_validator(
+        "overlay_title_color", "carousel_background_top_color", "carousel_background_bottom_color"
+    )
     @classmethod
     def valid_overlay_color(cls, value):
+        if value is None:
+            return value
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
             raise ValueError("Bitte eine sechsstellige Hex-Farbe angeben.")
         return value.upper()

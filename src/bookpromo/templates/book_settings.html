@@ -70,6 +70,12 @@
       <label>Schriftart für den Buchtitel <input name="overlay_title_font" value="{{ details.overlay_title_font }}" maxlength="200" list="overlay-fonts" placeholder="Name einer lokal installierten Schriftart"></label>
       <datalist id="overlay-fonts">{% for font in font_names %}<option value="{{ font }}">{% endfor %}</datalist>
       <label>Titelfarbe <input name="overlay_title_color" type="color" value="{{ details.overlay_title_color }}"></label>
+      <h3>Hintergrund der Carousel-Schlussseite</h3>
+      <p class="muted small">Der Verlauf läuft von oben nach unten. Anfangs sind Schwarz und eine abgedunkelte Variante der Titelfarbe vorausgewählt; beide Farben können unabhängig angepasst werden.</p>
+      <div data-carousel-background-colors>
+        <label>Verlaufsfarbe oben <input name="carousel_background_top_color" type="color" value="{{ details.carousel_background_top_color }}"></label>
+        <label>Verlaufsfarbe unten <input name="carousel_background_bottom_color" type="color" value="{{ details.carousel_background_bottom_color }}"></label>
+      </div>
       {% if overlay_preview %}<figure class="overlay-preview"><img src="{{ url_for('book_overlay', book_id=book.id) }}" alt="Vorschau des Buchtitel-Overlays"><figcaption>Transparente 4:5-Overlay-Vorschau · Kapitelname folgt später im Workflow rechts unten.</figcaption></figure>{% endif %}
       <div class="form-actions"><button type="submit">Bucheinstellungen speichern</button><a href="{{ url_for('local_book', book_id=book.id) }}">Zurück zum Buch</a></div>
     </section>

@@ -160,6 +160,10 @@ def test_overlay_settings_are_normalized_and_persisted(font, color):
     assert details.overlay_title_text == 'Kurzer\nTitel'
     assert details.overlay_title_font == font
     assert details.overlay_title_color == color.upper()
+    assert details.carousel_background_top_color == '#000000'
+    assert details.carousel_background_bottom_color == {
+        '#A0B1C2': '#40474E', '#FFFFFF': '#666666'
+    }[color.upper()]
 
 
 @pytest.mark.parametrize('kwargs', [
@@ -168,6 +172,8 @@ def test_overlay_settings_are_normalized_and_persisted(font, color):
     {'overlay_title_text': 'x' * 501},
     {'overlay_title_color': '#fff'},
     {'overlay_title_color': 'white'},
+    {'carousel_background_top_color': '#000'},
+    {'carousel_background_bottom_color': 'black'},
 ])
 def test_overlay_settings_reject_unsafe_or_invalid_values(kwargs):
     with pytest.raises(ValidationError): BookDetails(title='Buch', **kwargs)
@@ -186,7 +192,8 @@ def test_settings_and_quotes_web_round_trip_filters_and_origin(setup):
         fields = form_data(current)
         fields.update(title='Neuer Titel <script>alert(1)</script>', author='Autor', target_url='https://example.org/buch',
                       overlay_title_text='Kurzer\nOverlay-Titel', overlay_title_font=selected_font,
-                      overlay_title_color='#102030')
+                      overlay_title_color='#102030', carousel_background_top_color='#112233',
+                      carousel_background_bottom_color='#445566')
         assert client.get(url+'/settings').status_code == 200
         assert client.post(url+'/settings', data=fields, headers={'Origin':'https://foreign.example'}).status_code == 403
         response = client.post(url+'/settings', data=fields)
@@ -196,6 +203,8 @@ def test_settings_and_quotes_web_round_trip_filters_and_origin(setup):
         assert store.get(book.id)['details'].overlay_title_text == 'Kurzer\nOverlay-Titel'
         assert store.get(book.id)['details'].overlay_title_font == selected_font
         assert store.get(book.id)['details'].overlay_title_color == '#102030'
+        assert store.get(book.id)['details'].carousel_background_top_color == '#112233'
+        assert store.get(book.id)['details'].carousel_background_bottom_color == '#445566'
         overlay = client.get(url + '/overlay.png')
         assert overlay.status_code == 200 and overlay.headers['content-type'] == 'image/png'
         quote = current['quotes'][0]['quote']

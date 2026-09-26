@@ -323,7 +323,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         try:
             book = await run_in_threadpool(local_store.get_book, book_id)
             if book is None: raise HTTPException(404)
-            async with request.form(max_files=0, max_fields=24) as form:
+            async with request.form(max_files=0, max_fields=26) as form:
                 allowed = set(BookDetails.model_fields) | {"revision", "suggestion_id", "profile_run_id"}
                 if (set(form) - allowed or allowed - {"promotion_enabled", "profile_run_id"} - set(form)
                     or any(len(form.getlist(k)) != 1 or not isinstance(form[k], str) for k in form)):
@@ -340,7 +340,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 management = await run_in_threadpool(management_store.get, str(book_id))
                 management.update(revision=revision, suggestion_id=suggestion_id)
                 context = await book_settings_context(book, management, raw, profile_run_id=profile_run_id,
-                    form_error="Bitte Titel, Feldlängen, Freigabemodus, Schriftname, Titelfarbe und eine vollständige HTTP-/HTTPS-Zieladresse ohne Zugangsdaten prüfen. Deine Eingaben wurden noch nicht gespeichert.")
+                    form_error="Bitte Titel, Feldlängen, Freigabemodus, Schriftname, Titel- und Verlaufsfarben sowie eine vollständige HTTP-/HTTPS-Zieladresse ohne Zugangsdaten prüfen. Deine Eingaben wurden noch nicht gespeichert.")
                 return templates.TemplateResponse(request=request, name="book_settings.html", status_code=400, context=context)
             try:
                 overlay = await run_in_threadpool(overlay_store.prepare, details)

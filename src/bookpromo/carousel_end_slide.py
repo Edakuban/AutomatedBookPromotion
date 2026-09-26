@@ -14,11 +14,12 @@ from uuid import UUID
 from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 
 from .book_assets import BookAssetStore
+from .colors import darken_hex_color
 from .overlay import CANVAS_SIZE, OverlayAsset, resolve_font
 from .uploads import UploadError
 
 
-CTA_RENDERER_VERSION = "4"
+CTA_RENDERER_VERSION = "6"
 CTA_FONT_NAME = "Arial"
 JPEG_LIMIT = 8 * 1024 * 1024
 SRGB_PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
@@ -237,8 +238,14 @@ def _prepared_sources(
     digest = hashlib.sha256()
     for value in (
         CTA_RENDERER_VERSION,
-        json.dumps({"text": str(getattr(details, "carousel_end_text", "")).strip()},
-                   ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        json.dumps({
+            "text": str(getattr(details, "carousel_end_text", "")).strip(),
+            "background_top": str(getattr(details, "carousel_background_top_color", "#000000")),
+            "background_bottom": str(
+                getattr(details, "carousel_background_bottom_color", None)
+                or darken_hex_color(str(getattr(details, "overlay_title_color", "#FFFFFF")))
+            ),
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         title_overlay.digest,
         hashlib.sha256(font_path.read_bytes()).hexdigest(),
     ):
@@ -274,8 +281,13 @@ def _render_prepared_end_slide(
         raise UploadError("Das Buchtitel-Overlay hat nicht das erwartete 4:5-Format.")
     canvas = Image.new("RGB", CANVAS_SIZE)
     draw = ImageDraw.Draw(canvas)
-    top_color = (31, 39, 54)
-    bottom_color = (8, 13, 23)
+    top_hex = str(getattr(details, "carousel_background_top_color", "#000000"))
+    bottom_hex = str(
+        getattr(details, "carousel_background_bottom_color", None)
+        or darken_hex_color(str(getattr(details, "overlay_title_color", "#FFFFFF")))
+    )
+    top_color = tuple(int(top_hex[index : index + 2], 16) for index in (1, 3, 5))
+    bottom_color = tuple(int(bottom_hex[index : index + 2], 16) for index in (1, 3, 5))
     for y in range(CANVAS_SIZE[1]):
         ratio = y / (CANVAS_SIZE[1] - 1)
         color = tuple(round(start + (end - start) * ratio) for start, end in zip(top_color, bottom_color))

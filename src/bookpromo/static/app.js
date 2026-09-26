@@ -170,6 +170,21 @@ if (profileGenerator) {
   refresh();
 }
 
+const carouselBackgroundColors = document.querySelector("[data-carousel-background-colors]");
+if (carouselBackgroundColors) {
+  const titleColor = document.querySelector('[name="overlay_title_color"]');
+  const bottomColor = carouselBackgroundColors.querySelector('[name="carousel_background_bottom_color"]');
+  function darkenedTitleColor() {
+    const channels = titleColor.value.slice(1).match(/.{2}/g).map(value => Math.round(parseInt(value, 16) * 0.4));
+    return `#${channels.map(value => value.toString(16).padStart(2, "0")).join("")}`;
+  }
+  let followsTitleColor = bottomColor.value.toLowerCase() === darkenedTitleColor();
+  titleColor.addEventListener("input", () => {
+    if (followsTitleColor) bottomColor.value = darkenedTitleColor();
+  });
+  bottomColor.addEventListener("input", () => { followsTitleColor = false; });
+}
+
 const analysisPanel = document.getElementById("analysis-progress");
 if (analysisPanel) {
   async function refreshAnalysis() {
