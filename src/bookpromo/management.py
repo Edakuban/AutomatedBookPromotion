@@ -32,6 +32,7 @@ class BookDetails(BaseModel):
     spoilers: str = Field(default="", max_length=4000)
     image_prompt_base: str = Field(default="", max_length=4000)
     caption_guidelines: str = Field(default="", max_length=4000)
+    overlay_title_text: str = Field(default="", max_length=500)
     overlay_title_font: str = Field(default="", max_length=200)
     overlay_title_color: str = "#FFFFFF"
 

@@ -37,9 +37,11 @@ class SyncStore:
         if extraction.needs_review: raise UploadError('Bitte zuerst die offenen Importhinweise klären.',409)
         row=connection.execute('select result_json,prompt_version,model_id from local_analysis_runs where id=?',(current['suggestion_id'],)).fetchone()
         result=AnalysisResult.model_validate_json(row['result_json'])
-        # Font and title color are local renderer inputs. n8n receives the
-        # resulting private Storage paths, never a local font identifier.
-        remote_details = current['details'].model_dump(exclude={'overlay_title_font', 'overlay_title_color'})
+        # Overlay text, font and title color are local renderer inputs. n8n
+        # receives the resulting private Storage paths instead.
+        remote_details = current['details'].model_dump(
+            exclude={'overlay_title_text', 'overlay_title_font', 'overlay_title_color'}
+        )
         payload={'book':{'id':book_id,**remote_details},
             'version':{'id':book['version_id'],'filename':book['filename'],'file_sha256':book['file_sha256'],
                 'extraction_revision':source['revision'],'summary':result.profile.internal_summary,

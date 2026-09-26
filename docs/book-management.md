@@ -6,7 +6,7 @@ Unter **Buch → Bucheinstellungen bearbeiten** stehen Titel, Autor, Zieladresse
 
 ## Bild-Overlay
 
-Die Einstellungen enthalten zusätzlich eine Auswahlliste der lokal installierten Schriftarten und eine Titelfarbe. Beim Speichern erzeugt das Tool ein transparentes PNG im Instagram-Hochformat 1080×1350 (4:5): Buchtitel links oben, mit leichtem Schatten für wechselnde Bildhintergründe. Der Kapitelname gehört bewusst nicht in diese Datei; n8n ergänzt die gespeicherte Kapitelposition rechts unten als `Kapitel X` in einer normalen Schrift. Ohne Schriftart bleibt das Overlay deaktiviert.
+Die Einstellungen enthalten einen optionalen **Titel im Bild-Overlay**, eine Auswahlliste der lokal installierten Schriftarten und eine Titelfarbe. Ein leeres Titelfeld verwendet den normalen Buch-/Projekttitel; manuelle Zeilenumbrüche bleiben erhalten. Beim Speichern erzeugt das Tool ein transparentes PNG im Instagram-Hochformat 1080×1350 (4:5): Overlay-Titel links oben, mit leichtem Schatten für wechselnde Bildhintergründe. Der Kapitelname gehört bewusst nicht in diese Datei; n8n ergänzt die gespeicherte Kapitelposition rechts unten als `Kapitel X` in einer normalen Schrift. Ohne Schriftart bleibt das Overlay deaktiviert.
 
 Die PNG-Vorschau liegt nur in der lokalen Buchablage. Beim nächsten **Buchstand nach Supabase übertragen** rendert das Tool sie erneut und lädt sie in den privaten Bucket `book-promotion-assets`. Im Buchprofil steht `overlay_path`; n8n muss die Datei mit seinem Supabase-Credential laden. Der Bucket ist nicht öffentlich und enthält keine Buchtexte.
 

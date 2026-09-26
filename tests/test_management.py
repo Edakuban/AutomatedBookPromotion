@@ -155,7 +155,9 @@ def test_target_url_rejects_unsafe_or_invalid_values(url):
     ('Cormorant Garamond SemiBold', '#FFFFFF'),
 ])
 def test_overlay_settings_are_normalized_and_persisted(font, color):
-    details = BookDetails(title='Buch', overlay_title_font=font, overlay_title_color=color)
+    details = BookDetails(title='Buch', overlay_title_text='Kurzer\nTitel',
+                          overlay_title_font=font, overlay_title_color=color)
+    assert details.overlay_title_text == 'Kurzer\nTitel'
     assert details.overlay_title_font == font
     assert details.overlay_title_color == color.upper()
 
@@ -163,6 +165,7 @@ def test_overlay_settings_are_normalized_and_persisted(font, color):
 @pytest.mark.parametrize('kwargs', [
     {'overlay_title_font': r'..\\secret.ttf'},
     {'overlay_title_font': 'Font\nName'},
+    {'overlay_title_text': 'x' * 501},
     {'overlay_title_color': '#fff'},
     {'overlay_title_color': 'white'},
 ])
@@ -182,13 +185,15 @@ def test_settings_and_quotes_web_round_trip_filters_and_origin(setup):
     with TestClient(create_app(settings, start_worker=False), base_url='http://127.0.0.1:8000') as client:
         fields = form_data(current)
         fields.update(title='Neuer Titel <script>alert(1)</script>', author='Autor', target_url='https://example.org/buch',
-                      overlay_title_font=selected_font, overlay_title_color='#102030')
+                      overlay_title_text='Kurzer\nOverlay-Titel', overlay_title_font=selected_font,
+                      overlay_title_color='#102030')
         assert client.get(url+'/settings').status_code == 200
         assert client.post(url+'/settings', data=fields, headers={'Origin':'https://foreign.example'}).status_code == 403
         response = client.post(url+'/settings', data=fields)
         assert response.status_code == 200 and 'Bucheinstellungen gespeichert' in response.text
         assert '<script>alert(1)</script>' not in response.text and '&lt;script&gt;' in response.text
         assert not store.get(book.id)['details'].promotion_enabled
+        assert store.get(book.id)['details'].overlay_title_text == 'Kurzer\nOverlay-Titel'
         assert store.get(book.id)['details'].overlay_title_font == selected_font
         assert store.get(book.id)['details'].overlay_title_color == '#102030'
         overlay = client.get(url + '/overlay.png')

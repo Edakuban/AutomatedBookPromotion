@@ -124,18 +124,23 @@ def resolve_font(name: str, fonts: dict[str, Path] | None = None) -> Path:
 
 
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, width: int) -> list[str]:
-    words = re.sub(r"\s+", " ", text).strip().split(" ")
     lines: list[str] = []
-    line = ""
-    for word in words:
-        candidate = f"{line} {word}".strip()
-        if not line or draw.textlength(candidate, font=font) <= width:
-            line = candidate
-            continue
-        lines.append(line)
-        line = word
-    if line:
-        lines.append(line)
+    for explicit_line in text.splitlines() or [text]:
+        words = re.sub(r"\s+", " ", explicit_line).strip().split(" ")
+        line = ""
+        for word in words:
+            if not word:
+                continue
+            candidate = f"{line} {word}".strip()
+            if not line or draw.textlength(candidate, font=font) <= width:
+                line = candidate
+                continue
+            lines.append(line)
+            line = word
+        if line:
+            lines.append(line)
+        elif lines and lines[-1] != "":
+            lines.append("")
     return lines or [""]
 
 
@@ -148,9 +153,10 @@ def render_title_overlay(details: BookDetails, *, fonts: dict[str, Path] | None 
     draw = ImageDraw.Draw(canvas)
     selected_font: ImageFont.FreeTypeFont | None = None
     lines: list[str] = []
+    title = details.overlay_title_text or details.title
     for size in range(80, 29, -2):
         candidate_font = ImageFont.truetype(str(font_path), size=size)
-        candidate_lines = _wrap(draw, details.title, candidate_font, MAX_TITLE_WIDTH)
+        candidate_lines = _wrap(draw, title, candidate_font, MAX_TITLE_WIDTH)
         box = draw.multiline_textbbox((0, 0), "\n".join(candidate_lines), font=candidate_font, spacing=8)
         if len(candidate_lines) <= 3 and box[3] - box[1] <= MAX_TITLE_HEIGHT:
             selected_font, lines = candidate_font, candidate_lines

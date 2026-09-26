@@ -65,7 +65,8 @@
       <label>Caption-Vorgaben <textarea name="caption_guidelines" rows="5" maxlength="4000">{{ details.caption_guidelines }}</textarea></label>
       <label>Text auf der Carousel-Schlussseite <textarea name="carousel_end_text" rows="4" maxlength="500" placeholder="Jetzt entdecken …">{{ details.carousel_end_text }}</textarea></label>
       <h3>Bild-Overlay</h3>
-      <p class="muted small">Der Buchtitel wird links oben auf das fertige Bild gesetzt. Kapitelname und Bildmotiv bleiben davon getrennt.</p>
+      <p class="muted small">Der Overlay-Titel wird links oben auf das fertige Bild gesetzt. Bleibt das Feld leer, wird der normale Buchtitel verwendet. Eigene Zeilenumbrüche werden beibehalten.</p>
+      <label>Titel im Bild-Overlay · optional <textarea name="overlay_title_text" rows="2" maxlength="500" placeholder="{{ details.title }}">{{ details.overlay_title_text }}</textarea></label>
       <label>Schriftart für den Buchtitel <input name="overlay_title_font" value="{{ details.overlay_title_font }}" maxlength="200" list="overlay-fonts" placeholder="Name einer lokal installierten Schriftart"></label>
       <datalist id="overlay-fonts">{% for font in font_names %}<option value="{{ font }}">{% endfor %}</datalist>
       <label>Titelfarbe <input name="overlay_title_color" type="color" value="{{ details.overlay_title_color }}"></label>

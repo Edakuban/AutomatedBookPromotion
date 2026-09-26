@@ -31,6 +31,23 @@ def test_title_overlay_is_instagram_portrait_transparent_and_deterministic():
     assert bounds[1] >= 72 and bounds[3] <= 312
 
 
+def test_optional_overlay_title_overrides_book_title_and_preserves_line_breaks():
+    name, path = available_font()
+    fonts = {name: path}
+    custom = render_title_overlay(BookDetails(
+        title="Sehr langer Projekt- und Buchname für Metadaten",
+        overlay_title_text="Kurzer\nBildtitel",
+        overlay_title_font=name,
+    ), fonts=fonts)
+    automatic = render_title_overlay(BookDetails(
+        title="Kurzer Bildtitel",
+        overlay_title_font=name,
+    ), fonts=fonts)
+
+    assert custom is not None and automatic is not None
+    assert custom.digest != automatic.digest
+
+
 def test_overlay_store_writes_and_reloads_local_preview(tmp_path):
     name, path = available_font()
     asset = render_title_overlay(BookDetails(title="Buch", overlay_title_font=name), fonts={name: path})

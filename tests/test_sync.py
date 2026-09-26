@@ -40,8 +40,10 @@ def test_snapshot_requires_current_analysis_and_tracks_local_changes(setup):
     assert 'PRIVATE' not in json.dumps(after)
     current = managed.get(book.id)
     managed.save(book.id, current['revision'], current['details'].model_copy(update={
-        'overlay_title_font': 'Bebas Neue', 'overlay_title_color': '#102030'}), current['suggestion_id'])
+        'overlay_title_text': 'Kurzer Titel', 'overlay_title_font': 'Bebas Neue',
+        'overlay_title_color': '#102030'}), current['suggestion_id'])
     local_overlay = store.snapshot(book.id)
+    assert 'overlay_title_text' not in local_overlay['book']
     assert 'overlay_title_font' not in local_overlay['book']
     assert 'overlay_title_color' not in local_overlay['book']
     assert local_overlay['book']['publication_mode'] == 'review'
