@@ -11,7 +11,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from .config import Settings
 from .overlay import OVERLAY_BUCKET
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MESSAGES = {
     "disabled": "Supabase ist bis Schritt 3.2 deaktiviert.",
     "configuration": "Supabase-URL und Server-Schlüssel fehlen oder sind ungeeignet.",

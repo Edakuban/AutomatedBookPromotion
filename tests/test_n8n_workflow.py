@@ -72,13 +72,37 @@ def test_review_has_hitl_and_auto_has_no_waiting_approval_nodes():
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_reservation_uses_v5_execution_mode(mode):
+def test_reservation_uses_v6_execution_mode_and_attempt(mode):
     workflow = build(mode)
     reserve = nodes(workflow)["Reserve quote"]
     assert reserve["parameters"]["url"].endswith("/rest/v1/rpc/bookpromo_reserve' }}")
     assert f"p_execution_mode:'{mode}'" in reserve["parameters"]["jsonBody"]
+    assert "p_generation_attempt:Number($json.generation_attempt??0)" in reserve["parameters"]["jsonBody"]
     assert reserve["parameters"]["jsonBody"].startswith("={{ {")
     assert reserve["parameters"]["jsonBody"].endswith("} }}")
+
+
+def test_auto_retries_clear_image_provider_failures_with_a_fresh_quote_only():
+    workflow = build("auto")
+    by_name = nodes(workflow)
+    assert "max_image_quote_attempts:5" in by_name["Config"]["parameters"]["jsCode"]
+    for source in ("Cloudflare FLUX image", "Convert generated image to file"):
+        gate = source + " retry with new quote?"
+        context = source + " retry context"
+        failure = by_name[source + " failed"]["parameters"]["jsCode"]
+        condition = by_name[gate]["parameters"]["conditions"]["conditions"][0]["leftValue"]
+        assert "timeout|timed out|econnreset|socket hang up" in failure
+        assert "p_data:{error:message,retryable}" in failure
+        assert "max_image_quote_attempts" in condition
+        assert targets(workflow, source + " failure saved") == [gate]
+        assert targets(workflow, gate) == [context]
+        assert targets(workflow, gate, 1) == ["Current draft"]
+        assert targets(workflow, context) == ["Reserve quote"]
+
+    assert targets(workflow, "Convert base to JPEG failure saved") == ["Current draft"]
+    review = build("review")
+    assert "Cloudflare FLUX image retry with new quote?" not in nodes(review)
+    assert targets(review, "Cloudflare FLUX image failure saved") == ["Current draft"]
 
 
 @pytest.mark.parametrize("mode", MODES)

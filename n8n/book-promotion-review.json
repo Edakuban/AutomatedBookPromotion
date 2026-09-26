@@ -65,7 +65,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const config={\n workflow_mode:'review',supabase_url:'https://aqfemzwrkzimzakqiwls.supabase.co',\n account_id:'35706486682300403',graph_version:'v26.0',telegram_chat_id:'1182925320',\n text_model:'gpt-5.6-sol',image_model:'gpt-image-2',\n cloudflare_account_id:'96d3571d9a215411bd11934aa57265c3',\n cloudflare_text_model:'@cf/meta/llama-3.3-70b-instruct-fp8-fast',\n cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',\n media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',\n signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,\n publish_enabled:false,resume_post_id:'',resume_generation:false\n};\nreturn $input.all().map(item=>({json:{...item.json,...config}}));"
+        "jsCode": "const config={\n workflow_mode:'review',supabase_url:'https://aqfemzwrkzimzakqiwls.supabase.co',\n account_id:'35706486682300403',graph_version:'v26.0',telegram_chat_id:'1182925320',\n text_model:'gpt-5.6-sol',image_model:'gpt-image-2',\n cloudflare_account_id:'96d3571d9a215411bd11934aa57265c3',\n cloudflare_text_model:'@cf/meta/llama-3.3-70b-instruct-fp8-fast',\n cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',\n media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',\n signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,\n max_image_quote_attempts:5,\n publish_enabled:false,resume_post_id:'',resume_generation:false\n};\nreturn $input.all().map(item=>({json:{...item.json,...config}}));"
       }
     },
     {
@@ -203,7 +203,7 @@
         "method": "POST",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {p_account:$json.account_id,p_day:$now.setZone('Europe/Berlin').toISODate(),p_execution_mode:'review'} }}",
+        "jsonBody": "={{ {p_account:$json.account_id,p_day:$now.setZone('Europe/Berlin').toISODate(),p_execution_mode:'review',p_generation_attempt:Number($json.generation_attempt??0)} }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "supabaseApi"
       },
@@ -3232,7 +3232,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Text request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3279,7 +3279,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Text request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3326,7 +3326,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Generate carousel?').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3373,7 +3373,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3420,7 +3420,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3467,7 +3467,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3514,7 +3514,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3561,7 +3561,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3608,7 +3608,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3655,7 +3655,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3702,7 +3702,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3749,7 +3749,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3796,7 +3796,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3843,7 +3843,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3890,7 +3890,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3937,7 +3937,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3984,7 +3984,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -4031,7 +4031,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -4078,7 +4078,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -4125,7 +4125,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -4172,7 +4172,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -4219,7 +4219,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {

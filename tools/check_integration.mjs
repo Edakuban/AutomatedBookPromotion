@@ -23,7 +23,8 @@ try {
   const migrationFiles = (await readdir('supabase/migrations')).sort().filter((file) => !file.endsWith('_initial.sql'));
   const carouselMigration = migrationFiles.find((file) => file.endsWith('_carousel_contract_and_media_storage.sql'));
   check(carouselMigration);
-  for (const file of migrationFiles.filter((item) => item !== carouselMigration)) {
+  const carouselIndex = migrationFiles.indexOf(carouselMigration);
+  for (const file of migrationFiles.slice(0, carouselIndex)) {
     await db.exec(await readFile(`supabase/migrations/${file}`, 'utf8'));
   }
 
@@ -41,14 +42,18 @@ try {
   check(await scalar('select count(*)=1 from public.books where id=$1', [cleanupIds[0]]));
   check(await scalar('select count(*)=1 from public.quotes where id=$1', [cleanupIds[3]]));
 
-  check(await scalar('select version from public.bookpromo_schema') === 5);
+  for (const file of migrationFiles.slice(carouselIndex + 1)) {
+    await db.exec(await readFile(`supabase/migrations/${file}`, 'utf8'));
+  }
+
+  check(await scalar('select version from public.bookpromo_schema') === 6);
   check(await scalar("select not public and file_size_limit=8388608 and allowed_mime_types=array['image/jpeg']::text[] from storage.buckets where id='book-promotion-media'"));
   check(await scalar("select not public and file_size_limit=8388608 and allowed_mime_types=array['image/png','image/jpeg']::text[] from storage.buckets where id='book-promotion-assets'"));
   check(await scalar("select relrowsecurity from pg_class where oid='public.post_media'::regclass"));
   check(!await scalar("select has_table_privilege('anon','public.post_media','select')"));
   check(await scalar("select has_table_privilege('service_role','public.post_media','select,insert,update,delete')"));
   check(!await scalar("select exists(select 1 from information_schema.columns where table_schema='public' and table_name='posts' and column_name='image_path')"));
-  check(await scalar(`select count(*)=5 and bool_and(not p.prosecdef)
+  check(await scalar(`select count(*)=6 and bool_and(not p.prosecdef)
     and bool_and(not has_function_privilege('anon',p.oid,'execute'))
     and bool_and(not has_function_privilege('authenticated',p.oid,'execute'))
     and bool_and(has_function_privilege('service_role',p.oid,'execute'))
@@ -98,6 +103,9 @@ try {
   };
   const sync = async (body, revision) => scalar('select public.bookpromo_sync($1::jsonb,$2)', [JSON.stringify(body), revision]);
   const reserve = async (mode, account = 'test') => scalar("select public.bookpromo_reserve($1,date '2026-09-10',$2)", [account, mode]);
+  const reserveAttempt = async (mode, attempt, account = 'test') => scalar(
+    "select public.bookpromo_reserve($1,date '2026-09-10',$2,$3)", [account, mode, attempt],
+  );
   const transition = async (post, action, data = {}) => scalar(
     'select public.bookpromo_transition($1,$2,$3,$4,$5::jsonb)',
     [post.id, post.revision, post.action_token, action, JSON.stringify(data)],
@@ -125,6 +133,7 @@ try {
     book: { ...bookFields, overlay_path: '../outside.png' },
   }, 1));
   await rejects(() => reserve('invalid'));
+  await rejects(() => reserveAttempt('review', 11));
   await rejects(() => scalar("select public.bookpromo_reserve('test',date '2026-09-10')"));
   await db.query("insert into public.promotion_settings(account_id,active,telegram_chat_id,telegram_user_id) values ('test',true,'42','7')");
 
@@ -192,12 +201,14 @@ try {
 
   // Switch the book to auto mode and verify automatic approvals use a distinct identity.
   const quote2 = crypto.randomUUID();
+  const quote3 = crypto.randomUUID();
   const quote2Fields = { ...quoteFields, id: quote2, text: 'Motor', source_start: 4, source_end: 9 };
+  const quote3Fields = { ...quoteFields, id: quote3, text: 'Nacht', source_start: 39, source_end: 44 };
   const autoPayload = {
     ...payload,
     hash: 'auto-settings',
     book: { ...bookFields, title: 'Auto book', publication_mode: 'auto' },
-    quotes: [quoteFields, quote2Fields],
+    quotes: [quoteFields, quote2Fields, quote3Fields],
   };
   check((await sync(autoPayload, 2)).revision === 3);
   result = await reserve('auto');
@@ -213,7 +224,17 @@ try {
   check((await transition(draft, 'approve_image', { chat_id: '42', user_id: '7' })).outcome === 'invalid_state');
   draft = (await transition(draft, 'fail', { error: 'Controlled test failure' })).post;
   check(draft.status === 'failed');
+  const failedQuote = draft.quote_id;
+  check((await scalar('select error from public.posts where id=$1', [draft.id])) === 'Controlled test failure');
   check((await cleanup(draft, autoManifest.map((item) => item.storage_path))).outcome === 'complete');
+
+  result = await reserveAttempt('auto', 1);
+  check(result.outcome === 'created');
+  draft = result.post;
+  check(draft.quote_id !== failedQuote && draft.attempts === 1);
+  draft = (await transition(draft, 'fail', { error: 'Second image refusal' })).post;
+  check(draft.status === 'failed' && draft.error === 'Second image refusal');
+  check((await reserveAttempt('auto', 2)).outcome === 'no_quote');
 
   await db.exec('reset role; set role anon');
   await rejects(() => sync(payload, 3));
@@ -221,7 +242,7 @@ try {
   await rejects(() => query('select * from public.books'));
   await rejects(() => query('select * from public.post_media'));
   await rejects(() => childContainer(draft, 0, 'forbidden'));
-  console.log(`Integration v5: ${checks} PostgreSQL-Prüfungen erfolgreich.`);
+  console.log(`Integration v6: ${checks} PostgreSQL-Prüfungen erfolgreich.`);
 } finally {
   await db.close();
 }

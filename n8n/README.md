@@ -11,7 +11,7 @@ schreibt ausschließlich lokale Dateien und überträgt keinen Workflow an n8n.
 
 ## Ablauf
 
-Beide Workflows reservieren einen v5-Entwurf mit ihrem festen
+Beide Workflows reservieren einen v6-Entwurf mit ihrem festen
 `execution_mode`, erzeugen Caption und Grundmotiv und normalisieren das Motiv
 ohne Verzerrung auf 1080 × 1350 Pixel. Danach entstehen:
 
@@ -57,6 +57,16 @@ der Workflow veröffentlicht nicht automatisch erneut. Schlägt nur das Cleanup
 fehl, bleibt der Post `published` und kann gefahrlos über `resume_post_id`
 erneut bereinigt werden.
 
+Im Auto-Workflow führen eindeutige Fehler des Bildmodells und Antworten ohne
+Bild zu einem neuen Zitat. Der fehlgeschlagene Post bleibt mit `status=failed`,
+dem unveränderten `quote_id` und der gekürzten Provider-Meldung in `error`
+gespeichert. Dasselbe Zitat wird für diesen Modus am selben Tag nicht erneut
+reserviert. `Config.max_image_quote_attempts` begrenzt die Kette einschließlich
+des ersten Versuchs auf fünf. Netzwerk-Timeouts werden wegen unklarer externer
+Kosten oder Seiteneffekte nicht automatisch wiederholt. Der Review-Workflow
+wechselt nach einer bereits erteilten Textfreigabe ebenfalls nicht ungefragt zu
+einem anderen Zitat.
+
 ## Credentials nach dem Import
 
 Alle IDs beginnen absichtlich mit `REPLACE_`. In n8n müssen folgende vorhandene
@@ -75,7 +85,7 @@ sowohl bei einer neuen Veröffentlichung als auch bei der Wiederaufnahme eines
 bereits laufenden Publish-Vorgangs. Alle Instagram-Nodes der Ausführung verwenden
 anschließend ausschließlich den frisch zurückgegebenen Token. Das
 Supabase-Credential muss auf dasselbe Projekt zeigen wie `Config.supabase_url`.
-Die Workflows setzen voraus, dass Schema v5 und beide Storage-Buckets bereits
+Die Workflows setzen voraus, dass Schema v6 und beide Storage-Buckets bereits
 vorhanden sind.
 
 ## Sicherer erster Import

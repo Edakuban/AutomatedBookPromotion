@@ -166,6 +166,7 @@ def add_config(workflow):
  cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',
  media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',
  signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,
+ max_image_quote_attempts:5,
  publish_enabled:false,resume_post_id:'',resume_generation:false
 }};
 return $input.all().map(item=>({{json:{{...item.json,...config}}}}));""")
@@ -204,7 +205,7 @@ return [{json:{outcome:'updated',post:d,resumed:true}}];""")
     workflow.rpc("Reserve quote", "bookpromo_reserve",
         "={{ {p_account:$json.account_id,p_day:$now.setZone('Europe/Berlin').toISODate(),"
         + f"p_execution_mode:'{mode}'"
-        + "} }}")
+        + ",p_generation_attempt:Number($json.generation_attempt??0)} }}")
     workflow.link("Manual resume?", "Reserve quote", 1)
     workflow.condition("Draft available?", "['created','existing'].includes($json.outcome)")
     workflow.link("Reserve quote", "Draft available?")
@@ -742,11 +743,35 @@ def add_failure_and_uncertain_routes(workflow):
     for source in generation_sources:
         item = next(n for n in workflow.nodes if n["name"] == source)
         item["onError"] = "continueErrorOutput"
-        workflow.code(source + " failed", """const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];""")
+        context_source = (
+            "Text request" if source in {"Generate caption", "Validate caption"}
+            else "Generate carousel?" if source == "Image request"
+            else "Image request"
+        )
+        retry_with_new_quote = workflow.mode == "auto" and source in {
+            "Cloudflare FLUX image", "Convert generated image to file",
+        }
+        if retry_with_new_quote:
+            failure_code = f"""const d=$('{context_source}').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);const retryable=!/(?:timeout|timed out|econnreset|socket hang up)/i.test(message);return [{{json:{{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{{error:message,retryable}}}}}}];"""
+        else:
+            failure_code = f"""const d=$('{context_source}').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{{json:{{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{{error:message}}}}}}];"""
+        workflow.code(source + " failed", failure_code)
         workflow.link(source, source + " failed", 1)
         workflow.rpc(source + " failure saved", "bookpromo_transition", "={{ $json }}")
         workflow.link(source + " failed", source + " failure saved")
-        workflow.link(source + " failure saved", "Current draft")
+        if retry_with_new_quote:
+            retry_gate = source + " retry with new quote?"
+            workflow.condition(retry_gate,
+                f"$('{source} failed').item.json.p_data.retryable === true && "
+                "$json.post?.status === 'failed' && Number($json.post.attempts) + 1 < "
+                "$('Config').first().json.max_image_quote_attempts")
+            workflow.link(source + " failure saved", retry_gate)
+            workflow.code(source + " retry context", """const d=$input.first().json.post;return [{json:{account_id:d.account_id,generation_attempt:Number(d.attempts)+1}}];""")
+            workflow.link(retry_gate, source + " retry context")
+            workflow.link(source + " retry context", "Reserve quote")
+            workflow.link(retry_gate, "Current draft", 1)
+        else:
+            workflow.link(source + " failure saved", "Current draft")
 
     # Uploaded paths are deterministic. On a partial upload failure all paths
     # can therefore be deleted idempotently before the draft is failed.

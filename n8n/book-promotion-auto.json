@@ -42,7 +42,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const config={\n workflow_mode:'auto',supabase_url:'https://aqfemzwrkzimzakqiwls.supabase.co',\n account_id:'35706486682300403',graph_version:'v26.0',telegram_chat_id:'1182925320',\n text_model:'gpt-5.6-sol',image_model:'gpt-image-2',\n cloudflare_account_id:'96d3571d9a215411bd11934aa57265c3',\n cloudflare_text_model:'@cf/meta/llama-3.3-70b-instruct-fp8-fast',\n cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',\n media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',\n signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,\n publish_enabled:false,resume_post_id:'',resume_generation:false\n};\nreturn $input.all().map(item=>({json:{...item.json,...config}}));"
+        "jsCode": "const config={\n workflow_mode:'auto',supabase_url:'https://aqfemzwrkzimzakqiwls.supabase.co',\n account_id:'35706486682300403',graph_version:'v26.0',telegram_chat_id:'1182925320',\n text_model:'gpt-5.6-sol',image_model:'gpt-image-2',\n cloudflare_account_id:'96d3571d9a215411bd11934aa57265c3',\n cloudflare_text_model:'@cf/meta/llama-3.3-70b-instruct-fp8-fast',\n cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',\n media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',\n signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,\n max_image_quote_attempts:5,\n publish_enabled:false,resume_post_id:'',resume_generation:false\n};\nreturn $input.all().map(item=>({json:{...item.json,...config}}));"
       }
     },
     {
@@ -147,7 +147,7 @@
         "method": "POST",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ {p_account:$json.account_id,p_day:$now.setZone('Europe/Berlin').toISODate(),p_execution_mode:'auto'} }}",
+        "jsonBody": "={{ {p_account:$json.account_id,p_day:$now.setZone('Europe/Berlin').toISODate(),p_execution_mode:'auto',p_generation_attempt:Number($json.generation_attempt??0)} }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "supabaseApi"
       },
@@ -2755,7 +2755,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Text request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -2802,7 +2802,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Text request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -2849,7 +2849,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Generate carousel?').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -2896,7 +2896,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);const retryable=!/(?:timeout|timed out|econnreset|socket hang up)/i.test(message);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message,retryable}}}];"
       }
     },
     {
@@ -2933,55 +2933,55 @@
       }
     },
     {
-      "id": "e5f4b5a5-ef87-5fcd-a032-d6a40ee5e763",
-      "name": "Convert generated image to file failed",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "750d0f42-569a-553f-848e-e9c7fb7ccc22",
+      "name": "Cloudflare FLUX image retry with new quote?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
       "position": [
         1120,
         3450
       ],
       "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Cloudflare FLUX image retry with new quote?",
+              "leftValue": "={{ $('Cloudflare FLUX image failed').item.json.p_data.retryable === true && $json.post?.status === 'failed' && Number($json.post.attempts) + 1 < $('Config').first().json.max_image_quote_attempts }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       }
     },
     {
-      "id": "0c957ba1-3f54-552f-abed-6d5bea52f373",
-      "name": "Convert generated image to file failure saved",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "f2a9b6f7-f60e-5723-a328-f630fb25080f",
+      "name": "Cloudflare FLUX image retry context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1400,
         3450
       ],
       "parameters": {
-        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
-        "options": {
-          "timeout": 30000,
-          "redirect": {
-            "redirect": {
-              "followRedirects": false
-            }
-          }
-        },
-        "method": "POST",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ $json }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "supabaseApi"
-      },
-      "credentials": {
-        "supabaseApi": {
-          "id": "REPLACE_supabaseApi",
-          "name": "BookPromotion supabaseApi"
-        }
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$input.first().json.post;return [{json:{account_id:d.account_id,generation_attempt:Number(d.attempts)+1}}];"
       }
     },
     {
-      "id": "405ae59b-c996-52ed-9af6-a1597f991efb",
-      "name": "Convert base to JPEG failed",
+      "id": "e5f4b5a5-ef87-5fcd-a032-d6a40ee5e763",
+      "name": "Convert generated image to file failed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -2990,12 +2990,12 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);const retryable=!/(?:timeout|timed out|econnreset|socket hang up)/i.test(message);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message,retryable}}}];"
       }
     },
     {
-      "id": "a5ec13aa-c879-55af-8461-6900ae851a4a",
-      "name": "Convert base to JPEG failure saved",
+      "id": "0c957ba1-3f54-552f-abed-6d5bea52f373",
+      "name": "Convert generated image to file failure saved",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -3027,17 +3027,111 @@
       }
     },
     {
-      "id": "c75dca9a-e0be-5b9a-b426-975ad8f036ae",
-      "name": "Crop base to 4:5 failed",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "71b343a7-f6ff-556d-8dd3-889a11398a36",
+      "name": "Convert generated image to file retry with new quote?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
       "position": [
         0,
         3680
       ],
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Convert generated image to file retry with new quote?",
+              "leftValue": "={{ $('Convert generated image to file failed').item.json.p_data.retryable === true && $json.post?.status === 'failed' && Number($json.post.attempts) + 1 < $('Config').first().json.max_image_quote_attempts }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "123cae7d-0a10-5ca1-b865-6050f5815a5f",
+      "name": "Convert generated image to file retry context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        3680
+      ],
+      "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$input.first().json.post;return [{json:{account_id:d.account_id,generation_attempt:Number(d.attempts)+1}}];"
+      }
+    },
+    {
+      "id": "405ae59b-c996-52ed-9af6-a1597f991efb",
+      "name": "Convert base to JPEG failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        3680
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+      }
+    },
+    {
+      "id": "a5ec13aa-c879-55af-8461-6900ae851a4a",
+      "name": "Convert base to JPEG failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        3680
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "c75dca9a-e0be-5b9a-b426-975ad8f036ae",
+      "name": "Crop base to 4:5 failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        3680
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3046,7 +3140,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
+        1400,
         3680
       ],
       "parameters": {
@@ -3079,12 +3173,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3093,7 +3187,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
+        1960,
         3680
       ],
       "parameters": {
@@ -3126,12 +3220,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        3680
+        0,
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3140,8 +3234,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        3680
+        280,
+        3910
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3173,12 +3267,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        3680
+        560,
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3187,8 +3281,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        3680
+        840,
+        3910
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3220,12 +3314,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        1120,
         3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3234,7 +3328,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
+        1400,
         3910
       ],
       "parameters": {
@@ -3267,12 +3361,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3281,7 +3375,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
+        1960,
         3910
       ],
       "parameters": {
@@ -3314,12 +3408,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        3910
+        0,
+        4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3328,8 +3422,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        3910
+        280,
+        4140
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3361,12 +3455,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        3910
+        560,
+        4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3375,8 +3469,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        3910
+        840,
+        4140
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3408,12 +3502,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        1120,
         4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3422,7 +3516,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
+        1400,
         4140
       ],
       "parameters": {
@@ -3455,12 +3549,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3469,7 +3563,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
+        1960,
         4140
       ],
       "parameters": {
@@ -3502,12 +3596,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4140
+        0,
+        4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3516,8 +3610,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        4140
+        280,
+        4370
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3549,12 +3643,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4140
+        560,
+        4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3563,8 +3657,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        4140
+        840,
+        4370
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3596,12 +3690,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        1120,
         4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3610,7 +3704,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
+        1400,
         4370
       ],
       "parameters": {
@@ -3643,12 +3737,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3657,7 +3751,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
+        1960,
         4370
       ],
       "parameters": {
@@ -3690,12 +3784,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4370
+        0,
+        4600
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3704,8 +3798,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        4370
+        280,
+        4600
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3737,12 +3831,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4370
+        560,
+        4600
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const d=$('Image request').isExecuted?$('Image request').first().json:$('Text request').first().json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json,message=String(input.error?.message||input.message||input.error||'Generation failed').slice(0,4000);return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_action:'fail',p_data:{error:message}}}];"
       }
     },
     {
@@ -3751,8 +3845,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        4370
+        840,
+        4600
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3784,7 +3878,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        1120,
         4600
       ],
       "parameters": {
@@ -3798,7 +3892,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
+        1400,
         4600
       ],
       "parameters": {
@@ -3832,7 +3926,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         4600
       ],
       "parameters": {
@@ -3846,7 +3940,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
+        1960,
         4600
       ],
       "parameters": {
@@ -3879,8 +3973,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4600
+        0,
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3893,8 +3987,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        4600
+        280,
+        4830
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket }}",
@@ -3927,8 +4021,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4600
+        560,
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3941,8 +4035,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        4600
+        840,
+        4830
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3974,7 +4068,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        1120,
         4830
       ],
       "parameters": {
@@ -3988,7 +4082,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
+        1400,
         4830
       ],
       "parameters": {
@@ -4022,7 +4116,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         4830
       ],
       "parameters": {
@@ -4036,7 +4130,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
+        1960,
         4830
       ],
       "parameters": {
@@ -4050,8 +4144,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4830
+        0,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4064,8 +4158,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        4830
+        280,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4078,8 +4172,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4830
+        560,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4092,8 +4186,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        4830
+        840,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4106,7 +4200,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        1120,
         5060
       ],
       "parameters": {
@@ -4120,7 +4214,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
+        1400,
         5060
       ],
       "parameters": {
@@ -4134,7 +4228,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         5060
       ],
       "parameters": {
@@ -4148,7 +4242,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
+        1960,
         5060
       ],
       "parameters": {
@@ -4162,8 +4256,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        5060
+        0,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4176,8 +4270,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        5060
+        280,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4190,8 +4284,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        5060
+        560,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4204,8 +4298,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        5060
+        840,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4218,7 +4312,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        1120,
         5290
       ],
       "parameters": {
@@ -4232,7 +4326,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
+        1400,
         5290
       ],
       "parameters": {
@@ -4246,7 +4340,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
+        1680,
         5290
       ],
       "parameters": {
@@ -4260,7 +4354,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
+        1960,
         5290
       ],
       "parameters": {
@@ -4274,8 +4368,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        5290
+        0,
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4288,8 +4382,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        5290
+        280,
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4302,8 +4396,8 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        1680,
-        5290
+        560,
+        5520
       ],
       "parameters": {
         "content": "## Book Promotion Carousel · auto\nInactive import for n8n 2.35.4. Assign credentials before testing.\nAll generated slides use private Supabase Storage; signed URLs are ephemeral.\npublish_enabled=false is the default dry-run gate. See n8n/README.md.",
@@ -6072,7 +6166,36 @@
       "main": [
         [
           {
+            "node": "Cloudflare FLUX image retry with new quote?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cloudflare FLUX image retry with new quote?": {
+      "main": [
+        [
+          {
+            "node": "Cloudflare FLUX image retry context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Current draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cloudflare FLUX image retry context": {
+      "main": [
+        [
+          {
+            "node": "Reserve quote",
             "type": "main",
             "index": 0
           }
@@ -6094,7 +6217,36 @@
       "main": [
         [
           {
+            "node": "Convert generated image to file retry with new quote?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert generated image to file retry with new quote?": {
+      "main": [
+        [
+          {
+            "node": "Convert generated image to file retry context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Current draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert generated image to file retry context": {
+      "main": [
+        [
+          {
+            "node": "Reserve quote",
             "type": "main",
             "index": 0
           }

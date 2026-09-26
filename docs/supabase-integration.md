@@ -1,6 +1,6 @@
 # Supabase-Übertragung und Promotion-Vertrag
 
-Stand: 10.09.2026. Das produktive Projekt `AutomatedBookPromotion` (`aqfemzwrkzimzakqiwls`, PostgreSQL 17) läuft mit dem Carousel-Vertrag v5. Migrationen in Namensreihenfolge:
+Stand: 26.09.2026. Der lokale Code verwendet den Carousel-Vertrag v6. Das produktive Projekt `AutomatedBookPromotion` (`aqfemzwrkzimzakqiwls`, PostgreSQL 17) bleibt bis zum Anwenden der letzten Migration auf v5. Migrationen in Namensreihenfolge:
 
 1. `20260908065204_bookpromo_initial.sql`
 2. `20260908065212_bookpromo_sync_and_approvals.sql`
@@ -10,14 +10,15 @@ Stand: 10.09.2026. Das produktive Projekt `AutomatedBookPromotion` (`aqfemzwrkzi
 6. `20260909100000_overlay_chapter_context.sql`
 7. `20260909114500_allow_book_sync_with_open_drafts.sql`
 8. `20260910050339_carousel_contract_and_media_storage.sql`
+9. `20260926090000_image_quote_retry.sql`
 
-Die Dateien liegen in `supabase/migrations`. Die v5-Datei wurde mit der Supabase-CLI angelegt und am 10.09.2026 auf das Zielprojekt angewendet. Ziel- und Python-Schemaversion sind **5**. Nicht manuell das historische Bootstrap-Script ausführen.
+Die Dateien liegen in `supabase/migrations`. Die v5-Datei wurde mit der Supabase-CLI angelegt und am 10.09.2026 auf das Zielprojekt angewendet. Die v6-Migration ist lokal vorbereitet und muss vor dem Import der neuen Auto-Workflow-Datei angewendet werden; die Python-Schemaversion ist **6**. Nicht manuell das historische Bootstrap-Script ausführen.
 
 ## Lokale Daten übertragen
 
 **Buchstand nach Supabase übertragen** sendet einen fertig analysierten, prüffreien Buchstand: Buchdaten und manuelles Profil, Buchversion und Dateihash, Kapiteltexte und Fundstellen, Originalzitate, Bewertungen sowie Sperren. Vor dem Netzwerkzugriff friert das Tool den lokalen Einstellungs- und Assetstand in einer revisionsgeschützten SQLite-Transaktion ein und rendert daraus Titel-Overlay und CTA-Schlussseite erneut. Das PNG-Overlay wird unter `<book_id>/<sha256>.png`, das CTA-JPEG unter `<book_id>/carousel/<sha256>.jpg` im privaten Bucket `book-promotion-assets` gespeichert. `profile` enthält anschließend `overlay_path`, `publication_mode`, `carousel_end_text` und `carousel_end_slide_path`. Beim Reservieren ergänzt die Datenbank `chapter_position` und `chapter_name` in die unveränderliche Draft-Kopie des Buchprofils. Frontcover, Logo, DOCX, Zugangsdaten und lokale Schriftdateien werden nicht übertragen. Auch ein inaktiver, noch unvollständiger Buchstand oder ein Stand ohne geeignete Zitate ist übertragbar; daraus kann kein Entwurf reserviert werden.
 
-Vor dem Storage-Upload prüft Python ausdrücklich Schemaversion 5; gegen v4 wird mit einer verständlichen Migrationsmeldung abgebrochen. Ein SHA-256-Hash identifiziert den gesamten Payload einschließlich der endgültigen privaten Objektpfade. Die serverseitige Funktion `bookpromo_sync` übernimmt alles in einer Postgres-Transaktion. Sie prüft Quellzuordnung, bestehende IDs und wortgetreue Ausschnitte erneut. Erst nach bestätigtem Erfolg wird eine lokale Quittung in `local_sync_receipts` gespeichert. Ein identischer erneuter Aufruf erzeugt keine doppelten Kapitel oder Zitate, auch wenn die vorherige Antwort verloren ging. Digestpfade machen wiederholte Asset-Uploads inhaltlich identisch.
+Vor dem Storage-Upload prüft Python ausdrücklich Schemaversion 6; gegen ältere Stände wird mit einer verständlichen Migrationsmeldung abgebrochen. Ein SHA-256-Hash identifiziert den gesamten Payload einschließlich der endgültigen privaten Objektpfade. Die serverseitige Funktion `bookpromo_sync` übernimmt alles in einer Postgres-Transaktion. Sie prüft Quellzuordnung, bestehende IDs und wortgetreue Ausschnitte erneut. Erst nach bestätigtem Erfolg wird eine lokale Quittung in `local_sync_receipts` gespeichert. Ein identischer erneuter Aufruf erzeugt keine doppelten Kapitel oder Zitate, auch wenn die vorherige Antwort verloren ging. Digestpfade machen wiederholte Asset-Uploads inhaltlich identisch.
 
 Eine abweichende entfernte Revision wird als Konflikt abgelehnt. Ein offener Entwurf behält sein eingefrorenes `quote_text` und `book_profile`; spätere Buch-Synchronisationen verändern diesen Snapshot nicht. Alte Zitate/Kapitel werden bei verändertem aktuellem Snapshot ausgeblendet, nicht gelöscht; bestehende Post-Referenzen bleiben erhalten. Hat eine Quellversion bereits Posts, verlangt eine geänderte Extraktionsrevision den Import eines neuen Dokuments. Historischer Text wird nicht umgeschrieben.
 
@@ -29,11 +30,11 @@ Alle Aufrufe gehen an `POST /rest/v1/rpc/<name>` mit serverseitigem Credential. 
 
 ### `bookpromo_reserve`
 
-Parameter: `p_account` (Zielkonto), `p_day` (lokales Datum `YYYY-MM-DD` in Europe/Berlin), `p_execution_mode` (`review` oder `auto`).
+Parameter: `p_account` (Zielkonto), `p_day` (lokales Datum `YYYY-MM-DD` in Europe/Berlin), `p_execution_mode` (`review` oder `auto`) und für neue Workflows `p_generation_attempt` (0–10). Der kompatible Drei-Parameter-Aufruf setzt den Versuch auf 0.
 
 Ergebnis `outcome`: `inactive`, `no_quote`, `existing`, `created` oder `blocked_by_other_mode`. Nur `created` startet eine neue Generierung. `created`/`existing` enthalten `post` mit Entwurfs-ID, Modus, Status, Revision, technischem Aktionstoken, eingefrorenem Originalzitat und Buchprofil. Ein offener Entwurf wird nur vom Workflow desselben Modus wiederaufgenommen.
 
-Die Auswahl sperrt die Konfiguration und serialisiert die kurze Reservierung auch kontenübergreifend. Sie berücksichtigt nur aktive, vollständig konfigurierte Bücher mit passendem `publication_mode`. Buchauswahl ist gleichverteilt über geeignete Bücher; danach wird innerhalb des Buchs ein verfügbares Zitat gewählt. Bereits veröffentlichte Zitate sind standardmäßig ausgeschlossen, verworfene Zitate unterliegen einer Sperrfrist. Ein offener Post blockiert das Konto und sein Zitat.
+Die Auswahl sperrt die Konfiguration und serialisiert die kurze Reservierung auch kontenübergreifend. Sie berücksichtigt nur aktive, vollständig konfigurierte Bücher mit passendem `publication_mode`. Buchauswahl ist gleichverteilt über geeignete Bücher; danach wird innerhalb des Buchs ein verfügbares Zitat gewählt. Bereits veröffentlichte Zitate sind standardmäßig ausgeschlossen, verworfene Zitate unterliegen einer Sperrfrist. Fehlgeschlagene Zitate werden für denselben Modus am selben Tag ausgeschlossen. Ein offener Post blockiert das Konto und sein Zitat. Der übergebene Generierungsversuch wird in `posts.attempts` gespeichert.
 
 ### `bookpromo_transition`
 
@@ -76,4 +77,4 @@ Lokal geprüft: Migration des leeren Schemas und eines v4-Testbestands, RLS/Gran
 
 Supabase Security Advisors melden ausschließlich **INFO** für RLS ohne öffentliche Policies. Das entspricht dem beabsichtigten Backend-Zugriff: keine Buchtexte für `anon`/`authenticated`. Erklärung: [RLS ohne Policy](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy). Die Performance-Hinweise betreffen unbenutzte Indizes in der noch leeren Datenbank und den zusammengesetzten Fremdschlüssel von `books`; dessen führende Buch-ID ist bereits eindeutig über den Primärschlüssel indiziert.
 
-Der bestehende Einzelbild-Workflow ist mit Live-Schema v5 bewusst nicht mehr kompatibel und wurde entfernt. Die beiden lokal generierten Carousel-Workflows verwenden den hier beschriebenen RPC- und Storage-Vertrag; Import, Credential-Zuordnung, Dry-Run und Livetest erfolgen bewusst separat. Siehe [n8n-Anleitung](../n8n/README.md).
+Der bestehende Einzelbild-Workflow ist mit dem aktuellen Schema bewusst nicht mehr kompatibel und wurde entfernt. Die beiden lokal generierten Carousel-Workflows verwenden den hier beschriebenen RPC- und Storage-Vertrag; Migration, Import, Credential-Zuordnung, Dry-Run und Livetest erfolgen bewusst separat. Siehe [n8n-Anleitung](../n8n/README.md).
