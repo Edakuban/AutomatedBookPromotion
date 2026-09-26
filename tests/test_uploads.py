@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from io import BytesIO
+import sqlite3
 from uuid import UUID, uuid4
 import zipfile
 
@@ -151,6 +152,66 @@ def test_missing_book_and_original_not_served(client, settings):
     book = LocalUploadStore(settings.app_data_dir, 1024 * 1024).get_book(UUID(result["book_id"]))
     assert client.get("/data/" + book.source_path).status_code == 404
     assert client.get(f"/books/local/{uuid4()}").status_code == 404
+
+
+def test_delete_book_requires_idle_project_and_removes_all_local_data(client, settings):
+    result = client.post("/uploads", files={"file": ("Roman.docx", docx_bytes())}).json()
+    book_id = result["book_id"]
+    store = LocalUploadStore(settings.app_data_dir, 1024 * 1024)
+    book = store.get_book(UUID(book_id))
+    page = client.get(result["url"])
+    assert "Danger Zone" in page.text
+    assert "Bereits synchronisierte Daten in Supabase bleiben erhalten" in page.text
+    assert "data-delete-book-open disabled" in page.text
+
+    blocked = client.post(result["url"] + "/delete", follow_redirects=False)
+    assert blocked.status_code == 409
+    assert store.get_book(UUID(book_id)) is not None
+
+    asset_directory = settings.app_data_dir / "book-assets" / book_id
+    asset_directory.mkdir(parents=True)
+    (asset_directory / "cover.png").write_bytes(b"local-image")
+    overlay = settings.app_data_dir / "overlays" / f"{book_id}.png"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_bytes(b"local-overlay")
+    with sqlite3.connect(store.db_path) as connection, connection:
+        connection.execute("update local_import_jobs set state='done' where book_id=?", (book_id,))
+        connection.execute("create table local_analysis_runs (id text primary key, book_id text, state text)")
+        connection.execute("create table local_analysis_checkpoints (run_id text, step_key text, payload_json text)")
+        connection.execute("insert into local_analysis_runs values ('run',?,'done')", (book_id,))
+        connection.execute("insert into local_analysis_checkpoints values ('run','step','{}')")
+        connection.execute("create table local_book_assets (book_id text)")
+        connection.execute("insert into local_book_assets values (?)", (book_id,))
+        connection.execute("create table local_book_settings (book_id text, revision integer, details_json text, updated_at real)")
+        connection.execute("insert into local_book_settings values (?,1,'{}',0)", (book_id,))
+        connection.execute("create table local_extractions (book_id text)")
+        connection.execute("insert into local_extractions values (?)", (book_id,))
+        connection.execute("create table local_quote_controls (book_id text, source_key text, blocked integer, revision integer, updated_at real)")
+        connection.execute("insert into local_quote_controls values (?,'quote',0,1,0)", (book_id,))
+        connection.execute("create table local_sync_receipts (book_id text)")
+        connection.execute("insert into local_sync_receipts values (?)", (book_id,))
+
+    deleted = client.post(result["url"] + "/delete", follow_redirects=False)
+    assert deleted.status_code == 303
+    assert deleted.headers["location"].endswith("/?deleted=true")
+    assert store.get_book(UUID(book_id)) is None
+    assert not (settings.app_data_dir / book.source_path).exists()
+    assert not asset_directory.exists()
+    assert not overlay.exists()
+    with sqlite3.connect(store.db_path) as connection:
+        assert connection.execute("pragma integrity_check").fetchone()[0] == "ok"
+        for table in ("local_analysis_runs", "local_book_assets", "local_book_settings", "local_extractions", "local_import_jobs", "local_quote_controls", "local_sync_receipts"):
+            assert connection.execute(f"select count(*) from {table} where book_id=?", (book_id,)).fetchone()[0] == 0
+        assert connection.execute("select count(*) from local_analysis_checkpoints").fetchone()[0] == 0
+    confirmation = client.get(deleted.headers["location"])
+    assert "vollständig gelöscht" in confirmation.text
+    assert "Supabase wurde nicht verändert" in confirmation.text
+
+
+def test_delete_book_rejects_foreign_origin(client):
+    result = client.post("/uploads", files={"file": ("Roman.docx", docx_bytes())}).json()
+    response = client.post(result["url"] + "/delete", headers={"Origin": "https://foreign.example"})
+    assert response.status_code == 403
 
 
 def test_failed_storage_cleans_up_files(settings, monkeypatch):

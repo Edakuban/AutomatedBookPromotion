@@ -8,6 +8,7 @@
   --border: #dce1e7;
   --muted: #5b6676;
   --accent: #2458a0;
+  --danger: #a32626;
 }
 * { box-sizing: border-box; }
 body { margin: 0; }
@@ -50,6 +51,7 @@ main.container { padding-top: 2.5rem; min-height: calc(100vh - 158px); padding-b
 .upload-controls input::file-selector-button { padding: .4rem .6rem; border: 1px solid #a3afbd; border-radius: 4px; background: #fff; cursor: pointer; }
 progress { display: block; width: 100%; margin-top: .6rem; accent-color: var(--accent); }
 .notice.error { border-color: #ad3030; background: #fff0ef; color: #822222; }
+.notice.success { border-color: #2d7a47; background: #eef8f1; color: #225d37; }
 .breadcrumb { margin-bottom: 1rem; }
 .setting-list dd { overflow-wrap: anywhere; max-width: 70%; }
 #content > .panel + .panel { margin-top: 2rem; }
@@ -77,6 +79,17 @@ dd { margin: 0; }
 .notice { margin: 1.3rem 0; padding: .85rem 1rem; border-left: 3px solid #7b98bc; background: #ebf0f7; color: #354c69; }
 .next-settings { padding: 1.3rem; margin-top: 2rem; }
 .next-settings h2 { margin-bottom: .5rem; }
+.danger-zone { border-color: #d8a1a1; background: #fffafa; }
+.danger-zone h2 { color: #7f1d1d; }
+.danger-button { background: var(--danger); border-color: var(--danger); }
+.danger-button:hover:not(:disabled) { background: #7f1d1d; border-color: #7f1d1d; }
+.secondary-button { color: #202b3b; background: #fff; border-color: #a3afbd; }
+.secondary-button:hover:not(:disabled) { color: #202b3b; background: #edf0f4; }
+.delete-dialog { width: min(34rem, calc(100% - 2rem)); padding: 0; border: 1px solid #d8a1a1; border-radius: 8px; color: #202b3b; box-shadow: 0 18px 60px rgb(20 29 43 / 30%); }
+.delete-dialog::backdrop { background: rgb(20 29 43 / 55%); }
+.delete-dialog form { padding: 1.4rem; }
+.delete-dialog h2 { margin-bottom: .8rem; color: #7f1d1d; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: .7rem; flex-wrap: wrap; margin-top: 1.3rem; }
 .site-footer { min-height: 82px; display: flex; justify-content: space-between; gap: 1rem; align-items: center; color: var(--muted); font-size: .875rem; border-top: 1px solid var(--border); }
 [hidden] { display: none !important; }
 .extract-form, .form-actions { margin-top: 1rem; }

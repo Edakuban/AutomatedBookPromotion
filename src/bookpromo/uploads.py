@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 from typing import BinaryIO
@@ -133,6 +134,105 @@ class LocalUploadStore:
         with closing(self._read_connection()) as connection:
             row = connection.execute("select * from local_books where id = ?", (str(book_id),)).fetchone()
         return LocalBook.from_row(row) if row else None
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+        return connection.execute(
+            "select 1 from sqlite_master where type='table' and name=?", (name,)
+        ).fetchone() is not None
+
+    def delete_book(self, book_id: UUID) -> LocalBook:
+        """Delete one idle local project and its files without touching remote data."""
+        if not self.db_path.is_file():
+            raise UploadError("Das Buch wurde nicht gefunden.", 404)
+        normalized_id = str(UUID(str(book_id)))
+        staged: list[tuple[Path, Path]] = []
+        staging_root: Path | None = None
+        committed = False
+        try:
+            with closing(sqlite3.connect(self.db_path, timeout=15)) as connection:
+                connection.row_factory = sqlite3.Row
+                with connection:
+                    connection.execute("begin immediate")
+                    if not self._table_exists(connection, "local_books"):
+                        raise UploadError("Das Buch wurde nicht gefunden.", 404)
+                    row = connection.execute(
+                        "select * from local_books where id=?", (normalized_id,)
+                    ).fetchone()
+                    if row is None:
+                        raise UploadError("Das Buch wurde nicht gefunden.", 404)
+                    if (
+                        self._table_exists(connection, "local_import_jobs")
+                        and connection.execute(
+                            "select 1 from local_import_jobs where book_id=? and state in ('queued','running')",
+                            (normalized_id,),
+                        ).fetchone()
+                    ):
+                        raise UploadError(
+                            "Das Buch kann während eines laufenden Imports nicht gelöscht werden.", 409
+                        )
+                    if (
+                        self._table_exists(connection, "local_analysis_runs")
+                        and connection.execute(
+                            "select 1 from local_analysis_runs where book_id=? and state in ('queued','running')",
+                            (normalized_id,),
+                        ).fetchone()
+                    ):
+                        raise UploadError(
+                            "Das Buch kann während einer laufenden KI-Analyse nicht gelöscht werden.", 409
+                        )
+
+                    book = LocalBook.from_row(row)
+                    expected_source = (
+                        self.root / "originals" / f"{UUID(book.version_id)}.docx"
+                    ).resolve()
+                    source = (self.root / book.source_path).resolve()
+                    if source != expected_source:
+                        raise UploadError("Der gespeicherte Buchpfad ist ungültig.", 503)
+                    file_targets = [
+                        (source, "source.docx"),
+                        ((self.root / "book-assets" / normalized_id).resolve(), "book-assets"),
+                        ((self.root / "overlays" / f"{normalized_id}.png").resolve(), "overlay.png"),
+                    ]
+                    existing_targets = [(path, name) for path, name in file_targets if path.exists()]
+                    if existing_targets:
+                        staging_root = self.root / "pending" / f"delete-{normalized_id}-{uuid4().hex}"
+                        staging_root.mkdir(parents=True)
+                        for original, name in existing_targets:
+                            temporary = staging_root / name
+                            os.replace(original, temporary)
+                            staged.append((original, temporary))
+
+                    if self._table_exists(connection, "local_analysis_checkpoints") and self._table_exists(
+                        connection, "local_analysis_runs"
+                    ):
+                        connection.execute(
+                            "delete from local_analysis_checkpoints where run_id in "
+                            "(select id from local_analysis_runs where book_id=?)",
+                            (normalized_id,),
+                        )
+                    for table in (
+                        "local_analysis_runs",
+                        "local_book_assets",
+                        "local_book_settings",
+                        "local_extractions",
+                        "local_import_jobs",
+                        "local_quote_controls",
+                        "local_sync_receipts",
+                    ):
+                        if self._table_exists(connection, table):
+                            connection.execute(f"delete from {table} where book_id=?", (normalized_id,))
+                    connection.execute("delete from local_books where id=?", (normalized_id,))
+                committed = True
+        finally:
+            if not committed:
+                for original, temporary in reversed(staged):
+                    if temporary.exists() and not original.exists():
+                        original.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(temporary, original)
+            if staging_root is not None:
+                shutil.rmtree(staging_root, ignore_errors=not committed)
+        return book
 
     def save(self, source: BinaryIO, original_name: str | None) -> tuple[LocalBook, bool]:
         name = display_filename(original_name)

@@ -135,4 +135,25 @@
       <span class="muted small">Übernimmt Kapitel, Zitate, Profil und Sperren gemeinsam. Ein offener Post verhindert Änderungen.</span>
     </form>
   {% endif %}
+  {% set deletion_active = not delete_available or delete_blocked or (job and job.active) or (analysis and analysis.active) %}
+  <section class="panel next-settings danger-zone" aria-labelledby="danger-zone-title">
+    <h2 id="danger-zone-title">Danger Zone</h2>
+    <p>Löscht das Buch einschließlich Originaldatei, Extraktion, Analyseergebnissen und lokalen Bildern von diesem Rechner. Bereits synchronisierte Daten in Supabase bleiben erhalten.</p>
+    <div class="form-actions">
+      <button type="button" class="danger-button" data-delete-book-open {% if deletion_active %}disabled aria-describedby="delete-book-blocked"{% endif %}>Lokales Buch löschen</button>
+    </div>
+    {% if not delete_available %}<p id="delete-book-blocked" class="muted small">Bitte die Anwendung neu starten, um die neue Löschfunktion zu aktivieren.</p>
+    {% elif deletion_active %}<p id="delete-book-blocked" class="muted small">Das Buch kann erst gelöscht werden, wenn Import und KI-Analyse beendet sind.</p>{% endif %}
+  </section>
+  <dialog id="delete-book-dialog" class="delete-dialog" aria-labelledby="delete-book-title">
+    <form method="post" action="/books/local/{{ book.id }}/delete">
+      <h2 id="delete-book-title">Lokales Buch dauerhaft löschen?</h2>
+      <p><strong>{{ book.title }}</strong> wird mit Originaldatei, Extraktion, Analyseergebnissen und lokalen Bildern gelöscht.</p>
+      <p>Bereits synchronisierte Daten in Supabase werden nicht gelöscht.</p>
+      <div class="dialog-actions">
+        <button type="button" class="secondary-button" data-delete-book-cancel>Abbrechen</button>
+        <button type="submit" class="danger-button" data-delete-book-submit>Endgültig lokal löschen</button>
+      </div>
+    </form>
+  </dialog>
 {% endblock %}

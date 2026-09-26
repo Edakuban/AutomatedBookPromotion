@@ -5,6 +5,9 @@
     <h1>Bücher</h1>
     <span class="badge">Lokaler Upload</span>
   </div>
+  {% if local_deleted %}
+    <div class="notice success" role="status"><p>Das lokale Buchprojekt wurde vollständig gelöscht. Supabase wurde nicht verändert.</p></div>
+  {% endif %}
 
   <form id="upload-form" class="upload-panel" action="{{ url_for('upload_book') }}" method="post" enctype="multipart/form-data" aria-labelledby="upload-title" aria-describedby="upload-help" data-max-bytes="{{ max_upload_mb * 1024 * 1024 }}">
     <div>

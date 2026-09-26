@@ -212,6 +212,20 @@ for (const analysisForm of document.querySelectorAll(".analysis-start-form")) {
     button.textContent = "KI-Analyse wird vorgemerkt …";
   });
 }
+
+const deleteBookButton = document.querySelector("[data-delete-book-open]");
+const deleteBookDialog = document.getElementById("delete-book-dialog");
+if (deleteBookButton && deleteBookDialog) {
+  const cancelButton = deleteBookDialog.querySelector("[data-delete-book-cancel]");
+  const deleteForm = deleteBookDialog.querySelector("form");
+  const submitButton = deleteBookDialog.querySelector("[data-delete-book-submit]");
+  deleteBookButton.addEventListener("click", () => deleteBookDialog.showModal());
+  cancelButton.addEventListener("click", () => deleteBookDialog.close());
+  deleteForm.addEventListener("submit", () => {
+    submitButton.disabled = true;
+    submitButton.textContent = "Wird gelöscht …";
+  });
+}
 for (const extractionForm of document.querySelectorAll(".extract-form")) {
   extractionForm.addEventListener("submit", () => {
     const button = extractionForm.querySelector("button");

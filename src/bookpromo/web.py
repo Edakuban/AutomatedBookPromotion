@@ -87,7 +87,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
 
     @app.get("/", response_class=HTMLResponse, name="books")
     async def books(request: Request, page: int = Query(default=1, ge=1, le=100000),
-                    local_page: int = Query(default=1, ge=1, le=100000)):
+                    local_page: int = Query(default=1, ge=1, le=100000), deleted: bool = False):
         local_books, local_more, local_error = [], False, None
         local_jobs = {}
         local_management = {}
@@ -114,6 +114,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 "local_jobs": local_jobs,
                 "local_management": local_management,
                 "local_error": local_error, "max_upload_mb": settings.app_max_upload_mb,
+                "local_deleted": deleted,
                 "show_remote": settings.supabase_enabled or repository is not None,
             },
         )
@@ -169,6 +170,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             record = await run_in_threadpool(extraction_store.get, str(book_id))
             jobs = await run_in_threadpool(job_store.statuses, [str(book_id)])
             analysis = await run_in_threadpool(analysis_store.latest, str(book_id), include_result=True)
+            profile_analysis = await run_in_threadpool(analysis_store.latest, str(book_id), purpose="profile")
             management = await run_in_threadpool(management_store.get, str(book_id)) if book else None
             sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
         except (OSError, sqlite3.Error):
@@ -180,11 +182,31 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                      "analysis": analysis, "analysis_configured": not settings.missing_for("openwebui"),
                      "management": management,
                      "sync_receipt": sync_receipt, "sync_enabled": settings.supabase_enabled,
+                     "delete_available": True,
+                     "delete_blocked": bool(
+                         (jobs.get(str(book_id)) or {}).get("active")
+                         or (analysis or {}).get("active")
+                         or (profile_analysis or {}).get("active")
+                     ),
                      "chapter_blocked_counts": {c.id: sum(q["blocked"] and q["quote"].chapter_id == c.id for q in management["quotes"])
                          for c in record.result.chapters} if management and record and record.result else {},
                      "chapter_quote_counts": {c.id: sum(q["usable"] and q["quote"].chapter_id == c.id for q in management["quotes"])
                          for c in record.result.chapters} if analysis and analysis["result"] and record and record.result else {},
                      "result": record.result if record else None})
+
+    @app.post("/books/local/{book_id}/delete", name="delete_book")
+    async def delete_book(request: Request, book_id: UUID):
+        require_local_origin(request)
+        if sync_lock.locked():
+            raise UploadError("Während einer Supabase-Übertragung kann kein Buch gelöscht werden.", 409)
+        try:
+            await run_in_threadpool(local_store.delete_book, book_id)
+        except (OSError, sqlite3.Error):
+            raise UploadError(
+                "Das lokale Buch konnte nicht vollständig gelöscht werden. Bitte Ablage und Zugriffsrechte prüfen.",
+                503,
+            ) from None
+        return RedirectResponse(str(request.url_for("books")) + "?deleted=true", status_code=303)
 
     @app.post("/books/local/{book_id}/extract", name="extract_book")
     async def extract_book(request: Request, book_id: UUID):
