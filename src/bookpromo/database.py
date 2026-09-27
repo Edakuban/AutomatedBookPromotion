@@ -11,12 +11,13 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from .config import Settings
 from .overlay import OVERLAY_BUCKET
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
+REEL_BUCKET = "book-promotion-reels"
 MESSAGES = {
     "disabled": "Supabase ist bis Schritt 3.2 deaktiviert.",
     "configuration": "Supabase-URL und Server-Schlüssel fehlen oder sind ungeeignet.",
     "credentials": "Supabase hat den Zugriff abgelehnt. Server-Schlüssel und Berechtigungen prüfen.",
-    "schema": "Das Supabase-Schema ist nicht auf Carousel-Version 5. Bitte zuerst die vorbereitete v5-Migration einspielen.",
+    "schema": "Das Supabase-Schema ist nicht auf Version 8. Bitte zuerst die vorbereiteten Migrationen bis v8 einspielen.",
     "unavailable": "Supabase ist derzeit nicht erreichbar. Verbindung und Server prüfen.",
     "response": "Supabase hat eine unerwartete Antwort geliefert.",
     "conflict": "Supabase enthält einen neueren Stand oder einen offenen Post. Bitte den Datenbankstand prüfen und den offenen Post abschließen.",
@@ -83,11 +84,9 @@ class SupabaseRepository:
             self._headers["Authorization"] = f"Bearer {key}"
         self._transport = transport
 
-    async def rpc(self, name: str, payload: dict) -> dict:
-        """Explicit, atomic writes. A timeout can be retried using the same snapshot hash."""
-        if name != "bookpromo_sync": raise ValueError("Unbekannte Schreiboperation.")
+    async def _rpc_json(self, name: str, payload: dict, *, timeout: float = 60) -> dict:
         try:
-            async with httpx.AsyncClient(base_url=self._url, headers=self._headers, timeout=60,
+            async with httpx.AsyncClient(base_url=self._url, headers=self._headers, timeout=timeout,
                 follow_redirects=False, trust_env=False, transport=self._transport) as client:
                 async with client.stream("POST", "rpc/"+name, json=payload) as response:
                     if response.status_code in (401,403): raise DatabaseError("credentials")
@@ -106,6 +105,11 @@ class SupabaseRepository:
             raise DatabaseError("unavailable") from None
         except ValueError:
             raise DatabaseError("response") from None
+
+    async def rpc(self, name: str, payload: dict) -> dict:
+        """Explicit, atomic book snapshot writes."""
+        if name != "bookpromo_sync": raise ValueError("Unbekannte Schreiboperation.")
+        return await self._rpc_json(name, payload)
 
     async def _upload_book_asset(
         self, object_path: str, data: bytes, *, content_type: str, limit: int, path_pattern: str,
@@ -198,6 +202,32 @@ class SupabaseRepository:
             raise DatabaseError("response")
         return value
 
+    async def _insert(self, relation: str, payload: dict) -> list[dict]:
+        headers = {**self._headers, "Prefer": "return=representation", "Content-Type": "application/json"}
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._url, headers=headers, timeout=httpx.Timeout(30.0, connect=5.0),
+                follow_redirects=False, trust_env=False, transport=self._transport,
+            ) as client:
+                response = await client.post(relation, json=payload)
+        except httpx.HTTPError:
+            raise DatabaseError("unavailable") from None
+        if response.status_code in (401, 403):
+            raise DatabaseError("credentials")
+        if response.status_code == 409:
+            raise DatabaseError("conflict")
+        if response.status_code in (400, 404):
+            raise DatabaseError("schema")
+        if not 200 <= response.status_code < 300:
+            raise DatabaseError("unavailable")
+        try:
+            value = response.json()
+        except ValueError:
+            raise DatabaseError("response") from None
+        if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+            raise DatabaseError("response")
+        return value
+
     async def check_schema(self, *, full: bool = False) -> None:
         rows = await self._read("bookpromo_schema", {"select": "version", "limit": "2"})
         if len(rows) != 1 or type(rows[0].get("version")) is not int or rows[0]["version"] != SCHEMA_VERSION:
@@ -214,9 +244,87 @@ class SupabaseRepository:
                 "book_overview": "id,title,chapter_count,quote_count,last_published_at",
                 "chapter_overview": "id,quote_count,usable_quote_count",
                 "quote_overview": "id,last_published_at,reserved",
+                "reel_assets": "id,quote_id,book_id,storage_provider,storage_bucket,storage_path,media_status,media_sha256",
+                "reel_publications": "id,reel_id,platform,account_id,queue_mode,scheduled_for,status,title,description,options",
             }
             for relation, columns in relations.items():
                 await self._read(relation, {"select": columns, "limit": "0"})
+
+    async def reel_account_id(self) -> str:
+        rows = await self._read("promotion_settings", {
+            "select": "account_id", "active": "eq.true", "order": "created_at.asc,id.asc", "limit": "2",
+        })
+        account = rows[0].get("account_id") if len(rows) == 1 else None
+        if not isinstance(account, str) or not account.strip() or len(account) > 255:
+            raise DatabaseError("configuration")
+        return account.strip()
+
+    async def upload_reel(self, object_path: str, data: bytes) -> str:
+        match = re.fullmatch(
+            r"(?P<id>[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/"
+            r"(?P<digest>[0-9a-f]{64})\.mp4",
+            object_path,
+        )
+        if (match is None or not 12 <= len(data) <= 50 * 1024 * 1024
+                or data[4:8] != b"ftyp" or hashlib.sha256(data).hexdigest() != match.group("digest")):
+            raise ValueError("Ungültiges Reel-Video")
+        headers = {**self._headers, "Content-Type": "video/mp4", "x-upsert": "true"}
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._storage_url, headers=headers, timeout=120,
+                follow_redirects=False, trust_env=False, transport=self._transport,
+            ) as client:
+                response = await client.post("object/" + REEL_BUCKET + "/" + object_path, content=data)
+        except httpx.HTTPError:
+            raise DatabaseError("unavailable") from None
+        if response.status_code in (401, 403):
+            raise DatabaseError("credentials")
+        if response.status_code == 404:
+            raise DatabaseError("schema")
+        if not 200 <= response.status_code < 300:
+            raise DatabaseError("unavailable")
+        return object_path
+
+    async def create_reel_publication(self, payload: dict) -> dict:
+        """Insert one frozen reviewed Reel, or confirm an identical idempotent retry."""
+        reel_id = str(UUID(str(payload.get("id", ""))))
+        try:
+            rows = await self._insert("reel_publications", payload)
+        except DatabaseError as exc:
+            if exc.code != "conflict":
+                raise
+            frozen_fields = (
+                "quote_id", "book_id", "account_id", "quote_text", "addition", "caption",
+                "book_profile", "image_prompt", "video_prompt", "storage_path", "media_sha256",
+                "size_bytes", "duration_ms", "width", "height", "audio_title", "audio_start_ms",
+            )
+            rows = await self._read("reel_publications", {
+                "select": "id,status," + ",".join(frozen_fields),
+                "id": f"eq.{reel_id}", "limit": "2",
+            })
+            if (len(rows) != 1 or rows[0].get("id") != reel_id
+                    or any(rows[0].get(field) != payload.get(field) for field in frozen_fields)):
+                raise DatabaseError("conflict") from None
+            return rows[0]
+        if len(rows) != 1 or rows[0].get("id") != reel_id:
+            raise DatabaseError("response")
+        return rows[0]
+
+    async def enqueue_reel(self, asset: dict, publications: list[dict]) -> dict:
+        """Atomically store one frozen asset and all selected destination snapshots."""
+        reel_id = str(UUID(str(asset.get("id", ""))))
+        if not 1 <= len(publications) <= 4:
+            raise ValueError("Mindestens eine Veröffentlichungsplattform auswählen.")
+        result = await self._rpc_json(
+            "bookpromo_reel_enqueue", {"p_asset": asset, "p_publications": publications}, timeout=60,
+        )
+        saved = result.get("asset")
+        rows = result.get("publications")
+        if (result.get("outcome") != "enqueued" or not isinstance(saved, dict)
+                or saved.get("id") != reel_id or not isinstance(rows, list)
+                or len(rows) != len(publications)):
+            raise DatabaseError("response")
+        return result
 
     async def list_books(self, *, page: int = 1, page_size: int = 50) -> tuple[list[BookSummary], bool]:
         if page < 1 or not 1 <= page_size <= 100:

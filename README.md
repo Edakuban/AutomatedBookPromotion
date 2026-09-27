@@ -4,7 +4,7 @@ Schlichte lokale Verwaltung eigener Bücher mit einer FastAPI-Weboberfläche, Wo
 
 ## Aktueller Stand
 
-**Lokale Assets, CTA-Renderer, Python-Sync, Supabase-Vertrag v6 sowie die lokalen Review- und Auto-Carousel-Exporte sind umgesetzt und strukturell getestet.** Die v6-Migration ist lokal vorbereitet; das Zielprojekt läuft bis zu ihrer Anwendung noch auf v5. Vor der Aktivierung stehen außerdem der n8n-Import sowie Review-Dry-Run und Livetest aus. Der bisherige Einzelbild-Export wurde ohne Kompatibilitätsschicht entfernt.
+**Lokale Assets, CTA-Renderer, Reel-Werkstatt, Python-Sync, Supabase-Vertrag v8 sowie die lokalen Carousel- und Reel-Exporte sind umgesetzt und strukturell getestet.** Das Zielprojekt läuft auf Schema v8. Vor der Aktivierung stehen außerdem der n8n-Import sowie Dry-Run und Livetest aus. Der bisherige Einzelbild-Export wurde ohne Kompatibilitätsschicht entfernt.
 
 Der Upload funktioniert ohne Supabase und legt lokale Buchprojekte an. Ein Klick auf das Buch zeigt Datei, Kapitelaufteilung, Kapitelübersicht und KI-Analyse. Den Text findest du innerhalb der Kapitel. Kapitelgrenzen lassen sich korrigieren und bestätigen. Anschließend lässt sich die KI-Analyse starten; fertige Zitate stehen auf den Kapitelseiten. Vorhandene Supabase-Bücher werden nach Aktivierung separat angezeigt.
 
@@ -152,7 +152,7 @@ Verifiziert mit automatisierten Tests einschließlich eines echten separaten Wor
 ## Buchprofile und Zitate verwalten (Schritt 9)
 
 - **Buch → Bucheinstellungen bearbeiten:** Titel, Autor, Zieladresse, Freigabemodus, Carousel-Aktivierung sowie Buchprofil, Bildprompt-Basis und Caption-Vorgaben bearbeiten und speichern. Unter **Bild-Overlay** optional einen kürzeren Overlay-Titel mit eigenen Zeilenumbrüchen sowie eine lokale Schriftart und Titelfarbe wählen; ein leeres Titelfeld verwendet den normalen Buchtitel. Die Seite rendert eine transparente 1080×1350-Vorschau links oben. Die Aktivierung startet noch keine Veröffentlichung.
-- **Carousel-Schlussseite:** Frontcover und Logo als PNG, JPEG oder WebP hochladen und einen CTA-Text pflegen. Python erzeugt aus dem Frontcover einen 2.5D-Buch-Mockup und daraus eine reproduzierbare 1080×1350-JPEG-Vorschau mit CTA-Text, Titel-Overlay und Logo. Die Promotion lässt sich erst aktivieren, wenn das vollständige Bild erfolgreich gerendert werden kann. Beim ausdrücklichen Buch-Sync rendert Python Overlay und Schlussseite erneut und lädt nur diese fertigen Assets digestbasiert in den privaten Supabase-Bucket; Frontcover und Logo bleiben lokal. Der aktuelle Python-Stand setzt Supabase-Schema v6 voraus.
+- **Carousel-Schlussseite:** Frontcover und Logo als PNG, JPEG oder WebP hochladen und einen CTA-Text pflegen. Python erzeugt aus dem Frontcover einen 2.5D-Buch-Mockup und daraus eine reproduzierbare 1080×1350-JPEG-Vorschau mit CTA-Text, Titel-Overlay und Logo. Die Promotion lässt sich erst aktivieren, wenn das vollständige Bild erfolgreich gerendert werden kann. Beim ausdrücklichen Buch-Sync rendert Python Overlay und Schlussseite erneut und lädt nur diese fertigen Assets digestbasiert in den privaten Supabase-Bucket; Frontcover und Logo bleiben lokal. Der aktuelle Python-Stand setzt Supabase-Schema v8 voraus.
 - **Profil mit KI ausfüllen:** Die acht Profilfelder mit je einem KI-Aufruf vorschlagen lassen. Ein passender gespeicherter Buchkontext wird wiederverwendet; nur fehlender Kontext wird aus dem Buchtext vorbereitet. Über „Vorschläge in die acht Profilfelder einsetzen“ ins Formular übernehmen, prüfen und speichern. Titel, Autor, Zieladresse und Promotion-Schalter bleiben manuell; Kapitel und bestehende Zitate bleiben erhalten. Der erste Lauf benötigt zusätzliche Kontextaufrufe; Wiederholungen mit vollständigem passendem Kontext nur die acht Feldaufrufe, zuzüglich möglicher Validierungswiederholungen.
 - Das erste Profil ist mit dem aktuellen KI-Vorschlag vorbelegt. Ein gespeichertes Profil bleibt bei erneuter Analyse unverändert. **Aktuellen KI-Profilvorschlag zur Bearbeitung laden** setzt einen neuen Vorschlag ins Formular; erst Speichern übernimmt ihn. Titel, Autor, Zieladresse und Promotion-Vormerkung bleiben dabei erhalten.
 - **Buch → Kapitel:** Zitate sperren oder die manuelle Sperre aufheben. Originaltext und KI-Bewertung bleiben schreibgeschützt. Ein ungeeignetes Zitat wird durch Entsperren nicht nutzbar.
@@ -160,6 +160,16 @@ Verifiziert mit automatisierten Tests einschließlich eines echten separaten Wor
 - Änderungen werden lokal gespeichert und überstehen einen Neustart. Zitatsperren bleiben auch bei erneuter Analyse derselben Fundstelle erhalten. Veraltete Formulare dürfen neuere Einstellungen nicht überschreiben.
 
 Die Verwaltung nutzt zusätzlich `local_book_settings`, `local_book_assets` und `local_quote_controls` in derselben privaten SQLite-Datei. Cover, Logo und gerenderte Carousel-Vorschauen liegen unter `data/book-assets/`. Es wird keine weitere Konfiguration benötigt. Nach dem Update eine laufende Anwendung neu starten. Details: [docs/book-management.md](docs/book-management.md).
+
+## Reels aus Zitaten erzeugen
+
+Bei jedem nutzbaren Zitat öffnet **Reel erzeugen** eine lokale Werkstatt. Sie erzeugt und speichert zuerst den editierbaren Instagram-Begleittext und einen englischen 9:16-Bildprompt. Das Originalzitat wird nicht von der KI umgeschrieben, sondern vom Code unverändert mit Begleittext, Buchtitel, Autor und Zieladresse zur fertigen Caption zusammengesetzt. Das erzeugte Bild ist direkt sichtbar; **Bild neu erzeugen** erstellt eine neue Variante.
+
+Pro Buch lassen sich PCM-WAV-Songs lokal hinterlegen. Startpunkt und Reel-Länge (standardmäßig 10 Sekunden) bestimmen einen exakt geschnittenen, abspielbaren Ausschnitt. Aus Bild, Stimmung und Dauer entsteht ein editierbarer Videoprompt mit klar sichtbarer, kontrollierter Bewegung; problematische Vorgaben wie „subtle movement“, Gesang oder Lip-Sync werden abgelehnt. Der separate Reel-Worker rendert Bild und Video über ComfyUI. Das finale MP4 erhält immer den gewählten Original-Audioausschnitt und kann im Dialog angesehen oder neu erzeugt werden. Es gibt kein Zitat-Overlay im Video.
+
+Unter den Bucheinstellungen verwaltet jedes Buch eigene lokale Charakterprofile und Referenzbilder. Die Analyse ergänzt Namen und belegte Erscheinungsmerkmale, überschreibt jedoch keine manuell bearbeiteten oder freigegebenen Profile. In der Reel-Werkstatt werden anhand von Name und Alias erkannte Figuren vorausgewählt. Mehrere Referenzen werden links nach rechts zu einem Blatt kombiniert, per Flux-Bildbearbeitung in das Szenenbild übernommen und das fertige Szenenbild anschließend an den Image-to-Video-Workflow übergeben. Charaktertabellen und Referenzbilder bleiben in SQLite beziehungsweise `data/characters/`; sie werden nicht als eigene Daten nach Supabase synchronisiert.
+
+**In Reel-Vorrat stellen** ist die ausdrückliche Freigabe. Titel, Beschreibung, Plattformen sowie tägliche FIFO-Warteschlange oder fester Berliner Termin werden vorher sichtbar gewählt. Unter **Einstellungen** liegen globale Instagram-, Facebook-, YouTube- und TikTok-Defaults; das Reel erhält beim Einreihen pro Plattform einen unveränderlichen Snapshot. Das MP4 landet wahlweise im privaten Supabase-Bucket oder in Cloudflare R2. Eine konfigurierte R2-Custom-Domain wird bevorzugt, andernfalls erzeugt n8n kurz vor dem Abruf eine temporäre SigV4-URL. Der KI-freie Publisher löscht das MP4 erst, wenn alle gewählten Ziele bestätigt veröffentlicht oder ausdrücklich abgebrochen wurden. Einrichtung: [n8n/README.md](n8n/README.md).
 
 Bei aktiver Supabase-Verbindung werden Veröffentlichungszeiten und Reservierungen für übertragene Zitate geladen. Die zusätzlichen Filter **Unbenutzt** und **Verwendet** berücksichtigen nur bestätigte Datenbankstände. Die beiden n8n-Exporte erzeugen Hero, lesbare Zitat-Slides und CTA, speichern sie temporär privat in Supabase und veröffentlichen sie als Instagram-Carousel. Review wartet auf zwei Telegram-Freigaben; Auto nutzt die in v6 protokollierten automatischen Freigaben und wechselt bei eindeutigen Bildmodellfehlern begrenzt zu einem neuen Zitat. Beide starten inaktiv und mit `publish_enabled:false`. [Einrichtung und Testablauf](n8n/README.md).
 
@@ -179,6 +189,18 @@ Bei aktiver Supabase-Verbindung werden Veröffentlichungszeiten und Reservierung
 | `OPENWEBUI_MODEL` | Modell-ID der eigenen Instanz |
 | `OPENWEBUI_TIMEOUT_SECONDS` | Gesamtzeitlimit pro HTTP-Operation einschließlich Wiederholungen; Standard `120`, erlaubt `5` bis `600` Sekunden |
 | `OPENWEBUI_MAX_RETRIES` | Zusätzliche Versuche bei Verbindungsaufbau oder ausdrücklich vorübergehenden HTTP-Fehlern; Standard `2`, erlaubt `0` bis `3` |
+| `COMFYUI_URL` | Lokale ComfyUI-Basisadresse; Standard `http://127.0.0.1:8188` |
+| `REEL_IMAGE_WORKFLOW` | Bild-Workflow; Standard `workflows/reel-image.json`, relativ zur ENV-Datei |
+| `REEL_REFERENCE_WORKFLOW` | Zwei-Bild-Workflow für Szenenbild plus Charakterreferenzen; Standard `workflows/reel-reference.json`, relativ zur ENV-Datei |
+| `REEL_VIDEO_WORKFLOW` | Video-Workflow; Standard `workflows/reel-video.json`, relativ zur ENV-Datei |
+| `REEL_DEFAULT_DURATION_SECONDS` | Vorgeschlagene Reel-Länge; Standard `10`, erlaubt `4` bis `30` Sekunden |
+| `REEL_MAX_AUDIO_MB` | Maximale lokale WAV-Größe; Standard `250` MB |
+| `REEL_MAX_VIDEO_MB` | Maximale MP4-Größe vor Supabase; Standard `45`, maximal `49` MB |
+| `REEL_STORAGE_PROVIDER` | Erster lokaler Speicher-Default: `supabase` oder `cloudflare_r2`; danach in der Einstellungsseite wählbar |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Serverseitige Cloudflare-R2-Zugangsdaten; niemals im Browser oder in Supabase speichern |
+| `R2_BUCKET`, `R2_ENDPOINT` | R2-Bucket und dessen S3-API-Endpoint |
+| `R2_PUBLIC_BASE_URL` | Optionale HTTPS-Custom-Domain; leer aktiviert den Signed-URL-Fallback |
+| `R2_SIGNED_URL_TTL_SECONDS` | Laufzeit temporärer R2-URLs; Standard 86400, maximal 604800 Sekunden |
 | `ANALYSIS_CHUNK_CHARS` | Textzeichen pro Abschnitt; Standard `12000`, erlaubt `2000` bis `24000` |
 | `ANALYSIS_MIN_SCORE` | Mindestdurchschnitt und Mindestverständlichkeit; Standard `4`, erlaubt `1` bis `5` |
 | `ANALYSIS_MAX_QUOTES_PER_CHAPTER` | Maximale gespeicherte Zitate je Kapitel; Standard `12`, erlaubt `1` bis `50` |

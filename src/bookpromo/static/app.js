@@ -170,6 +170,61 @@ if (profileGenerator) {
   refresh();
 }
 
+const characterAnalysis = document.querySelector("[data-character-analysis]");
+if (characterAnalysis) {
+  const start = characterAnalysis.querySelector("[data-character-analysis-start]");
+  const status = characterAnalysis.querySelector("[data-character-analysis-status]");
+  const progress = characterAnalysis.querySelector("[data-character-analysis-progress]");
+  if (start && status && progress) {
+    let timer;
+    let observedActive = false;
+    async function request(url, options = {}) {
+      const response = await fetch(url, {
+        cache: "no-store", ...options, headers: {Accept: "application/json"},
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Die Charakteranalyse ist gerade nicht erreichbar.");
+      return data;
+    }
+    async function refresh() {
+      window.clearTimeout(timer);
+      try {
+        const data = await request(characterAnalysis.dataset.statusUrl);
+        if (observedActive && !data.active && data.state === "done") {
+          window.location.reload();
+          return;
+        }
+        observedActive ||= data.active;
+        start.disabled = data.active || data.state === "done";
+        start.textContent = data.state === "failed"
+          ? "Charakteranalyse fortsetzen"
+          : data.state === "done" ? "Charakteranalyse abgeschlossen" : "Charaktere aus Buch analysieren";
+        progress.hidden = !data.active;
+        status.textContent = data.error || (data.active
+          ? `${data.stage} · ${data.calls_started} KI-Anfragen · ${data.completed_steps} Zwischenstände gespeichert`
+          : data.label);
+        if (data.active) timer = window.setTimeout(refresh, 2000);
+      } catch (error) {
+        status.textContent = error.message;
+        timer = window.setTimeout(refresh, 5000);
+      }
+    }
+    start.addEventListener("click", async () => {
+      window.clearTimeout(timer);
+      start.disabled = true;
+      status.textContent = "Charakteranalyse wird vorgemerkt …";
+      try {
+        await request(characterAnalysis.dataset.startUrl, {method: "POST"});
+        await refresh();
+      } catch (error) {
+        start.disabled = false;
+        status.textContent = error.message;
+      }
+    });
+    refresh();
+  }
+}
+
 const carouselBackgroundColors = document.querySelector("[data-carousel-background-colors]");
 if (carouselBackgroundColors) {
   const titleColor = document.querySelector('[name="overlay_title_color"]');
@@ -341,4 +396,368 @@ if (aiSettings) {
     action(aiSettings.dataset.testUrl, undefined, "Technische Testantwort wird erzeugt …");
   });
   filter.addEventListener("input", renderModels);
+}
+
+const comfySettings = document.getElementById("comfyui-settings");
+if (comfySettings) {
+  const button = document.getElementById("comfyui-check");
+  const message = document.getElementById("comfyui-message");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    message.hidden = false;
+    message.classList.remove("error");
+    message.textContent = "ComfyUI wird geprüft …";
+    try {
+      const response = await fetch(comfySettings.dataset.checkUrl, {
+        method: "POST", headers: {Accept: "application/json"}, cache: "no-store",
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Die Prüfung ist fehlgeschlagen.");
+      message.textContent = result.message;
+    } catch (error) {
+      message.classList.add("error");
+      message.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+const r2Check = document.querySelector("[data-r2-check]");
+if (r2Check) {
+  const button = r2Check.querySelector("button");
+  const message = r2Check.querySelector("[role='status']");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    message.hidden = false;
+    message.classList.remove("error", "success");
+    message.textContent = "R2 wird mit einem kleinen Testobjekt geprüft …";
+    try {
+      const response = await fetch(r2Check.dataset.checkUrl, {
+        method: "POST", headers: {Accept: "application/json"}, cache: "no-store",
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Die R2-Prüfung ist fehlgeschlagen.");
+      message.classList.add("success");
+      message.textContent = result.message;
+    } catch (error) {
+      message.classList.add("error");
+      message.textContent = error.message;
+    } finally { button.disabled = false; }
+  });
+}
+
+const reelDialog = document.getElementById("reel-dialog");
+if (reelDialog) {
+  const content = reelDialog.querySelector("[data-reel-content]");
+  const title = reelDialog.querySelector("#reel-dialog-title");
+  let workshopUrl = "";
+  let pollTimer;
+  let fragmentCleanup = () => {};
+
+  function reelMessage(text, error = false) {
+    let node = content.querySelector("[data-reel-message]");
+    if (!node) {
+      node = document.createElement("p");
+      node.dataset.reelMessage = "";
+      node.className = "notice";
+      content.prepend(node);
+    }
+    node.hidden = false;
+    node.classList.toggle("error", error);
+    node.textContent = text;
+    if (error) node.scrollIntoView({behavior: "smooth", block: "nearest"});
+  }
+
+  function wireAudioEditor() {
+    const editor = content.querySelector("[data-audio-editor]");
+    if (!editor) return () => {};
+    const track = content.querySelector("[data-audio-track]");
+    const startInput = content.querySelector("[data-audio-start]");
+    const durationInput = content.querySelector("[data-audio-duration]");
+    const startLabel = editor.querySelector("[data-audio-start-label]");
+    const endLabel = editor.querySelector("[data-audio-end-label]");
+    const canvas = editor.querySelector("[data-audio-waveform]");
+    const audio = editor.querySelector("[data-audio-source]");
+    const play = editor.querySelector("[data-audio-play]");
+    const stop = editor.querySelector("[data-audio-stop]");
+    const loop = editor.querySelector("[data-audio-loop]");
+    if (!track || !startInput || !durationInput || !canvas || !audio) return () => {};
+
+    const abort = new AbortController();
+    let peaks = [];
+    let total = 0;
+    let requestNumber = 0;
+    let dragging = null;
+    let dragOffset = 0;
+    let selectionPlayback = false;
+
+    const clamp = (value, minimum, maximum) => Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+    const formatTime = value => {
+      const seconds = Math.max(0, Number(value) || 0);
+      const minutes = Math.floor(seconds / 60);
+      return `${minutes}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
+    };
+    const values = () => {
+      const duration = clamp(Number(durationInput.value) || 4, 4, Math.min(30, total || 30));
+      const start = clamp(Number(startInput.value) || 0, 0, Math.max(0, total - duration));
+      return {start, duration, end: Math.min(total || start + duration, start + duration)};
+    };
+
+    function drawWaveform() {
+      const width = Math.max(320, Math.round(canvas.clientWidth || 800));
+      const height = Math.max(112, Math.round(canvas.clientHeight || 140));
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
+        canvas.width = width * ratio;
+        canvas.height = height * ratio;
+      }
+      const context = canvas.getContext("2d");
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#111923";
+      context.fillRect(0, 0, width, height);
+      const middle = height / 2;
+      context.strokeStyle = "#718196";
+      context.lineWidth = Math.max(1, width / Math.max(peaks.length, 1));
+      context.beginPath();
+      if (peaks.length) {
+        peaks.forEach((peak, index) => {
+          const x = (index + .5) * width / peaks.length;
+          const amplitude = Math.max(1, Math.pow(peak, .55) * (middle - 10));
+          context.moveTo(x, middle - amplitude);
+          context.lineTo(x, middle + amplitude);
+        });
+      } else {
+        context.moveTo(0, middle);
+        context.lineTo(width, middle);
+      }
+      context.stroke();
+
+      const selection = values();
+      const startX = total ? selection.start / total * width : 0;
+      const endX = total ? selection.end / total * width : 0;
+      context.fillStyle = "rgb(39 110 204 / 34%)";
+      context.fillRect(startX, 0, Math.max(0, endX - startX), height);
+      context.strokeStyle = "#5ca4ff";
+      context.lineWidth = 3;
+      for (const x of [startX, endX]) {
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, height);
+        context.stroke();
+      }
+      if (Number.isFinite(audio.currentTime) && audio.currentTime > 0 && total) {
+        const playX = audio.currentTime / total * width;
+        context.strokeStyle = "#f7c948";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.moveTo(playX, 0);
+        context.lineTo(playX, height);
+        context.stroke();
+      }
+    }
+
+    function syncSelection() {
+      const selection = values();
+      startInput.value = selection.start.toFixed(1).replace(/\.0$/, "");
+      durationInput.value = (Math.round(selection.duration * 2) / 2).toString();
+      startLabel.textContent = formatTime(selection.start);
+      endLabel.textContent = formatTime(selection.end);
+      canvas.setAttribute("aria-label", `Wellenform. Auswahl von ${formatTime(selection.start)} bis ${formatTime(selection.end)}.`);
+      drawWaveform();
+    }
+
+    function setSelection(start, duration) {
+      startInput.value = (Math.round(start * 10) / 10).toString();
+      durationInput.value = (Math.round(duration * 2) / 2).toString();
+      startInput.dispatchEvent(new Event("input", {bubbles: true}));
+      durationInput.dispatchEvent(new Event("input", {bubbles: true}));
+    }
+
+    async function selectTrack() {
+      const option = track.selectedOptions[0];
+      requestNumber += 1;
+      const currentRequest = requestNumber;
+      selectionPlayback = false;
+      audio.pause();
+      audio.src = option?.dataset.audioUrl || "";
+      total = Number(option?.dataset.durationMs || 0) / 1000;
+      peaks = [];
+      syncSelection();
+      if (!option?.dataset.waveformUrl) return;
+      try {
+        const response = await fetch(option.dataset.waveformUrl, {
+          headers: {Accept: "application/json"}, signal: abort.signal, cache: "no-store",
+        });
+        if (!response.ok) throw new Error("Wellenform nicht verfügbar");
+        const result = await response.json();
+        if (currentRequest !== requestNumber) return;
+        total = Number(result.duration_ms || 0) / 1000;
+        peaks = Array.isArray(result.peaks) ? result.peaks : [];
+        syncSelection();
+      } catch (error) {
+        if (error.name !== "AbortError") drawWaveform();
+      }
+    }
+
+    function pointerTime(event) {
+      const bounds = canvas.getBoundingClientRect();
+      return clamp((event.clientX - bounds.left) / bounds.width * total, 0, total);
+    }
+    canvas.addEventListener("pointerdown", event => {
+      if (!total) return;
+      const time = pointerTime(event);
+      const selection = values();
+      const tolerance = Math.max(.4, total * 12 / canvas.clientWidth);
+      if (Math.abs(time - selection.start) <= tolerance) dragging = "start";
+      else if (Math.abs(time - selection.end) <= tolerance) dragging = "end";
+      else if (time > selection.start && time < selection.end) {
+        dragging = "move";
+        dragOffset = time - selection.start;
+      } else {
+        dragging = "move";
+        dragOffset = 0;
+        setSelection(clamp(time, 0, total - selection.duration), selection.duration);
+      }
+      canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener("pointermove", event => {
+      if (!dragging || !total) return;
+      const time = pointerTime(event);
+      const selection = values();
+      if (dragging === "move") {
+        setSelection(clamp(time - dragOffset, 0, total - selection.duration), selection.duration);
+      } else if (dragging === "start") {
+        const start = clamp(time, 0, selection.end - 4);
+        setSelection(start, selection.end - start);
+      } else {
+        setSelection(selection.start, clamp(time - selection.start, 4, Math.min(30, total - selection.start)));
+      }
+    });
+    const endDrag = event => {
+      if (dragging && canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      dragging = null;
+    };
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", endDrag);
+    track.addEventListener("change", selectTrack);
+    startInput.addEventListener("input", syncSelection);
+    durationInput.addEventListener("input", syncSelection);
+    play.addEventListener("click", async () => {
+      const selection = values();
+      selectionPlayback = true;
+      audio.currentTime = selection.start;
+      try { await audio.play(); } catch { selectionPlayback = false; }
+    });
+    stop.addEventListener("click", () => {
+      selectionPlayback = false;
+      audio.pause();
+      audio.currentTime = values().start;
+      drawWaveform();
+    });
+    audio.addEventListener("timeupdate", () => {
+      const selection = values();
+      if (selectionPlayback && audio.currentTime >= selection.end - .03) {
+        if (loop.checked) audio.currentTime = selection.start;
+        else { selectionPlayback = false; audio.pause(); }
+      }
+      drawWaveform();
+    });
+    const resize = new ResizeObserver(drawWaveform);
+    resize.observe(canvas);
+    selectTrack();
+    return () => { abort.abort(); resize.disconnect(); audio.pause(); };
+  }
+
+  function wireReelFragment() {
+    const duration = content.querySelector('[name="duration_seconds"]');
+    const output = content.querySelector("[data-reel-duration-output]");
+    if (duration && output) {
+      const showDuration = () => { output.textContent = `${Number(duration.value).toLocaleString("de-DE")} s`; };
+      duration.addEventListener("input", showDuration);
+      showDuration();
+    }
+    fragmentCleanup = wireAudioEditor();
+    const caption = content.querySelector('[name="addition"]');
+    const counter = content.querySelector("[data-caption-count]");
+    if (caption && counter) {
+      const showCount = () => { counter.textContent = `${caption.value.length} Zeichen Begleittext`; };
+      caption.addEventListener("input", showCount);
+      showCount();
+    }
+    const publication = content.querySelector("[data-publication-form]");
+    if (publication) {
+      const time = publication.querySelector("[data-publication-time]");
+      const modes = [...publication.querySelectorAll('[name="queue_mode"]')];
+      const syncTime = () => {
+        const scheduled = modes.find(input => input.checked)?.value === "scheduled";
+        time.required = scheduled;
+        if (!scheduled) time.value = "";
+      };
+      modes.forEach(input => input.addEventListener("change", syncTime));
+      syncTime();
+    }
+    const active = content.querySelector("[data-reel-active='true']");
+    if (active) pollTimer = window.setTimeout(() => loadWorkshop(workshopUrl, false), 2000);
+  }
+
+  async function loadWorkshop(url, announce = true) {
+    window.clearTimeout(pollTimer);
+    fragmentCleanup();
+    fragmentCleanup = () => {};
+    workshopUrl = url;
+    if (announce) content.innerHTML = '<p class="muted">Reel-Daten werden geladen …</p>';
+    try {
+      const response = await fetch(url, {headers: {Accept: "text/html"}, cache: "no-store"});
+      if (!response.ok) {
+        let message = "Die Reel-Werkstatt konnte nicht geladen werden.";
+        try { message = (await response.json()).error || message; } catch {}
+        throw new Error(message);
+      }
+      content.innerHTML = await response.text();
+      title.textContent = content.querySelector("[data-reel-title]")?.textContent || "Reel erzeugen";
+      wireReelFragment();
+    } catch (error) {
+      content.innerHTML = "";
+      reelMessage(error.message, true);
+    }
+  }
+
+  for (const opener of document.querySelectorAll("[data-reel-open]")) {
+    opener.addEventListener("click", () => {
+      reelDialog.showModal();
+      loadWorkshop(opener.dataset.reelUrl);
+    });
+  }
+  reelDialog.querySelector("[data-reel-close]").addEventListener("click", () => reelDialog.close());
+  reelDialog.addEventListener("cancel", () => window.clearTimeout(pollTimer));
+  reelDialog.addEventListener("close", () => {
+    window.clearTimeout(pollTimer);
+    fragmentCleanup();
+    fragmentCleanup = () => {};
+  });
+  reelDialog.addEventListener("click", event => {
+    if (event.target === reelDialog) reelDialog.close();
+  });
+  content.addEventListener("submit", async event => {
+    const form = event.target.closest("form[data-reel-action]");
+    if (!form) return;
+    event.preventDefault();
+    window.clearTimeout(pollTimer);
+    const buttons = [...form.querySelectorAll("button")];
+    buttons.forEach(button => { button.disabled = true; });
+    reelMessage(form.dataset.waiting || "Aktion wird gestartet …");
+    try {
+      const response = await fetch(form.action, {
+        method: form.method || "POST", body: new FormData(form), headers: {Accept: "application/json"}, cache: "no-store",
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Die Aktion konnte nicht abgeschlossen werden.");
+      await loadWorkshop(result.workshop_url || workshopUrl, false);
+    } catch (error) {
+      reelMessage(error.message, true);
+      buttons.forEach(button => { button.disabled = false; });
+    }
+  });
 }

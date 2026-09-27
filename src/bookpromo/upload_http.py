@@ -5,10 +5,12 @@ from starlette.responses import JSONResponse
 
 
 class UploadLimitMiddleware:
-    def __init__(self, app, max_bytes: int, asset_max_bytes: int = 256 * 1024):
+    def __init__(self, app, max_bytes: int, asset_max_bytes: int = 256 * 1024,
+                 audio_max_bytes: int = 256 * 1024):
         self.app = app
         self.max_bytes = max_bytes
         self.asset_max_bytes = asset_max_bytes
+        self.audio_max_bytes = audio_max_bytes
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] != "POST" or not (
@@ -18,10 +20,16 @@ class UploadLimitMiddleware:
             return
         headers = dict(scope["headers"])
         is_asset_upload = (
-            scope["path"].startswith("/books/local/") and "/settings/assets/" in scope["path"]
+            scope["path"].startswith("/books/local/") and (
+                "/settings/assets/" in scope["path"]
+                or ("/settings/characters/" in scope["path"] and scope["path"].endswith("/upload"))
+            )
+        )
+        is_audio_upload = (
+            scope["path"].startswith("/books/local/") and scope["path"].endswith("/reel/audio/upload")
         )
         limit = self.max_bytes if scope["path"] == "/uploads" else (
-            self.asset_max_bytes if is_asset_upload else 256 * 1024
+            self.asset_max_bytes if is_asset_upload else self.audio_max_bytes if is_audio_upload else 256 * 1024
         )
         try:
             too_large = int(headers.get(b"content-length", b"0")) > limit

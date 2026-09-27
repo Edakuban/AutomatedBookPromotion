@@ -106,17 +106,19 @@ def worker_main(data_dir: str, max_bytes: int, reader, env_path=None):
 @asynccontextmanager
 async def worker_lifespan(data_dir: Path, max_bytes: int, env_path=None):
     context = multiprocessing.get_context("spawn")
-    def launch():
+    def launch(target=worker_main, name="bookpromo-import"):
         reader, writer = context.Pipe(duplex=False)
-        process = context.Process(target=worker_main, args=(str(data_dir.resolve()), max_bytes, reader, env_path), name="bookpromo-import")
+        process = context.Process(target=target, args=(str(data_dir.resolve()), max_bytes, reader, env_path), name=name)
         process.start()
         reader.close()
         return process, writer
 
     process, control = launch()
+    from .reel_worker import reel_worker_main
+    reel_process, reel_control = launch(reel_worker_main, "bookpromo-reels")
 
     async def supervise():
-        nonlocal process, control
+        nonlocal process, control, reel_process, reel_control
         while True:
             await asyncio.sleep(1)
             if not process.is_alive():
@@ -124,6 +126,11 @@ async def worker_lifespan(data_dir: Path, max_bytes: int, env_path=None):
                 process.close()
                 control.close()
                 process, control = launch()
+            if not reel_process.is_alive():
+                reel_process.join()
+                reel_process.close()
+                reel_control.close()
+                reel_process, reel_control = launch(reel_worker_main, "bookpromo-reels")
 
     supervisor = asyncio.create_task(supervise())
     try:
@@ -138,9 +145,15 @@ async def worker_lifespan(data_dir: Path, max_bytes: int, env_path=None):
             control.send_bytes(b"stop")
         except (BrokenPipeError, OSError):
             pass
+        try:
+            reel_control.send_bytes(b"stop")
+        except (BrokenPipeError, OSError):
+            pass
         control.close()
-        await asyncio.to_thread(process.join, 3)
-        if process.is_alive():
-            process.terminate()
-            await asyncio.to_thread(process.join, 5)
-        process.close()
+        reel_control.close()
+        for child in (process, reel_process):
+            await asyncio.to_thread(child.join, 3)
+            if child.is_alive():
+                child.terminate()
+                await asyncio.to_thread(child.join, 5)
+            child.close()

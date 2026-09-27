@@ -5,9 +5,62 @@ Importdateien:
 
 - `book-promotion-review.json`: Textfreigabe und Carousel-Freigabe über Telegram.
 - `book-promotion-auto.json`: derselbe Render- und Publish-Ablauf ohne wartende Freigaben.
+- `book-promotion-reel-prompt-helper.json`: authentifizierter On-Demand-Webhook
+  für den bewährten Begleittext-/Bildprompt-Vertrag.
+- `book-promotion-reel-publisher.json`: KI-freier Multi-Plattform-Workflow mit
+  täglicher FIFO- und stündlicher Termin-Warteschlange.
 
 Der alte Einzelbild-Export `book-promotion.json` wurde entfernt. Der Generator
 schreibt ausschließlich lokale Dateien und überträgt keinen Workflow an n8n.
+
+## Reel-Produktion und Publisher
+
+Die kreative Reel-Produktion bleibt lokal. Das Webprojekt friert Zitat, Titel,
+Beschreibung, Bild- und Videoprompt sowie das geprüfte MP4 in `reel_assets`
+ein. Für jedes gewählte Ziel entsteht in `reel_publications` ein eigener
+Snapshot mit Konto, Optionen und entweder täglichem FIFO-Modus oder festem
+Zeitpunkt. Das MP4 liegt digestbasiert in Supabase Storage oder Cloudflare R2.
+
+Der Prompt-Helper übernimmt dabei exakt den bisherigen sicheren Vertrag:
+`POST /webhook/bookpromo-reel-prompts` erhält `{quote, book}` und gibt nach
+Schema- und Längenprüfung `{addition, image_prompt, caption}` zurück. Der
+Webhook muss in n8n einem eigenen Header-Auth-Credential mit langem Secret
+zugeordnet werden. Zitat und Buchprofil gelten im Systemprompt ausdrücklich als
+nicht vertrauenswürdige Daten; das unveränderte Zitat wird deterministisch in
+die Caption eingebaut. Der Helper veröffentlicht nichts und schreibt nicht in
+Supabase.
+
+Der Publisher enthält keinerlei KI-Nodes. Um 20 Uhr Europe/Berlin verarbeitet
+er pro Plattform den ältesten freien Daily-Eintrag; der zweite Trigger prüft
+stündlich fällige Termine. Sein Ablauf ist:
+
+1. Pro Instagram, Facebook, YouTube und TikTok atomar höchstens ein Ziel claimen.
+2. Für Supabase eine Signed URL erzeugen. Bei R2 zuerst die gespeicherte
+   Custom-Domain testen; fehlt sie oder schlägt sie fehl, SigV4-URL aus den
+   n8n-Umgebungsvariablen erzeugen.
+3. MP4-Größe, `ftyp`-Header und SHA-256 gegen das Manifest prüfen.
+4. Den jeweiligen Plattformadapter mit ausschließlich dem gespeicherten Titel,
+   der Beschreibung und dem Options-Snapshot ausführen. TikTok verwendet
+   `FILE_UPLOAD`, sodass keine verifizierte Domain erforderlich ist.
+5. Externe ID und optionalen Permalink revisionsgeschützt speichern.
+6. Das MP4 erst löschen, wenn alle Ziele bestätigt `published` oder bewusst
+   `cancelled` sind; anschließend Cleanup als `deleted` quittieren.
+
+Ab der ersten Plattform-Schreiboperation führen Timeouts und unklare Antworten
+zu `publish_uncertain`; es gibt keinen automatischen zweiten Publish-Versuch.
+Auch bei einer unklaren DB-Antwort auf `published` wird das Storage-Objekt nicht
+gelöscht. Ein fehlgeschlagener Storage-Delete lässt den Datensatz gefahrlos auf
+`cleanup_pending` stehen. Ein noch aktiver `publishing`, `processing` oder
+`publish_uncertain`-Datensatz blockiert den nächsten Claim derselben Plattform,
+bis er geprüft wurde.
+
+`publish_enabled:false` ist auch hier der Importstandard. Da der Claim erst
+hinter diesem Gate liegt, verändert ein Dry Run die Warteschlange nicht.
+
+Asset-/Zieltabellen und RPCs kommen mit Schema v8 aus den Migrationen
+`20260927120000_reel_multiplatform_storage.sql` und
+`20260927130000_reel_claim_all_accounts.sql`. Das konfigurierte Cloud-Projekt
+ist bereits auf diesem Stand.
 
 ## Ablauf
 
@@ -78,7 +131,11 @@ oder neue Credentials zugeordnet werden:
 | one.intelligence API | `one.intelligence Chat Model` für Caption und Bildprompt. |
 | Cloudflare HTTP Header Auth | `Authorization: Bearer …` für Workers AI/FLUX. |
 | Telegram API | Review-Trigger, Vorschauen, Freigaben und Statusmeldungen. |
-| Instagram-Token | Im Node `Refresh token for insta` den Platzhalter `MIT_RICHTIGEM_KEY_ERSETZEN` durch den gültigen langlebigen Instagram-Token ersetzen. |
+| Instagram Long-Lived Token | Im Reel-Publisher und den Carousel-Flows ausschließlich den Platzhalter `MIT_RICHTIGEM_KEY_ERSETZEN` im Node `Refresh token for insta` ersetzen. Die Content-Publishing-Nodes verwenden den frisch zurückgegebenen Token ohne eigenes Credential. |
+| Facebook Header Auth | `Authorization: Bearer …` für Page Reels. |
+| YouTube OAuth2 | Google OAuth2 mit `youtube.upload`-Scope. |
+| TikTok Header Auth | `Authorization: Bearer …` mit `video.publish`-Scope. |
+| Reel Prompt Header Auth | Eigenes langes Shared Secret für den On-Demand-Webhook; nicht mit dem Supabase-Key identisch. |
 
 Der Git-Export enthält nur den gut sichtbaren Platzhalter. Der Refresh-Node läuft
 sowohl bei einer neuen Veröffentlichung als auch bei der Wiederaufnahme eines
@@ -88,12 +145,24 @@ Supabase-Credential muss auf dasselbe Projekt zeigen wie `Config.supabase_url`.
 Die Workflows setzen voraus, dass Schema v6 und beide Storage-Buckets bereits
 vorhanden sind.
 
+Für temporäre R2-GET-URLs werden im Node `Config` die vier sichtbaren
+Platzhalter `r2_endpoint`, `r2_access_key_id`, `r2_secret_access_key` und
+`r2_signed_url_ttl_seconds` gesetzt. Damit funktioniert der Signer auch auf
+n8n-Installationen, die `$env` in Code-Nodes blockieren. Die Werte erscheinen
+dadurch allerdings im Workflow und in manuellen Ausführungsdaten; der Workflow
+darf nur für vertrauenswürdige n8n-Benutzer sichtbar sein. Der Git-Export
+enthält ausschließlich Platzhalter. GET und DELETE werden unmittelbar vor der
+Anfrage mit diesen Werten signiert; ein zusätzliches AWS-Credential am
+Delete-Node ist nicht erforderlich. Der Prompt-Helper benötigt ausschließlich
+Reel Prompt Header Auth und das vorhandene one.intelligence-Credential.
+
 ## Sicherer erster Import
 
 1. Gewünschte JSON-Datei in einen neuen n8n-Workflow importieren.
-2. Alle Platzhalter-Credentials zuordnen und im Node `Refresh token for insta`
-   `MIT_RICHTIGEM_KEY_ERSETZEN` durch den neuen Instagram-Token ersetzen.
-3. Im Node `Config` Konto, Chat und API-Version prüfen.
+2. Alle Platzhalter-Credentials zuordnen; Plattformkonten kommen aus den
+   eingefrorenen Supabase-Zielen, nicht aus dem Workflow.
+3. `Config.supabase_url` prüfen und die vier R2-Platzhalter ausschließlich in
+   der importierten n8n-Kopie ersetzen.
 4. `publish_enabled:false` beibehalten.
 5. Review-Workflow zunächst nur manuell testen; den Zeittrigger bei Bedarf
    deaktivieren. Telegram-Callbacks benötigen einen aktiven Workflow und einen
@@ -137,6 +206,8 @@ Für Debugging nur vorübergehend und bewusst abweichende Einstellungen verwende
 .\.venv\Scripts\python.exe -X utf8 tools\build_n8n.py
 node tools\check_n8n.mjs
 .\.venv\Scripts\python.exe -m pytest tests\test_n8n_workflow.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_reel_cloud.py -q
+node tools\check_n8n_reels.mjs
 ```
 
 Der Generator entfernt beim erfolgreichen Lauf den Legacy-Export und erzeugt

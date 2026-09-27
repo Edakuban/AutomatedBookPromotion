@@ -4,7 +4,8 @@ from io import BytesIO
 from fastapi.testclient import TestClient
 import pytest
 
-from bookpromo.analysis import AnalysisOptions, PROFILE_FIELDS, PROFILE_FIELD_MODELS, Summary
+from bookpromo.analysis import (AnalysisOptions, CharacterSuggestion, CharacterSuggestions,
+                                PROFILE_FIELDS, PROFILE_FIELD_MODELS, Summary)
 from bookpromo.analysis_worker import run_analysis_once
 from bookpromo.extraction_store import ExtractionStore
 from bookpromo.management import ManagementStore
@@ -27,6 +28,12 @@ class ProfileAPI:
         self.calls.append((result_type, data))
         if result_type is Summary:
             return Summary(summary=data['source_text'], spoilers=['Ende im zweiten Kapitel'])
+        if result_type is CharacterSuggestions:
+            return CharacterSuggestions(characters=[CharacterSuggestion(
+                name='Mara', aliases=[], description='Eine erwachsene Frau am Bahnhof.',
+                image_prompt='Photorealistic adult woman at a railway station; other traits unspecified.',
+                source_evidence='Das Profil nennt eine wartende Frau.',
+            )])
         name = next(name for name, model in PROFILE_FIELD_MODELS.items() if model is result_type)
         if name == self.fail_field:
             raise OpenWebUIError('timeout')
@@ -43,7 +50,7 @@ def test_separate_profile_reads_all_chapters_and_uses_one_call_per_field(setup):
     assert result['state'] == 'done' and result['result'].profile == profile()
     assert result['result'].quotes == []
     assert [data['source_text'] for model, data in api.calls if model is Summary] == [TEXT, TEXT2]
-    field_calls = [(model, data) for model, data in api.calls if model is not Summary]
+    field_calls = [(model, data) for model, data in api.calls if model in PROFILE_FIELD_MODELS.values()]
     assert [model for model, _ in field_calls] == list(PROFILE_FIELD_MODELS.values())
     for model, data in field_calls:
         assert len(model.model_fields) == 1
@@ -73,7 +80,9 @@ def test_profile_resume_preserves_fields_and_quote_analysis(setup):
     assert store.enqueue(book.id, settings, options) == run_id
     api = ProfileAPI()
     run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
-    assert [next(iter(model.model_fields)) for model, _ in api.calls] == list(PROFILE_FIELDS)[3:]
+    profile_calls = [model for model, _ in api.calls if model in PROFILE_FIELD_MODELS.values()]
+    assert [next(iter(model.model_fields)) for model in profile_calls] == list(PROFILE_FIELDS)[3:]
+    assert any(model is CharacterSuggestions for model, _ in api.calls)
     assert store.latest(book.id)['id'] == full_id
     after = management.get(book.id)
     assert after['details'].genre == 'Eigene Angabe'
@@ -146,13 +155,13 @@ def test_context_reused_for_new_profile_prompts_and_quote_analysis(setup):
     store.enqueue(book.id, settings, AnalysisOptions(purpose='profile'))
     api = ProfileAPI()
     run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
-    assert len(api.calls) == 8 and all(model is not Summary for model, _ in api.calls)
-    assert store.latest(book.id, purpose='profile')['calls_started'] == 8
+    assert len(api.calls) == 9 and all(model is not Summary for model, _ in api.calls)
+    assert store.latest(book.id, purpose='profile')['calls_started'] == 9
     assert ExtractionStore(uploads).get(book.id) == record
     store.enqueue(book.id, settings, AnalysisOptions())
     full = FakeAPI()
     run_analysis_once(uploads, settings=settings, api_factory=lambda _: full)
-    assert [name for name, _, _ in full.calls] == ['BookProfile', 'Candidates', 'Candidates']
+    assert [name for name, _, _ in full.calls] == ['BookProfile', 'CharacterSuggestions', 'Candidates', 'Candidates']
     assert store.latest(book.id)['state'] == 'done'
 
 

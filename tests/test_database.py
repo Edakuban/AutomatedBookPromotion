@@ -103,8 +103,9 @@ def test_full_check_reads_all_objects_without_writes(settings):
         return httpx.Response(200, json=[{"version": SCHEMA_VERSION}] if seen[-1] == "bookpromo_schema" else [])
     repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
     asyncio.run(repo.check_schema(full=True))
-    assert len(seen) == 12
+    assert len(seen) == 14
     assert "posts" in seen and "post_media" in seen and "quote_overview" in seen
+    assert "reel_publications" in seen and "reel_assets" in seen
 
 
 def test_book_page_escapes_text_and_formats_berlin_time(settings):
@@ -296,6 +297,61 @@ def test_upload_carousel_end_slide_uses_jpeg_type_and_digest_path(settings):
 
     repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
     assert asyncio.run(repo.upload_carousel_end_slide(object_path, payload)) == object_path
+
+
+def test_reel_account_upload_and_frozen_row_are_server_side_and_idempotent(settings):
+    reel_id = str(uuid4())
+    video = b"\x00\x00\x00\x18ftypisom" + b"video"
+    digest = hashlib.sha256(video).hexdigest()
+    object_path = f"{reel_id}/{digest}.mp4"
+    row = {"id": reel_id, "storage_path": object_path, "media_sha256": digest,
+           "caption": "Wörtliches Zitat\n\nBegleittext", "status": "ready"}
+    seen = []
+
+    def respond(request):
+        seen.append((request.method, request.url.path))
+        assert request.headers["apikey"] == "sb_secret_TEST_PRIVATE"
+        if request.url.path.endswith("/promotion_settings"):
+            return httpx.Response(200, json=[{"account_id": "instagram-account"}])
+        if request.url.path == "/storage/v1/object/book-promotion-reels/" + object_path:
+            assert request.headers["content-type"] == "video/mp4"
+            assert request.headers["x-upsert"] == "true"
+            assert request.content == video
+            return httpx.Response(200, json={"Key": object_path})
+        if request.url.path.endswith("/reel_publications"):
+            assert request.method == "POST"
+            return httpx.Response(201, json=[row])
+        raise AssertionError(request.url)
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    assert asyncio.run(repo.reel_account_id()) == "instagram-account"
+    assert asyncio.run(repo.upload_reel(object_path, video)) == object_path
+    assert asyncio.run(repo.create_reel_publication({"id": reel_id, **row})) == row
+    assert len(seen) == 3
+
+
+def test_reel_insert_conflict_only_accepts_identical_frozen_row(settings):
+    reel_id = str(uuid4())
+    payload = {"id": reel_id, "storage_path": f"{reel_id}/{'a' * 64}.mp4",
+               "media_sha256": "a" * 64, "caption": "Zitat", "status": "ready"}
+
+    def respond(request):
+        if request.method == "POST":
+            return httpx.Response(409, json={})
+        return httpx.Response(200, json=[payload])
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    assert asyncio.run(repo.create_reel_publication(payload)) == payload
+
+    def mismatched(request):
+        if request.method == "POST":
+            return httpx.Response(409, json={})
+        return httpx.Response(200, json=[{**payload, "caption": "Anderer Inhalt"}])
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(mismatched))
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(repo.create_reel_publication(payload))
+    assert error.value.code == "conflict"
 
 
 @pytest.mark.parametrize("kind,path,data", [

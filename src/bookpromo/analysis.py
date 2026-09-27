@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 from .extraction import Chapter, Extraction
 from .openwebui import OpenWebUIError
 
-PROMPT_VERSION = "book-analysis-v1"
+PROMPT_VERSION = "book-analysis-v2-characters"
 Short = Annotated[str, Field(min_length=1, max_length=200)]
 Score = Annotated[int, Field(ge=1, le=5)]
 SYSTEM = """Du analysierst ein Buch für literarische Promotion. Antworte auf Deutsch.
@@ -27,7 +27,9 @@ class StrictModel(BaseModel):
 
 
 class Summary(StrictModel):
-    summary: str = Field(min_length=1, max_length=1800)
+    # Book-level reductions need slightly more room than a single chunk summary.
+    # The bound still keeps every checkpoint and downstream prompt predictable.
+    summary: str = Field(min_length=1, max_length=3000)
     spoilers: list[Short] = Field(max_length=8)
 
 
@@ -98,16 +100,29 @@ class QuoteBatch(StrictModel):
     rejected_candidates: list[RejectedCandidate] = Field(default_factory=list)
 
 
+class CharacterSuggestion(StrictModel):
+    name: Short
+    aliases: list[Short] = Field(max_length=20)
+    description: str = Field(min_length=1, max_length=3000)
+    image_prompt: str = Field(min_length=1, max_length=4000)
+    source_evidence: str = Field(max_length=2000)
+
+
+class CharacterSuggestions(StrictModel):
+    characters: list[CharacterSuggestion] = Field(max_length=30)
+
+
 class AnalysisResult(StrictModel):
     profile: BookProfile
     chapter_summaries: dict[str, Summary]
     quotes: list[Quote]
     rejected_candidates: list[RejectedCandidate] = Field(default_factory=list)
+    character_suggestions: list[CharacterSuggestion] = Field(default_factory=list)
 
 
 class AnalysisOptions(BaseModel):
-    purpose: Literal["full", "profile"] = "full"
-    profile_prompt_version: int = 2
+    purpose: Literal["full", "profile", "characters"] = "full"
+    profile_prompt_version: int = 3
     chunk_chars: int = Field(default=12000, ge=2000, le=24000)
     min_score: int = Field(default=4, ge=1, le=5)
     max_quotes_per_chapter: int = Field(default=12, ge=1, le=50)
@@ -121,7 +136,7 @@ PROFILE_FIELDS = {
     "world": ("Welt und Schauplätze", "Beschreibe belegte Schauplätze, Zeit und Regeln der erzählten Welt. Kennzeichne Unsicherheiten."),
     "characters": ("Figuren", "Pro Figur genau EIN Listeneintrag: Name und eine knappe, vollständige Beschreibung von Rolle und belegten Merkmalen. Möglichst 150 bis 350 Zeichen pro Figur, insgesamt höchstens 6000 Zeichen. Beschreibungen niemals auf mehrere Listeneinträge verteilen. Erfinde keine Details."),
     "spoilers": ("Spoilerhinweise", "Liste zentrale Wendungen, Identitätsenthüllungen und das Ende, die öffentliche Werbung nicht verraten darf. Pro Hinweis ein vollständiger kurzer Satz als EIN Listeneintrag, insgesamt höchstens 4000 Zeichen."),
-    "image_prompt_base": ("Bildprompt-Basis", "Entwickle eine wiederverwendbare visuelle Stilvorgabe für Bilder zu diesem Buch: Atmosphäre, Farben, Bildsprache und belegte Weltmerkmale. Keine Schrift, Zitate oder zentralen Spoiler im Bild. Keine erfundenen verbindlichen Figurenmerkmale."),
+    "image_prompt_base": ("Globale Art Direction", "Formuliere auf Englisch eine wiederverwendbare reine Stilvorgabe für alle Bilder zu diesem Buch: Medium beziehungsweise Rendering-Stil (zum Beispiel photorealistic cinematic, graphic novel, comic, dark fantasy illustration), Farbpalette, Licht, Kontrast, Textur, Atmosphäre und Epoche. Keine konkrete Szene, Handlung, Figuren, Tiere, Orte oder Gegenstände vorgeben; keine Schrift, Zitate oder Spoiler."),
     "caption_guidelines": ("Caption-Vorgaben", "Formuliere kurze wiederverwendbare Vorgaben für neugierig machende deutsche Instagram-Begleittexte. Originalzitate unverändert lassen; keine zentralen Spoiler, erfundenen Buchfakten, Links oder Erfolgsversprechen."),
 }
 PROFILE_FIELD_MODELS = {
@@ -248,14 +263,16 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
         for attempt in range(2):
             checkpoints.reserve_call()
             try:
+                request_tokens = min(tokens * (2 ** attempt), 16384)
                 raw = await api.complete_json(SYSTEM + instruction + (
                     "\nDie letzte Antwort war ungültig. Prüfe JSON-Typen und exakte Originalfundstellen besonders sorgfältig." if attempt else ""),
-                    json.dumps(data, ensure_ascii=False), Candidates if transform else model_type, max_tokens=tokens)
+                    json.dumps(data, ensure_ascii=False), Candidates if transform else model_type,
+                    max_tokens=request_tokens)
                 value = transform(raw) if transform else raw
                 checkpoints.put(key, value)
                 return value
             except OpenWebUIError as exc:
-                if exc.code != "structured" or attempt: raise
+                if exc.code not in {"structured", "truncated"} or attempt: raise
             except AnalysisError:
                 if attempt: raise
 
@@ -270,7 +287,7 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
                 else:
                     reduced.append(await step(f"reduce:{scope}:{level}:{index}", Summary,
                         "Verdichte diese chronologisch geordneten Zusammenfassungen. Bewahre zentrale Figuren, Handlung, Ende und Wendepunkte als internen Spoilerkontext.",
-                        {"summaries": [item.model_dump() for item in group]}))
+                        {"summaries": [item.model_dump() for item in group]}, tokens=4096))
             summaries, level = reduced, level + 1
         return summaries
 
@@ -286,6 +303,26 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
                 stage=f"Buchkontext lesen: Kapitel {position} von {len(extraction.chapters)}, Abschnitt {index+1} von {len(segments)}"))
         chapter_summaries[chapter.id] = (await reduce_summaries(chapter.id, summaries))[0]
     book_context = await reduce_summaries("book", list(chapter_summaries.values()), target=6)
+
+    async def character_suggestions(profile: BookProfile) -> list[CharacterSuggestion]:
+        result = await step(
+            "character-profiles", CharacterSuggestions,
+            "Erstelle buchgebundene Charakterprofile für wiedererkennbare Bildgenerierung. "
+            "Nimm nur benannte, visuell darstellbare Figuren auf. description enthält ausschließlich "
+            "belegte körperliche Merkmale, ungefähres Alter in diesem Buch und wiederkehrende äußere "
+            "Merkmale; Rolle, Persönlichkeit und Handlung nur, soweit sie die Darstellung unmittelbar "
+            "erklären. aliases enthält nur belegte Rufnamen, Spitznamen oder Namensvarianten, niemals "
+            "Pronomen, Rollen oder allgemeine Bezeichnungen. Erfinde niemals Haarfarbe, Augenfarbe, "
+            "Ethnie, Kleidung oder Alter. image_prompt "
+            "ist ein englischer, fotorealistischer neutraler Referenzporträt-Prompt ohne Text, Logos, "
+            "Handlung, Spoiler oder Hintergrundfiguren. Unbekannte Merkmale bleiben ausdrücklich "
+            "unspezifiziert. source_evidence fasst knapp zusammen, worauf die Beschreibung beruht.",
+            {"book_characters": profile.characters,
+             "summaries": [item.model_dump() for item in book_context]},
+            tokens=8192, stage="Charakterprofile für dieses Buch erstellen",
+        )
+        return result.characters
+
     if options.purpose == "profile":
         fields = {}
         for index, (name, (label, instruction)) in enumerate(PROFILE_FIELDS.items(), 1):
@@ -294,10 +331,18 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
                 {"summaries": [item.model_dump() for item in book_context], "previous_fields": fields}, tokens=4096,
                 stage=f"Profilfeld {index} von {len(PROFILE_FIELDS)}: {label}")
             fields.update(value.model_dump())
-        return AnalysisResult(profile=BookProfile.model_validate(fields), chapter_summaries=chapter_summaries, quotes=[])
+        profile = BookProfile.model_validate(fields)
+        return AnalysisResult(profile=profile, chapter_summaries=chapter_summaries, quotes=[],
+                              character_suggestions=await character_suggestions(profile))
     profile = await step("profile", BookProfile,
         "Erstelle aus allen chronologisch geordneten Kapiteldaten den internen Buchkontext einschließlich Ende und Spoilern. Schlage Genre, Stimmung, Welt, Figuren und eine konsistente Bildprompt-Basis sowie Caption-Vorgaben vor. Öffentlich verwendbare Prompt-Vorgaben dürfen keine zentralen Wendungen verraten. Es handelt sich um Vorschläge, keine Änderung manueller Einstellungen.",
         {"summaries": [item.model_dump() for item in book_context]}, tokens=4096)
+    characters = await character_suggestions(profile)
+    if options.purpose == "characters":
+        return AnalysisResult(
+            profile=profile, chapter_summaries=chapter_summaries, quotes=[],
+            character_suggestions=characters,
+        )
     quotes, rejected_candidates = [], []
     for position, chapter in enumerate(extraction.chapters, 1):
         for index, chunk in enumerate(chapter_chunks[chapter.id]):
@@ -313,4 +358,5 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
             rejected_candidates.extend(batch.rejected_candidates)
     checkpoints.progress("Fundstellen zusammenführen und Ergebnis speichern")
     return AnalysisResult(profile=profile, chapter_summaries=chapter_summaries,
-        quotes=select_distinct(quotes, options), rejected_candidates=rejected_candidates)
+        quotes=select_distinct(quotes, options), rejected_candidates=rejected_candidates,
+        character_suggestions=characters)

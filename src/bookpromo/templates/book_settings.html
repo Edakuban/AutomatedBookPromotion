@@ -61,7 +61,8 @@
     </section>
     <section class="panel next-settings settings-fields">
       <h2>Vorgaben für Bild und Begleittext</h2>
-      <label>Bildprompt-Basis <textarea name="image_prompt_base" rows="5" maxlength="4000">{{ details.image_prompt_base }}</textarea></label>
+      <label>Globale Art Direction / Bildstil <textarea name="image_prompt_base" rows="5" maxlength="4000" placeholder="Zum Beispiel: dark fantasy graphic novel, muted ember palette, dramatic chiaroscuro …">{{ details.image_prompt_base }}</textarea></label>
+      <p class="muted small">Verbindlich für alle neu erzeugten Szenen- und Charakterbilder dieses Buches: Medium, Farbwelt, Licht, Textur und Atmosphäre. Konkrete Figuren, Orte und Handlungen stammen weiterhin aus der jeweiligen Szene.</p>
       <label>Caption-Vorgaben <textarea name="caption_guidelines" rows="5" maxlength="4000">{{ details.caption_guidelines }}</textarea></label>
       <label>Text auf der Carousel-Schlussseite <textarea name="carousel_end_text" rows="4" maxlength="500" placeholder="Jetzt entdecken …">{{ details.carousel_end_text }}</textarea></label>
       <h3>Bild-Overlay</h3>
@@ -127,4 +128,67 @@
   {% if management.manual and management.suggestion_id %}
     <p class="page-note"><a href="{{ url_for('book_settings', book_id=book.id) }}?preview=ai">Aktuellen KI-Profilvorschlag zur Bearbeitung laden</a> · Verlässt dieses Formular; noch nicht gespeicherte Eingaben gehen verloren. Der gespeicherte Stand bleibt bis zum erneuten Speichern erhalten.</p>
   {% endif %}
+  <section class="panel next-settings settings-fields" id="characters"
+           data-character-analysis
+           data-start-url="{{ url_for('start_character_analysis', book_id=book.id) }}"
+           data-status-url="{{ url_for('character_analysis_status', book_id=book.id) }}">
+    <div class="promotion-heading">
+      <h2>Charaktere dieses Buches</h2>
+      <p class="muted small">Buchspezifische Erscheinungsbilder bleiben lokal und werden nicht nach Supabase übertragen. Die normale Buchanalyse erzeugt sie bei neuen Projekten automatisch. Der separate Lauf unten ist für bereits analysierte Buchprojekte gedacht und verändert weder Zitate noch Buchprofilfelder.</p>
+    </div>
+    {% if characters %}
+      <div class="character-grid">
+        {% for character in characters %}
+          <article class="character-card">
+            <div class="character-card-heading">
+              <h3>{{ character.name }}</h3>
+              {% if character.approved %}<span class="badge badge-ready">Freigegeben</span>{% elif character.manual %}<span class="badge">Bearbeitet</span>{% else %}<span class="badge">KI-Vorschlag</span>{% endif %}
+            </div>
+            {% if character.has_reference %}
+              <img src="{{ url_for('book_character_image', book_id=book.id, character_id=character.id) }}?revision={{ character.revision }}" alt="Referenzbild von {{ character.name }}">
+            {% else %}
+              <div class="character-placeholder">Noch kein Referenzbild</div>
+            {% endif %}
+            <form method="post" action="{{ url_for('save_book_character', book_id=book.id, character_id=character.id) }}">
+              <input type="hidden" name="revision" value="{{ character.revision }}">
+              <label>Name <input name="name" value="{{ character.name }}" maxlength="160" required></label>
+              <label>Aliasse · mit Komma trennen <input name="aliases" value="{{ character.aliases | join(', ') }}" maxlength="1200"></label>
+              <label>Beschreibung in diesem Buch <textarea name="description" rows="5" maxlength="5000">{{ character.description }}</textarea></label>
+              <label>Referenzbild-Prompt <textarea name="image_prompt" rows="6" maxlength="6000">{{ character.image_prompt }}</textarea></label>
+              {% if character.source_evidence %}<details><summary>Grundlage der Analyse</summary><p class="small muted">{{ character.source_evidence }}</p></details>{% endif %}
+              <label class="checkbox-label"><input type="checkbox" name="approved" {% if character.approved %}checked{% endif %}> Profil für Szenen freigeben</label>
+              <button type="submit">Charakter speichern</button>
+            </form>
+            <div class="character-image-actions">
+              <form method="post" action="{{ url_for('generate_book_character_image', book_id=book.id, character_id=character.id) }}">
+                <input type="hidden" name="revision" value="{{ character.revision }}">
+                <button type="submit" {% if not character.image_prompt %}disabled{% endif %}>{{ 'Bild neu erzeugen' if character.has_reference else 'Bild erzeugen' }}</button>
+              </form>
+              <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_book_character_image', book_id=book.id, character_id=character.id) }}">
+                <input type="hidden" name="revision" value="{{ character.revision }}">
+                <label>Eigenes Referenzbild <input type="file" name="file" accept="image/png,image/jpeg,image/webp" required></label>
+                <button type="submit" class="secondary-button">Bild hochladen</button>
+              </form>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">Noch keine Charakterprofile vorhanden.</p>
+      <div class="character-analysis-actions">
+        <button type="button" data-character-analysis-start>Charaktere aus Buch analysieren</button>
+        <progress data-character-analysis-progress aria-label="Charakteranalyse läuft" hidden></progress>
+        <p class="small muted" data-character-analysis-status role="status">Charakteranalyse-Status wird geladen …</p>
+      </div>
+    {% endif %}
+    <details class="character-create">
+      <summary>Charakter manuell hinzufügen</summary>
+      <form method="post" action="{{ url_for('create_book_character', book_id=book.id) }}">
+        <label>Name <input name="name" maxlength="160" required></label>
+        <label>Beschreibung in diesem Buch <textarea name="description" rows="4" maxlength="5000"></textarea></label>
+        <label>Referenzbild-Prompt <textarea name="image_prompt" rows="5" maxlength="6000"></textarea></label>
+        <button type="submit">Charakter anlegen</button>
+      </form>
+    </details>
+  </section>
 {% endblock %}

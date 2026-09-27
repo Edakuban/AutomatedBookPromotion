@@ -1,12 +1,13 @@
 """Server-side settings. Importing this module never reads files or connects."""
 
 from pathlib import Path
+import re
 from typing import Literal
 
 from pydantic import Field, HttpUrl, SecretStr, PrivateAttr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-Service = Literal["supabase", "openwebui"]
+Service = Literal["supabase", "openwebui", "comfyui", "r2"]
 
 
 class Settings(BaseSettings):
@@ -31,6 +32,23 @@ class Settings(BaseSettings):
     openwebui_model: str | None = Field(default=None, repr=False, max_length=300, pattern=r"^[^\x00-\x1f\x7f]+$")
     openwebui_timeout_seconds: float = Field(default=120, ge=5, le=600, allow_inf_nan=False)
     openwebui_max_retries: int = Field(default=2, ge=0, le=3)
+    # Local ComfyUI rendering for quote reels. Workflow paths are resolved
+    # relative to the selected ENV file, just like APP_DATA_DIR.
+    comfyui_url: HttpUrl = "http://127.0.0.1:8188"
+    reel_image_workflow: Path = Path("workflows/reel-image.json")
+    reel_reference_workflow: Path = Path("workflows/reel-reference.json")
+    reel_video_workflow: Path = Path("workflows/reel-video.json")
+    reel_default_duration_seconds: float = Field(default=10, ge=4, le=30, allow_inf_nan=False)
+    reel_max_audio_mb: int = Field(default=250, ge=1, le=1000)
+    reel_max_video_mb: int = Field(default=45, ge=1, le=49)
+    reel_storage_provider: Literal["supabase", "cloudflare_r2"] = "supabase"
+    r2_account_id: str | None = Field(default=None, repr=False, pattern=r"^[0-9a-f]{32}$")
+    r2_access_key_id: SecretStr | None = None
+    r2_secret_access_key: SecretStr | None = None
+    r2_bucket: str = Field(default="book-promotion-reels", min_length=3, max_length=63)
+    r2_endpoint: HttpUrl | None = Field(default=None, repr=False)
+    r2_public_base_url: HttpUrl | None = Field(default=None, repr=False)
+    r2_signed_url_ttl_seconds: int = Field(default=86400, ge=900, le=604800)
     # Optional diagnostics access to the user's n8n instance.
     n8n_url: HttpUrl | None = Field(default=None, repr=False)
     n8n_api_key: SecretStr | None = Field(default=None, repr=False)
@@ -41,8 +59,10 @@ class Settings(BaseSettings):
     _env_path: Path | None = PrivateAttr(default=None)
 
     @field_validator(
-        "supabase_url", "supabase_secret_key", "openwebui_url",
-        "openwebui_api_key", "openwebui_model", "n8n_url", "n8n_api_key", mode="before",
+        "supabase_url", "supabase_secret_key", "openwebui_url", "comfyui_url",
+        "openwebui_api_key", "openwebui_model", "n8n_url", "n8n_api_key",
+        "r2_account_id", "r2_access_key_id", "r2_secret_access_key", "r2_endpoint",
+        "r2_public_base_url", mode="before",
     )
     @classmethod
     def empty_to_none(cls, value: object) -> object:
@@ -50,11 +70,29 @@ class Settings(BaseSettings):
             return value.strip() or None
         return value
 
-    @field_validator("supabase_url", "openwebui_url", "n8n_url")
+    @field_validator(
+        "supabase_url", "openwebui_url", "comfyui_url", "n8n_url", "r2_endpoint",
+        "r2_public_base_url",
+    )
     @classmethod
     def plain_service_url(cls, value: HttpUrl | None) -> HttpUrl | None:
         if value and (value.username or value.password or value.query or value.fragment):
             raise ValueError("Service-URL ohne Zugangsdaten, Query oder Fragment angeben.")
+        return value
+
+    @field_validator("r2_endpoint", "r2_public_base_url")
+    @classmethod
+    def secure_r2_url(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value and value.scheme != "https":
+            raise ValueError("R2-URLs müssen HTTPS verwenden.")
+        return value
+
+    @field_validator("r2_bucket")
+    @classmethod
+    def valid_r2_bucket(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])?", value):
+            raise ValueError("Ungültiger R2-Bucketname.")
         return value
 
     @field_validator("app_data_dir", mode="before")
@@ -68,6 +106,8 @@ class Settings(BaseSettings):
         required = {
             "supabase": ("supabase_url", "supabase_secret_key"),
             "openwebui": ("openwebui_url", "openwebui_api_key", "openwebui_model"),
+            "comfyui": ("comfyui_url", "reel_image_workflow", "reel_reference_workflow", "reel_video_workflow"),
+            "r2": ("r2_account_id", "r2_access_key_id", "r2_secret_access_key", "r2_endpoint"),
         }
         return [name.upper() for name in required[service] if getattr(self, name) is None]
 
@@ -86,4 +126,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
     settings._env_path = selected
     if not settings.app_data_dir.is_absolute():
         settings.app_data_dir = (selected.parent / settings.app_data_dir).resolve()
+    for field in ("reel_image_workflow", "reel_reference_workflow", "reel_video_workflow"):
+        path = getattr(settings, field)
+        if not path.is_absolute():
+            setattr(settings, field, (selected.parent / path).resolve())
     return settings

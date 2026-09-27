@@ -15,7 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check-config", help="Lokale Einstellungen ohne Netzwerk prüfen")
     check.add_argument("--env-file", type=Path, help="Andere ENV-Datei statt .env im Arbeitsordner")
-    check.add_argument("--require", choices=("supabase", "openwebui", "all"),
+    check.add_argument("--require", choices=("supabase", "openwebui", "comfyui", "r2", "all"),
                        help="Fehlende Zugangsdaten als Fehler behandeln")
     serve = commands.add_parser("serve", help="Lokale Weboberfläche starten")
     serve.add_argument("--env-file", type=Path, help="Andere ENV-Datei statt .env im Arbeitsordner")
@@ -25,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     aicheck = commands.add_parser("check-openwebui", help="Open-WebUI-Zugang und Modell prüfen")
     aicheck.add_argument("--env-file", type=Path, help="Andere lokale ENV-Datei")
     aicheck.add_argument("--generate", action="store_true", help="Zusätzlich eine kurze technische Testantwort erzeugen")
+    comfycheck = commands.add_parser("check-comfyui", help="ComfyUI-Zugang und Reel-Workflows prüfen")
+    comfycheck.add_argument("--env-file", type=Path, help="Andere lokale ENV-Datei")
     args = parser.parse_args(argv)
 
     try:
@@ -38,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
             if error["loc"] and str(error["loc"][0]) in (
                 "app_host", "app_port", "app_data_dir", "app_max_upload_mb", "supabase_enabled", "supabase_url", "supabase_secret_key",
                 "openwebui_url", "openwebui_api_key", "openwebui_model", "openwebui_timeout_seconds", "openwebui_max_retries",
+                "comfyui_url", "reel_image_workflow", "reel_reference_workflow", "reel_video_workflow", "reel_default_duration_seconds",
+                "reel_max_audio_mb", "reel_max_video_mb",
+                "reel_storage_provider", "r2_account_id", "r2_access_key_id", "r2_secret_access_key", "r2_bucket",
+                "r2_endpoint", "r2_public_base_url", "r2_signed_url_ttl_seconds",
                 "analysis_chunk_chars", "analysis_min_score", "analysis_max_quotes_per_chapter", "analysis_max_calls",
                 "n8n_url", "n8n_api_key",
             )
@@ -79,6 +85,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return 0
 
+    if args.command == "check-comfyui":
+        from .comfy import ComfyClient, load_workflow
+        try:
+            load_workflow(settings.reel_image_workflow)
+            load_workflow(settings.reel_reference_workflow)
+            load_workflow(settings.reel_video_workflow)
+            ComfyClient(str(settings.comfyui_url)).check()
+        except (OSError, ValueError, RuntimeError):
+            print("ComfyUI oder ein Reel-Workflow ist nicht erreichbar beziehungsweise ungültig.", file=sys.stderr)
+            return 2
+        print("ComfyUI: Zugang sowie Bild-, Referenz- und Video-Workflow geprüft. Kein Render gestartet.")
+        return 0
+
     if args.command == "check-db":
         from .database import SCHEMA_VERSION, DatabaseError, SupabaseRepository
 
@@ -94,11 +113,24 @@ def main(argv: list[str] | None = None) -> int:
     print("Lokale Konfiguration: OK")
     print("Supabase-Zugriff: " + ("aktiviert" if settings.supabase_enabled else "deaktiviert (bis Schritt 3.2)"))
     incomplete = False
-    for service, label in (("supabase", "Supabase"), ("openwebui", "Open WebUI")):
+    for service, label in (("supabase", "Supabase"), ("openwebui", "Open WebUI"), ("comfyui", "ComfyUI"), ("r2", "Cloudflare R2")):
         missing = settings.missing_for(service)
+        if service == "comfyui":
+            missing += [
+                name for name, path in (
+                    ("REEL_IMAGE_WORKFLOW", settings.reel_image_workflow),
+                    ("REEL_REFERENCE_WORKFLOW", settings.reel_reference_workflow),
+                    ("REEL_VIDEO_WORKFLOW", settings.reel_video_workflow),
+                ) if not path.is_file() and name not in missing
+            ]
         if missing:
             print(f"{label}: noch nicht eingerichtet ({', '.join(missing)})")
-            incomplete |= args.require in (service, "all")
+            if service == "r2":
+                incomplete |= args.require == "r2" or (
+                    args.require == "all" and settings.reel_storage_provider == "cloudflare_r2"
+                )
+            else:
+                incomplete |= args.require in (service, "all")
         else:
             print(f"{label}: Einstellungen vollständig")
     print("Keine Netzwerkverbindungen geprüft; keine Daten geschrieben.")

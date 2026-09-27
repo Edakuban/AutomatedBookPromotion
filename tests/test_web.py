@@ -70,7 +70,7 @@ def test_settings_status_never_exposes_credentials_or_claims_connectivity(settin
             assert "PRIVATE_" not in response.text
             assert response.headers["cache-control"] == "no-store"
         page = client.get("/settings").text
-        assert page.count("Vollständig eingetragen") == 2
+        assert page.count("Vollständig eingetragen") == 3
         assert "noch nicht geprüft" in page
         assert "Fehlt" not in page
 

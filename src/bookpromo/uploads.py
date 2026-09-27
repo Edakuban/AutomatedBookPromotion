@@ -181,6 +181,18 @@ class LocalUploadStore:
                         raise UploadError(
                             "Das Buch kann während einer laufenden KI-Analyse nicht gelöscht werden.", 409
                         )
+                    if (
+                        self._table_exists(connection, "local_reel_jobs")
+                        and self._table_exists(connection, "local_reel_drafts")
+                        and connection.execute(
+                            """select 1 from local_reel_jobs j join local_reel_drafts d on d.id=j.draft_id
+                            where d.book_id=? and j.state in ('queued','running')""",
+                            (normalized_id,),
+                        ).fetchone()
+                    ):
+                        raise UploadError(
+                            "Das Buch kann während einer laufenden Reel-Erzeugung nicht gelöscht werden.", 409
+                        )
 
                     book = LocalBook.from_row(row)
                     expected_source = (
@@ -193,7 +205,25 @@ class LocalUploadStore:
                         (source, "source.docx"),
                         ((self.root / "book-assets" / normalized_id).resolve(), "book-assets"),
                         ((self.root / "overlays" / f"{normalized_id}.png").resolve(), "overlay.png"),
+                        ((self.root / "audio" / normalized_id).resolve(), "audio"),
+                        ((self.root / "reels" / normalized_id).resolve(), "reels"),
+                        ((self.root / "characters" / normalized_id).resolve(), "characters"),
                     ]
+                    if self._table_exists(connection, "local_book_characters"):
+                        for character in connection.execute(
+                            "select id from local_book_characters where book_id=?", (normalized_id,)
+                        ):
+                            file_targets.append(
+                                ((self.root / "character-work" / f"character-{character['id']}").resolve(),
+                                 f"character-work-{character['id']}")
+                            )
+                    if self._table_exists(connection, "local_reel_drafts"):
+                        for draft in connection.execute(
+                            "select id from local_reel_drafts where book_id=?", (normalized_id,)
+                        ):
+                            file_targets.append(
+                                ((self.root / "reel-work" / draft["id"]).resolve(), f"reel-work-{draft['id']}")
+                            )
                     existing_targets = [(path, name) for path, name in file_targets if path.exists()]
                     if existing_targets:
                         staging_root = self.root / "pending" / f"delete-{normalized_id}-{uuid4().hex}"
@@ -211,6 +241,22 @@ class LocalUploadStore:
                             "(select id from local_analysis_runs where book_id=?)",
                             (normalized_id,),
                         )
+                    if self._table_exists(connection, "local_reel_drafts"):
+                        if self._table_exists(connection, "local_reel_jobs"):
+                            connection.execute(
+                                "delete from local_reel_jobs where draft_id in "
+                                "(select id from local_reel_drafts where book_id=?)", (normalized_id,)
+                            )
+                        connection.execute("delete from local_reel_drafts where book_id=?", (normalized_id,))
+                    if self._table_exists(connection, "local_audio_tracks"):
+                        if self._table_exists(connection, "local_audio_cues"):
+                            connection.execute(
+                                "delete from local_audio_cues where track_id in "
+                                "(select id from local_audio_tracks where book_id=?)", (normalized_id,)
+                            )
+                        connection.execute("delete from local_audio_tracks where book_id=?", (normalized_id,))
+                    if self._table_exists(connection, "local_book_characters"):
+                        connection.execute("delete from local_book_characters where book_id=?", (normalized_id,))
                     for table in (
                         "local_analysis_runs",
                         "local_book_assets",

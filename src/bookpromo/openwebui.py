@@ -23,7 +23,7 @@ MESSAGES = {
     "size": "Die Open-WebUI-Antwort überschreitet das unterstützte Größenlimit.",
     "model": "Das gewählte Modell ist für diesen API-Key nicht verfügbar. Bitte die Modellliste neu laden.",
     "missing_model": "Bitte zuerst ein Open-WebUI-Modell auswählen oder OPENWEBUI_MODEL in der .env eintragen.",
-    "structured": "Die KI-Antwort entspricht nicht dem angeforderten JSON-Format. Es wurde kein Ergebnis übernommen.",
+    "structured": "Die KI-Antwort erfüllt das angeforderte Ergebnisschema nicht (JSON-Struktur, Datentypen oder Längen). Es wurde kein Ergebnis übernommen.",
     "truncated": "Die KI-Antwort wurde wegen des Ausgabelimits abgeschnitten. Bitte einen kleineren Textabschnitt verwenden.",
     "request": "Open WebUI hat die Anfrage abgelehnt. Modellunterstützung und Textumfang prüfen.",
 }

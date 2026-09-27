@@ -36,6 +36,68 @@
     </div>
     <noscript><p>Für Modellwahl und Verbindungstest in dieser Ansicht bitte JavaScript aktivieren. Alternativ steht der CLI-Befehl check-openwebui zur Verfügung.</p></noscript>
   </section>
+  <section class="panel next-settings" id="comfyui-settings" data-check-url="{{ url_for('check_comfyui') }}" aria-labelledby="comfyui-title">
+    <h2 id="comfyui-title">ComfyUI für Reels</h2>
+    <p>Prüft den lokalen ComfyUI-Server sowie die eingebundenen Bild- und Video-Workflows. Dabei wird noch kein Render gestartet.</p>
+    <div class="form-actions"><button type="button" id="comfyui-check">Verbindung und Workflows prüfen</button></div>
+    <p id="comfyui-message" class="notice" role="status" aria-live="polite" hidden></p>
+  </section>
+  <section class="panel next-settings" id="reel-publishing" aria-labelledby="reel-publishing-title">
+    <div class="panel-heading promotion-heading">
+      <h2 id="reel-publishing-title">Reel-Speicher und Plattformen</h2>
+      <span class="badge {% if reel_defaults.values.selected() %}badge-ready{% endif %}">{{ reel_defaults.values.selected()|length }} aktiv</span>
+    </div>
+    <p>Hier liegen nur Konto-/Kanal-IDs und Veröffentlichungsoptionen. Tokens und Storage-Schlüssel bleiben in ENV beziehungsweise den n8n-Credentials. Beim Einreihen erhält jede Plattform einen unveränderlichen Snapshot dieser Werte.</p>
+    {% if reel_saved %}<p class="notice success" role="status">Reel-Einstellungen gespeichert. Sie gelten für neu eingereihte Reels.</p>{% endif %}
+    {% if reel_form_error %}<p class="notice error" role="alert">{{ reel_form_error }}</p>{% endif %}
+    <form method="post" action="{{ url_for('save_reel_settings') }}" class="settings-fields promotion-settings-form">
+      <input type="hidden" name="revision" value="{{ reel_defaults.revision }}">
+      <fieldset>
+        <legend>Videospeicher</legend>
+        <label class="radio-label"><input type="radio" name="storage_provider" value="supabase" {% if reel_defaults.values.storage_provider == 'supabase' %}checked{% endif %}><span><strong>Supabase Storage</strong><small>Privater Bucket mit kurzlebiger Signed URL.</small></span></label>
+        <label class="radio-label"><input type="radio" name="storage_provider" value="cloudflare_r2" {% if reel_defaults.values.storage_provider == 'cloudflare_r2' %}checked{% endif %}><span><strong>Cloudflare R2</strong><small>Custom Domain, falls konfiguriert; sonst erzeugt n8n eine temporäre Signed URL.</small></span></label>
+        <p class="small muted">R2-Domain: {{ 'konfiguriert' if r2_public_url else 'nicht konfiguriert – Signed-URL-Fallback aktiv' }}</p>
+        <div class="form-actions" data-r2-check data-check-url="{{ url_for('check_r2') }}"><button type="button">R2-Verbindung prüfen</button><p class="notice" role="status" hidden></p></div>
+      </fieldset>
+
+      {% set instagram = reel_defaults.values.instagram %}
+      <fieldset><legend>Instagram</legend>
+        <label class="checkbox-label"><input type="checkbox" name="enabled_instagram" {% if instagram.enabled %}checked{% endif %}> Aktiv</label>
+        <label>Instagram User ID <input name="account_instagram" maxlength="255" value="{{ instagram.account_id }}"></label>
+        <label class="checkbox-label"><input type="checkbox" name="instagram_share_to_feed" {% if instagram.options.get('share_to_feed', true) %}checked{% endif %}> Auch im Feed anzeigen</label>
+      </fieldset>
+
+      {% set facebook = reel_defaults.values.facebook %}
+      <fieldset><legend>Facebook</legend>
+        <label class="checkbox-label"><input type="checkbox" name="enabled_facebook" {% if facebook.enabled %}checked{% endif %}> Aktiv</label>
+        <label>Facebook Page ID <input name="account_facebook" maxlength="255" value="{{ facebook.account_id }}"></label>
+        <label class="checkbox-label"><input type="checkbox" name="facebook_share_to_feed" {% if facebook.options.get('share_to_feed', true) %}checked{% endif %}> Im Feed anzeigen</label>
+      </fieldset>
+
+      {% set youtube = reel_defaults.values.youtube %}
+      <fieldset><legend>YouTube Shorts</legend>
+        <label class="checkbox-label"><input type="checkbox" name="enabled_youtube" {% if youtube.enabled %}checked{% endif %}> Aktiv</label>
+        <label>YouTube Channel ID <input name="account_youtube" maxlength="255" value="{{ youtube.account_id }}"></label>
+        <label>Sichtbarkeit <select name="youtube_privacy_status">{% for value in ('private','unlisted','public') %}<option value="{{ value }}" {% if youtube.options.get('privacy_status','private') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+        <label>Kategorie-ID <input name="youtube_category_id" inputmode="numeric" maxlength="3" value="{{ youtube.options.get('category_id','22') }}"></label>
+        <label class="checkbox-label"><input type="checkbox" name="youtube_made_for_kids" {% if youtube.options.get('made_for_kids', false) %}checked{% endif %}> Für Kinder erstellt</label>
+        <label class="checkbox-label"><input type="checkbox" name="youtube_notify_subscribers" {% if youtube.options.get('notify_subscribers', false) %}checked{% endif %}> Abonnenten benachrichtigen</label>
+      </fieldset>
+
+      {% set tiktok = reel_defaults.values.tiktok %}
+      <fieldset><legend>TikTok</legend>
+        <label class="checkbox-label"><input type="checkbox" name="enabled_tiktok" {% if tiktok.enabled %}checked{% endif %}> Aktiv</label>
+        <label>TikTok Creator/Open ID <input name="account_tiktok" maxlength="255" value="{{ tiktok.account_id }}"></label>
+        <label>Sichtbarkeit <select name="tiktok_privacy_level">
+          {% for value,label in (('SELF_ONLY','Nur ich'),('MUTUAL_FOLLOW_FRIENDS','Freunde'),('FOLLOWER_OF_CREATOR','Follower'),('PUBLIC_TO_EVERYONE','Öffentlich')) %}<option value="{{ value }}" {% if tiktok.options.get('privacy_level','SELF_ONLY') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select></label>
+        <label class="checkbox-label"><input type="checkbox" name="tiktok_allow_comment" {% if tiktok.options.get('allow_comment', true) %}checked{% endif %}> Kommentare erlauben</label>
+        <label class="checkbox-label"><input type="checkbox" name="tiktok_allow_duet" {% if tiktok.options.get('allow_duet', false) %}checked{% endif %}> Duett erlauben</label>
+        <label class="checkbox-label"><input type="checkbox" name="tiktok_allow_stitch" {% if tiktok.options.get('allow_stitch', false) %}checked{% endif %}> Stitch erlauben</label>
+      </fieldset>
+      <div class="form-actions"><button type="submit">Reel-Einstellungen speichern</button></div>
+    </form>
+  </section>
   <section class="panel next-settings" id="promotion" aria-labelledby="promotion-title">
     <div class="panel-heading promotion-heading">
       <h2 id="promotion-title">Buchauswahl für den täglichen Flow</h2>

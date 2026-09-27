@@ -1,6 +1,6 @@
 # Supabase-Schema und Einrichtung
 
-Stand: 10.09.2026. Im konfigurierten Projekt `AutomatedBookPromotion` läuft Schema v5 für Carousels. Die Migration und der Python-Lesezugriff wurden live geprüft. Promotion-Einstellung und Buch sind weiterhin aktiv, aber das noch nicht erneut synchronisierte v4-Buchprofil wird von der v5-Reservierung nicht ausgewählt.
+Stand: 27.09.2026. Der lokale Vertrag und das konfigurierte Projekt `AutomatedBookPromotion` stehen auf Schema v8.
 
 ## Maßgebliche Migrationen
 
@@ -14,10 +14,14 @@ Die Dateien in `supabase/migrations` sind der aktuelle, mit dem entfernten Migra
 6. `20260909100000_overlay_chapter_context.sql`
 7. `20260909114500_allow_book_sync_with_open_drafts.sql`
 8. `20260910050339_carousel_contract_and_media_storage.sql`
+9. `20260926090000_image_quote_retry.sql`
+10. `20260926170000_reel_publication_queue.sql`
+11. `20260927120000_reel_multiplatform_storage.sql`
+12. `20260927130000_reel_claim_all_accounts.sql`
 
-Auf dem bestehenden Projekt frühere Migrationen nicht erneut manuell anwenden. Der passende Python-Sync ist bereits auf v5 umgestellt; nach Anwendung der v5-Migration bleibt die Promotion deaktiviert, bis die neuen n8n-Workflows bereitstehen. Für ein neues, leeres Projekt alle Dateien in Namensreihenfolge über die Supabase-Migrationsverwaltung anwenden. `sql/001_initial_schema.sql` ist das historische Bootstrap-Script für v1 und allein nicht ausreichend. `sql/002_verify_setup.sql` enthält lesende Prüfungen des v5-Vertrags.
+Auf dem bestehenden Projekt frühere Migrationen nicht erneut manuell anwenden. Bis zum Import und Dry-Run der neuen n8n-Workflows bleibt die Veröffentlichung deaktiviert. Für ein neues, leeres Projekt alle Dateien in Namensreihenfolge über die Supabase-Migrationsverwaltung anwenden. `sql/001_initial_schema.sql` ist das historische Bootstrap-Script für v1 und allein nicht ausreichend. Der Python-Check validiert den aktuellen v8-Vertrag.
 
-Die Migrationen legen neun Anwendungstabellen, drei Übersichts-Views und fünf serverseitige RPCs an. Alle Anwendungstabellen haben RLS ohne öffentliche Policies; Views und Funktionen verwenden die Rechte des aufrufenden Servers. `anon` und `authenticated` erhalten keinen Zugriff auf Buchtexte, Medienmanifeste oder Promotion-RPCs. Der private temporäre Bucket `book-promotion-media` akzeptiert JPEGs bis 8 MiB; `book-promotion-assets` akzeptiert dauerhafte PNG-Overlays und CTA-JPEGs bis 8 MiB. Der Service-Key bleibt im Python-Backend beziehungsweise in n8n-Credentials.
+Alle Anwendungstabellen haben RLS ohne öffentliche Policies; Views und Funktionen verwenden die Rechte des aufrufenden Servers. `anon` und `authenticated` erhalten keinen Zugriff auf Buchtexte, Medienmanifeste oder Promotion-RPCs. v8 trennt das Reel-Asset von seinen Instagram-, Facebook-, YouTube- und TikTok-Zielen und löscht ein MP4 erst nach dem gemeinsamen Terminalzustand. Der Service-Key bleibt im Python-Backend beziehungsweise in n8n-Credentials.
 
 ## Verbindung und Datenübertragung
 

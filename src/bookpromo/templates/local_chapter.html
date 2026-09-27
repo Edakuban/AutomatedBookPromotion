@@ -28,6 +28,14 @@
             <input type="hidden" name="filter" value="{{ filter }}">
             <input type="hidden" name="quote_page" value="{{ quote_page }}">
             <button type="submit">{{ 'Sperre aufheben' if item.blocked else 'Zitat sperren' }}</button>
+            {% if item.usable %}
+              {% set reel = item.reel if item.reel is defined else none %}
+              <button type="button" class="secondary-button" data-reel-open
+                      data-reel-url="{{ url_for('reel_workshop', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}">
+                {{ 'Reel weiterbearbeiten' if reel else 'Reel erzeugen' }}
+              </button>
+              {% if reel %}<span class="badge {% if reel.state in ('ready', 'stocked') %}badge-ready{% endif %}">{{ reel.label }}</span>{% endif %}
+            {% endif %}
           </form>
           {% if not quote.usable %}<p class="muted small">Die KI stuft dieses Zitat als nicht geeignet ein. Eine aufgehobene manuelle Sperre ändert diese Einstufung nicht.</p>{% endif %}
         </article>
@@ -40,6 +48,15 @@
       {% if summary %}<details><summary>Interne Kapitelzusammenfassung · enthält Spoiler</summary><p class="book-text">{{ summary.summary }}</p></details>{% endif %}
     {% else %}<p>{{ analysis.label if analysis else 'Noch nicht analysiert' }}. Die KI-Analyse kannst du auf der Buchseite starten.</p>{% endif %}
   </section>
+  <dialog id="reel-dialog" class="reel-dialog" aria-labelledby="reel-dialog-title">
+    <div class="reel-dialog-frame">
+      <div class="reel-dialog-heading">
+        <div><span class="badge">Reel-Werkstatt</span><h2 id="reel-dialog-title">Reel erzeugen</h2></div>
+        <button type="button" class="secondary-button reel-dialog-close" data-reel-close aria-label="Reel-Werkstatt schließen">Schließen</button>
+      </div>
+      <div data-reel-content><p class="muted">Reel-Daten werden geladen …</p></div>
+    </div>
+  </dialog>
   <section class="panel next-settings" aria-label="Kapiteltext">
     {% for paragraph in chapter.paragraphs %}
       <div class="source-paragraph"><span class="muted small">Absatz {{ paragraph.id[1:] | int }}</span><p class="book-text">{{ chapter.source_text[paragraph.start:paragraph.end] }}</p></div>

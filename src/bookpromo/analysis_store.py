@@ -13,6 +13,7 @@ from .analysis import AnalysisError, AnalysisOptions, AnalysisResult, PROMPT_VER
 from .extraction_store import ExtractionStore
 from .jobs import LEASE_SECONDS, MAX_ATTEMPTS
 from .uploads import UploadError
+from .characters import CharacterStore
 
 LABELS = {"queued": "KI-Analyse wartet", "running": "KI-Analyse läuft", "done": "KI-Analyse abgeschlossen",
           "empty": "Keine geeigneten Zitate", "failed": "KI-Analyse fehlgeschlagen", "stale": "Analyse veraltet"}
@@ -105,7 +106,9 @@ class AnalysisStore:
             and r.model_id=target.model_id and r.endpoint_hash=target.endpoint_hash and r.prompt_version=target.prompt_version
             and r.state in ('done','empty','failed')
             and json_extract(r.options_json,'$.chunk_chars')=json_extract(target.options_json,'$.chunk_chars')
-            and (c.step_key like 'summary:%' or c.step_key like 'reduce:%')
+            and (c.step_key like 'summary:%' or c.step_key like 'reduce:%'
+                 or (json_extract(target.options_json,'$.purpose')='characters'
+                     and c.step_key in ('profile','character-profiles')))
             order by r.updated_at desc,r.rowid desc""",
             (run_id,))
 
@@ -149,12 +152,18 @@ class AnalysisStore:
     def finish(self, job, result=None, error=None):
         now = time.time()
         with closing(self.connection()) as connection, connection:
+            if result is not None and not error:
+                CharacterStore.schema(connection)
             connection.execute("begin immediate")
             if not self.owned(connection, job, now): return False
-            profile_only = AnalysisOptions.model_validate_json(job["options_json"]).purpose == "profile"
-            state = "failed" if error else "done" if profile_only or any(q.usable for q in result.quotes) else "empty"
+            purpose = AnalysisOptions.model_validate_json(job["options_json"]).purpose
+            state = "failed" if error else "done" if purpose in {"profile", "characters"} or any(q.usable for q in result.quotes) else "empty"
             connection.execute("update local_analysis_runs set state=?,stage=?,result_json=?,error=?,token=null,lease_until=null,updated_at=? where id=?",
                 (state, LABELS[state], result.model_dump_json() if result else None, error, now, job["id"]))
+            if result is not None and not error:
+                CharacterStore.merge_analysis_in_connection(
+                    connection, job["book_id"], job["id"], result.character_suggestions,
+                )
         return True
 
     def latest(self, book_id, *, include_result=False, purpose="full"):
@@ -178,6 +187,12 @@ class AnalysisStore:
             result["label"] = {"done": "Profilvorschläge fertig", "empty": "Profilvorschläge fertig"}.get(result["state"], result["label"].replace("KI-Analyse", "KI-Profilanalyse"))
             if old_profile_prompt:
                 result["label"] = "Bitte die Profilfelder mit den verbesserten Textvorgaben neu erstellen. Gespeicherter Buchkontext wird wiederverwendet."
+        elif purpose == "characters":
+            result["label"] = {
+                "done": "Charakteranalyse abgeschlossen",
+                "failed": "Charakteranalyse fehlgeschlagen",
+                "stale": "Charakteranalyse veraltet",
+            }.get(result["state"], result["label"].replace("KI-Analyse", "Charakteranalyse"))
         if include_result:
             raw = result.pop("result_json")
             try: result["result"] = AnalysisResult.model_validate_json(raw) if raw and result["state"] != "stale" else None

@@ -8,9 +8,11 @@ import time
 from fastapi.testclient import TestClient
 import pytest
 
-from bookpromo.analysis import (AnalysisError, AnalysisOptions, BookProfile, Candidate, Candidates, Chunk,
+from bookpromo.analysis import (AnalysisError, AnalysisOptions, BookProfile, Candidate, Candidates,
+    CharacterSuggestion, CharacterSuggestions, Chunk,
     QuoteBatch, Scores, Summary, chunks, select_distinct, validate_candidates, validate_quote_batch)
 from bookpromo.analysis_store import AnalysisStore, AnalysisLeaseLost, Checkpoints
+from bookpromo.characters import CharacterStore
 from bookpromo.analysis_worker import run_analysis_once
 from bookpromo.config import Settings, load_settings
 from bookpromo.extraction import Boundary
@@ -53,14 +55,23 @@ def profile():
 
 class FakeAPI:
     def __init__(self, *, invalid=0, fail_at=None, empty=False, spoiler='none'):
-        self.calls, self.invalid, self.fail_at, self.empty, self.spoiler = [], invalid, fail_at, empty, spoiler
+        self.calls, self.token_budgets = [], []
+        self.invalid, self.fail_at, self.empty, self.spoiler = invalid, fail_at, empty, spoiler
 
     async def complete_json(self, system, user, result_type, **kwargs):
         data = json.loads(user)
         self.calls.append((result_type.__name__, data, system))
+        self.token_budgets.append(kwargs.get('max_tokens'))
         if len(self.calls) == self.fail_at: raise OpenWebUIError('timeout')
         if result_type is Summary: return Summary(summary='Zusammenfassung dieses Abschnitts.', spoilers=['Enthüllung im letzten Kapitel'])
         if result_type is BookProfile: return profile()
+        if result_type is CharacterSuggestions:
+            return CharacterSuggestions(characters=[CharacterSuggestion(
+                name='Mara', aliases=[],
+                description='Eine erwachsene Frau, die allein am Bahnhof wartet.',
+                image_prompt='Photorealistic adult woman waiting at a railway station; unspecified hair and eye color.',
+                source_evidence='Die Zusammenfassung nennt eine wartende Frau.',
+            )])
         if self.empty: return Candidates(candidates=[])
         start = data['paragraphs'][0]['start']
         text = data['source_text'][start:start+200]
@@ -77,8 +88,11 @@ def test_complete_pipeline_validates_original_and_builds_context_first(setup):
     assert run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
     run = store.latest(book.id, include_result=True)
     assert run['id'] == run_id and run['state'] == 'done'
-    assert [name for name, _, _ in api.calls] == ['Summary','Summary','BookProfile','Candidates','Candidates']
-    assert run['completed_steps'] == 5
+    assert [name for name, _, _ in api.calls] == ['Summary','Summary','BookProfile','CharacterSuggestions','Candidates','Candidates']
+    character_call = next(index for index,call in enumerate(api.calls) if call[0] == 'CharacterSuggestions')
+    assert api.token_budgets[character_call] == 8192
+    assert run['completed_steps'] == 6
+    assert [character.name for character in CharacterStore(uploads).list(book.id)] == ['Mara']
     assert {q.text for q in run['result'].quotes} == {TEXT, TEXT2}
     for quote in run['result'].quotes:
         chapter = next(c for c in record.result.chapters if c.id == quote.chapter_id)
@@ -126,6 +140,33 @@ def test_long_text_chunks_are_bounded_overlap_and_cover_tail(setup):
     assert all(a.end-b.start >= 800 and b.start>a.start for a,b in zip(parts,parts[1:]))
 
 
+def test_summary_bound_handles_book_reductions_without_becoming_unbounded():
+    assert len(Summary(summary='x' * 3000, spoilers=[]).summary) == 3000
+    with pytest.raises(ValueError):
+        Summary(summary='x' * 3001, spoilers=[])
+
+
+def test_truncated_step_retries_once_with_double_token_budget(setup):
+    settings,uploads,book,_,store=setup
+
+    class TruncatedOnceAPI(FakeAPI):
+        def __init__(self):
+            super().__init__()
+            self.attempt_tokens=[]
+
+        async def complete_json(self, system, user, result_type, **kwargs):
+            self.attempt_tokens.append(kwargs['max_tokens'])
+            if len(self.attempt_tokens) == 1:
+                raise OpenWebUIError('truncated')
+            return await super().complete_json(system, user, result_type, **kwargs)
+
+    api=TruncatedOnceAPI()
+    store.enqueue(book.id,settings,AnalysisOptions())
+    assert run_analysis_once(uploads,settings=settings,api_factory=lambda _:api)
+    assert store.latest(book.id)['state']=='done'
+    assert api.attempt_tokens[:2] == [2048,4096]
+
+
 @pytest.mark.parametrize('invalid,state', [(1,'done'),(2,'empty')])
 def test_invalid_candidates_are_skipped_without_repeating_paid_calls(setup, invalid, state):
     settings,uploads,book,_,store=setup
@@ -156,10 +197,10 @@ def test_resume_keeps_quote_batches_and_diagnostics_and_does_not_replay_progress
     settings,uploads,book,_,store=setup
     options=AnalysisOptions()
     run_id=store.enqueue(book.id,settings,options)
-    first=FakeAPI(invalid=1,fail_at=5)
+    first=FakeAPI(invalid=1,fail_at=6)
     run_analysis_once(uploads,settings=settings,api_factory=lambda _:first)
     assert store.latest(book.id)['state']=='failed'
-    assert store.latest(book.id)['completed_steps']==4
+    assert store.latest(book.id)['completed_steps']==5
     assert store.enqueue(book.id,settings,options)==run_id
     stages=[]
     original=Checkpoints.progress
@@ -203,7 +244,7 @@ def test_timeout_resume_reuses_summaries_profile_and_pins_model(setup):
         return second
     run_analysis_once(uploads,settings=runtime,api_factory=factory)
     assert captured==['test-model']
-    assert [name for name,_,_ in second.calls]==['Candidates','Candidates']
+    assert [name for name,_,_ in second.calls]==['CharacterSuggestions','Candidates','Candidates']
     assert store.latest(book.id)['state']=='done'
 
 
@@ -279,7 +320,7 @@ def test_web_analysis_start_status_quotes_and_invalidation(setup):
         assert not {'token','source_json','options_json','endpoint_hash'} & status.keys()
         run_analysis_once(uploads,settings=settings,api_factory=lambda _:FakeAPI())
         page=client.get(url).text
-        assert 'KI-Analyse abgeschlossen' in page and 'Bildprompt-Basis' in page
+        assert 'KI-Analyse abgeschlossen' in page and 'globale Art Direction' in page
         chapter=client.get(url+'/chapters/'+record.result.chapters[0].id).text
         assert TEXT in chapter and 'Wortgetreu geprüft' in chapter and 'Nutzbar' in chapter
         ExtractionStore(uploads).correct(book.id,record.revision,record.result.boundaries)
@@ -301,6 +342,8 @@ def test_hierarchical_context_includes_late_chapters_and_bounds_requests(setup):
     assert len(result['result'].chapter_summaries)==7
     assert any('ENDE_DES_BUCHS' in data.get('source_text','') for name,data,_ in api.calls if name=='Summary')
     assert any('summaries' in data for name,data,_ in api.calls if name=='Summary')
+    assert all(api.token_budgets[index] == 4096 for index,(name,data,_) in enumerate(api.calls)
+               if name == 'Summary' and 'summaries' in data)
     assert max(len(json.dumps(data)) for _,data,_ in api.calls)<30000
 
 
@@ -336,7 +379,8 @@ def test_separate_worker_loads_env_and_finishes_via_http(setup):
             body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             assert body['model']=='test-model'
             props=body['response_format']['json_schema']['schema']['properties']
-            model=Candidates if 'candidates' in props else BookProfile if 'internal_summary' in props else Summary
+            model=(Candidates if 'candidates' in props else BookProfile if 'internal_summary' in props
+                   else CharacterSuggestions if 'characters' in props else Summary)
             value=asyncio.run(fake.complete_json(body['messages'][0]['content'],body['messages'][1]['content'],model))
             response=json.dumps({'choices':[{'message':{'content':value.model_dump_json()},'finish_reason':'stop'}]}).encode()
             self.send_response(200)
@@ -364,4 +408,4 @@ def test_separate_worker_loads_env_and_finishes_via_http(setup):
         finally:
             server.shutdown()
             thread.join(timeout=3)
-    assert len(fake.calls)==5
+    assert len(fake.calls)==6

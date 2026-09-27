@@ -1,6 +1,6 @@
 # Supabase-Übertragung und Promotion-Vertrag
 
-Stand: 26.09.2026. Der lokale Code verwendet den Carousel-Vertrag v6. Das produktive Projekt `AutomatedBookPromotion` (`aqfemzwrkzimzakqiwls`, PostgreSQL 17) bleibt bis zum Anwenden der letzten Migration auf v5. Migrationen in Namensreihenfolge:
+Stand: 27.09.2026. Der lokale Code und das produktive Projekt `AutomatedBookPromotion` (`aqfemzwrkzimzakqiwls`, PostgreSQL 17) verwenden den Carousel- und Reel-Vertrag v8. Migrationen in Namensreihenfolge:
 
 1. `20260908065204_bookpromo_initial.sql`
 2. `20260908065212_bookpromo_sync_and_approvals.sql`
@@ -11,14 +11,21 @@ Stand: 26.09.2026. Der lokale Code verwendet den Carousel-Vertrag v6. Das produk
 7. `20260909114500_allow_book_sync_with_open_drafts.sql`
 8. `20260910050339_carousel_contract_and_media_storage.sql`
 9. `20260926090000_image_quote_retry.sql`
+10. `20260926170000_reel_publication_queue.sql`
+11. `20260927120000_reel_multiplatform_storage.sql`
+12. `20260927130000_reel_claim_all_accounts.sql`
 
-Die Dateien liegen in `supabase/migrations`. Die v5-Datei wurde mit der Supabase-CLI angelegt und am 10.09.2026 auf das Zielprojekt angewendet. Die v6-Migration ist lokal vorbereitet und muss vor dem Import der neuen Auto-Workflow-Datei angewendet werden; die Python-Schemaversion ist **6**. Nicht manuell das historische Bootstrap-Script ausführen.
+Die Dateien liegen in `supabase/migrations`. Das Zielprojekt wurde am 27.09.2026 bis v8 migriert; die Python-Schemaversion ist **8**. Nicht manuell das historische Bootstrap-Script ausführen.
+
+## Fertige Reel-Warteschlange
+
+`reel_assets` speichert ausschließlich lokal geprüfte, vollständige Reels samt wortgetreuem Zitat, Titel, Beschreibung, Buchprofil, Prompts, Storage-Anbieter und geprüftem MP4-Manifest. `reel_publications` enthält je gewählter Plattform einen unveränderlichen Snapshot aus Konto, Daily-/Terminmodus und Plattformoptionen. `bookpromo_reel_enqueue` schreibt Asset und ein bis vier Ziele atomar. `bookpromo_reel_claim` trennt tägliche FIFO- und fällige Terminläufe; `bookpromo_reel_transition` sichert externe IDs, unklare und bestätigte Zustände mit Revision und Aktionstoken. Erst wenn alle Ziele `published` oder `cancelled` sind, wechselt das Asset zu `cleanup_pending`; `bookpromo_reel_cleanup` quittiert die bereits extern erfolgreiche Löschung. Der Publisher erzeugt weder Text noch Medien und liest keine veränderlichen Buchdaten nach.
 
 ## Lokale Daten übertragen
 
 **Buchstand nach Supabase übertragen** sendet einen fertig analysierten, prüffreien Buchstand: Buchdaten und manuelles Profil, Buchversion und Dateihash, Kapiteltexte und Fundstellen, Originalzitate, Bewertungen sowie Sperren. Vor dem Netzwerkzugriff friert das Tool den lokalen Einstellungs- und Assetstand in einer revisionsgeschützten SQLite-Transaktion ein und rendert daraus Titel-Overlay und CTA-Schlussseite erneut. Das PNG-Overlay wird unter `<book_id>/<sha256>.png`, das CTA-JPEG unter `<book_id>/carousel/<sha256>.jpg` im privaten Bucket `book-promotion-assets` gespeichert. `profile` enthält anschließend `overlay_path`, `publication_mode`, `carousel_end_text` und `carousel_end_slide_path`. Beim Reservieren ergänzt die Datenbank `chapter_position` und `chapter_name` in die unveränderliche Draft-Kopie des Buchprofils. Frontcover, Logo, DOCX, Zugangsdaten und lokale Schriftdateien werden nicht übertragen. Auch ein inaktiver, noch unvollständiger Buchstand oder ein Stand ohne geeignete Zitate ist übertragbar; daraus kann kein Entwurf reserviert werden.
 
-Vor dem Storage-Upload prüft Python ausdrücklich Schemaversion 6; gegen ältere Stände wird mit einer verständlichen Migrationsmeldung abgebrochen. Ein SHA-256-Hash identifiziert den gesamten Payload einschließlich der endgültigen privaten Objektpfade. Die serverseitige Funktion `bookpromo_sync` übernimmt alles in einer Postgres-Transaktion. Sie prüft Quellzuordnung, bestehende IDs und wortgetreue Ausschnitte erneut. Erst nach bestätigtem Erfolg wird eine lokale Quittung in `local_sync_receipts` gespeichert. Ein identischer erneuter Aufruf erzeugt keine doppelten Kapitel oder Zitate, auch wenn die vorherige Antwort verloren ging. Digestpfade machen wiederholte Asset-Uploads inhaltlich identisch.
+Vor dem Storage-Upload prüft Python ausdrücklich Schemaversion 8; gegen ältere Stände wird mit einer verständlichen Migrationsmeldung abgebrochen. Ein SHA-256-Hash identifiziert den gesamten Payload einschließlich der endgültigen privaten Objektpfade. Die serverseitige Funktion `bookpromo_sync` übernimmt alles in einer Postgres-Transaktion. Sie prüft Quellzuordnung, bestehende IDs und wortgetreue Ausschnitte erneut. Erst nach bestätigtem Erfolg wird eine lokale Quittung in `local_sync_receipts` gespeichert. Ein identischer erneuter Aufruf erzeugt keine doppelten Kapitel oder Zitate, auch wenn die vorherige Antwort verloren ging. Digestpfade machen wiederholte Asset-Uploads inhaltlich identisch.
 
 Eine abweichende entfernte Revision wird als Konflikt abgelehnt. Ein offener Entwurf behält sein eingefrorenes `quote_text` und `book_profile`; spätere Buch-Synchronisationen verändern diesen Snapshot nicht. Alte Zitate/Kapitel werden bei verändertem aktuellem Snapshot ausgeblendet, nicht gelöscht; bestehende Post-Referenzen bleiben erhalten. Hat eine Quellversion bereits Posts, verlangt eine geänderte Extraktionsrevision den Import eines neuen Dokuments. Historischer Text wird nicht umgeschrieben.
 

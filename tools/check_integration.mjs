@@ -46,22 +46,27 @@ try {
     await db.exec(await readFile(`supabase/migrations/${file}`, 'utf8'));
   }
 
-  check(await scalar('select version from public.bookpromo_schema') === 6);
+  check(await scalar('select version from public.bookpromo_schema') === 8);
   check(await scalar("select not public and file_size_limit=8388608 and allowed_mime_types=array['image/jpeg']::text[] from storage.buckets where id='book-promotion-media'"));
   check(await scalar("select not public and file_size_limit=8388608 and allowed_mime_types=array['image/png','image/jpeg']::text[] from storage.buckets where id='book-promotion-assets'"));
+  check(await scalar("select not public and file_size_limit=52428800 and allowed_mime_types=array['video/mp4']::text[] from storage.buckets where id='book-promotion-reels'"));
   check(await scalar("select relrowsecurity from pg_class where oid='public.post_media'::regclass"));
   check(!await scalar("select has_table_privilege('anon','public.post_media','select')"));
   check(await scalar("select has_table_privilege('service_role','public.post_media','select,insert,update,delete')"));
   check(!await scalar("select exists(select 1 from information_schema.columns where table_schema='public' and table_name='posts' and column_name='image_path')"));
-  check(await scalar(`select count(*)=6 and bool_and(not p.prosecdef)
+  check(await scalar(`select count(*)>=11 and bool_and(not p.prosecdef)
     and bool_and(not has_function_privilege('anon',p.oid,'execute'))
     and bool_and(not has_function_privilege('authenticated',p.oid,'execute'))
     and bool_and(has_function_privilege('service_role',p.oid,'execute'))
     from pg_proc p join pg_namespace n on n.oid=p.pronamespace
     where n.nspname='public' and p.proname in (
       'bookpromo_sync','bookpromo_reserve','bookpromo_transition',
-      'bookpromo_media_container','bookpromo_media_cleanup'
+      'bookpromo_media_container','bookpromo_media_cleanup','bookpromo_reel_enqueue',
+      'bookpromo_reel_refresh_asset','bookpromo_reel_claim','bookpromo_reel_transition','bookpromo_reel_cleanup'
     )`));
+  check(await scalar("select relrowsecurity from pg_class where oid='public.reel_publications'::regclass"));
+  check(!await scalar("select has_table_privilege('anon','public.reel_publications','select')"));
+  check(await scalar("select has_table_privilege('service_role','public.reel_publications','select,insert,update,delete')"));
 
   await db.exec('set role service_role');
   const [book, version, chapter, quote] = Array.from({ length: 4 }, () => crypto.randomUUID());
@@ -215,10 +220,10 @@ try {
   check(result.outcome === 'created');
   draft = result.post;
   check((await reserve('review')).outcome === 'blocked_by_other_mode');
-  draft = (await transition(draft, 'text_ready', { caption: 'Motor\nEin Roman.', image_prompt: 'Maschine' })).post;
+  draft = (await transition(draft, 'text_ready', { caption: `${draft.quote_text}\nEin Roman.`, image_prompt: 'Maschine' })).post;
   check(draft.status === 'generating_image' && draft.text_approved_by === 'system:auto');
   const autoManifest = manifest(draft, '9');
-  autoManifest[1].text_fragment = 'Motor';
+  autoManifest[1].text_fragment = draft.quote_text;
   draft = (await transition(draft, 'media_ready', { media: autoManifest })).post;
   check(draft.status === 'approved' && draft.approved_by === 'system:auto');
   check((await transition(draft, 'approve_image', { chat_id: '42', user_id: '7' })).outcome === 'invalid_state');
@@ -236,13 +241,61 @@ try {
   check(draft.status === 'failed' && draft.error === 'Second image refusal');
   check((await reserveAttempt('auto', 2)).outcome === 'no_quote');
 
+  // One frozen asset can have independent destinations; cleanup follows all terminal deliveries.
+  const reelId = crypto.randomUUID();
+  const reelDigest = '7'.repeat(64);
+  await db.query(`insert into public.reel_assets(
+    id,quote_id,book_id,quote_text,addition,title,description,book_profile,image_prompt,video_prompt,
+    storage_provider,storage_bucket,storage_path,media_sha256,size_bytes,duration_ms,width,height
+  ) values ($1,$2,$3,$4,'Begleittext','Test Reel',$5,'{}','Portrait','Camera tracks laterally',
+    'supabase','book-promotion-reels',$6,$7,1500000,10000,512,896)`, [
+    reelId, quote, book, sourceText, `${sourceText}\n\nBegleittext`, `${reelId}/${reelDigest}.mp4`, reelDigest,
+  ]);
+  const deliveryId = crypto.randomUUID();
+  await db.query(`insert into public.reel_publications(id,reel_id,platform,account_id,queue_mode,title,description)
+    values($1,$2,'instagram','test-reels','daily','Test Reel',$3)`, [deliveryId,reelId,`${sourceText}\n\nBegleittext`]);
+  let reelResult = await scalar("select public.bookpromo_reel_claim('instagram','daily','')");
+  check(reelResult.outcome === 'claimed' && reelResult.asset.id === reelId);
+  let publication = reelResult.publication;
+  reelResult = await scalar(
+    "select public.bookpromo_reel_transition($1,$2,$3,'processing',$4::jsonb)",
+    [publication.id, publication.revision, publication.action_token, JSON.stringify({ container_id: 'reel-container-1' })],
+  );
+  publication = reelResult.publication;
+  check(reelResult.outcome === 'updated' && publication.external_container_id === 'reel-container-1');
+  reelResult = await scalar(
+    "select public.bookpromo_reel_transition($1,$2,$3,'publish_uncertain',$4::jsonb)",
+    [publication.id, publication.revision, publication.action_token, JSON.stringify({ error: 'Ambiguous publish response' })],
+  );
+  publication = reelResult.publication;
+  check(publication.status === 'publish_uncertain');
+  check((await scalar("select public.bookpromo_reel_claim('instagram','daily','')")).outcome === 'busy');
+  reelResult = await scalar(
+    "select public.bookpromo_reel_transition($1,$2,$3,'published',$4::jsonb)",
+    [publication.id, publication.revision, publication.action_token, JSON.stringify({ media_id: 'reel-media-1', permalink: 'https://instagram.example/reel/1' })],
+  );
+  publication = reelResult.publication;
+  let reel = reelResult.asset;
+  check(publication.status === 'published' && reel.media_status === 'cleanup_pending');
+  await rejects(() => scalar(
+    "select public.bookpromo_reel_cleanup($1,$2,$3,'wrong/path.mp4')",
+    [reel.id, reel.revision, reel.action_token],
+  ));
+  reelResult = await scalar(
+    "select public.bookpromo_reel_cleanup($1,$2,$3,$4)",
+    [reel.id, reel.revision, reel.action_token, reel.storage_path],
+  );
+  check(reelResult.outcome === 'complete' && reelResult.asset.media_status === 'deleted');
+
   await db.exec('reset role; set role anon');
   await rejects(() => sync(payload, 3));
   await rejects(() => reserve('review'));
   await rejects(() => query('select * from public.books'));
   await rejects(() => query('select * from public.post_media'));
+  await rejects(() => query('select * from public.reel_publications'));
+  await rejects(() => scalar("select public.bookpromo_reel_claim('instagram','daily','')"));
   await rejects(() => childContainer(draft, 0, 'forbidden'));
-  console.log(`Integration v6: ${checks} PostgreSQL-Prüfungen erfolgreich.`);
+  console.log(`Integration v8: ${checks} PostgreSQL-Prüfungen erfolgreich.`);
 } finally {
   await db.close();
 }

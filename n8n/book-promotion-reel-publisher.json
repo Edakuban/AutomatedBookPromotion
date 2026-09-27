@@ -1,0 +1,2619 @@
+{
+  "name": "Book Promotion · Multi-Platform Reel · Publisher",
+  "nodes": [
+    {
+      "id": "a43370f3-a4db-56d5-b26a-3345343fcda3",
+      "name": "Daily 20 Berlin",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 20
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8c6ab7eb-cf15-599f-8758-a56cddc9b761",
+      "name": "Hourly scheduled",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        280,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "28f1a50e-2481-5fd3-8d43-64849b4e4a1a",
+      "name": "Manual test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        560,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "79916abf-41b9-50db-a37b-ad490b62dee4",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const queue_mode=$('Hourly scheduled').isExecuted?'scheduled':'daily';\nconst config={supabase_url:'https://aqfemzwrkzimzakqiwls.supabase.co',queue_mode,publish_enabled:false,max_poll_attempts:10,poll_seconds:60,\n r2_endpoint:'R2_ENDPOINT_HIER_EINTRAGEN',r2_access_key_id:'R2_ACCESS_KEY_ID_HIER_EINTRAGEN',\n r2_secret_access_key:'R2_SECRET_ACCESS_KEY_HIER_EINTRAGEN',r2_signed_url_ttl_seconds:86400};\nconst enabled_platforms=['instagram','youtube'];\nreturn enabled_platforms.map(platform=>({json:{...config,platform}}));"
+      }
+    },
+    {
+      "id": "99d7ac49-12e1-513f-98c9-36da0c99f5ce",
+      "name": "Publication gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Publication gate",
+              "leftValue": "={{ $json.publish_enabled === true }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c37e1923-369b-5a10-b44e-c98c907802e8",
+      "name": "Dry run stopped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{outcome:'disabled',platform:$json.platform,queue_mode:$json.queue_mode}}];"
+      }
+    },
+    {
+      "id": "b2afb9c8-b769-50ff-b24b-eac85d48edf2",
+      "name": "Claim Reel delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_reel_claim' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {p_platform:$json.platform,p_queue_mode:$json.queue_mode,p_account:''} }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "8a3d2022-4323-5d83-b499-f27dee9f291e",
+      "name": "Delivery claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Delivery claimed?",
+              "leftValue": "={{ $json.outcome === 'claimed' && !!$json.publication && !!$json.asset }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "069cbff2-8c10-591d-85b1-8c441cd8756b",
+      "name": "Nothing for platform",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        230
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {json:{outcome:$json.outcome||'empty'}};"
+      }
+    },
+    {
+      "id": "a3afb9ef-c1c8-5435-94ab-c729743c78f3",
+      "name": "Claimed delivery context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        230
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const r=$json,p=r.publication,a=r.asset;\nif(!p||!a||p.status!=='publishing'||a.media_status!=='uploaded'||p.platform!==$('Config').item.json.platform||!a.storage_path||!a.media_sha256||!p.description.includes(a.quote_text))throw new Error('Claimed Reel contract invalid');\nreturn {json:{publication:p,asset:a}};"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "96e8903f-fb79-533d-bd22-e188e7de8a0f",
+      "name": "Stored in Supabase?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        560,
+        230
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Stored in Supabase?",
+              "leftValue": "={{ $json.asset.storage_provider === 'supabase' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b2f569f0-9711-5a66-8272-23d4457ac565",
+      "name": "Sign Supabase Reel URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        230
+      ],
+      "parameters": {
+        "url": "={{ $('Config').item.json.supabase_url+'/storage/v1/object/sign/'+$json.asset.storage_bucket+'/'+$json.asset.storage_path }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {expiresIn:86400} }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "54e5f592-977a-573d-acba-c72ca68dea9d",
+      "name": "Supabase URL context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        230
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$('Claimed delivery context').item.json,r=$json,u=r.signedURL||r.signedUrl;\nif(typeof u!=='string'||!u)throw new Error('Supabase signed URL missing');return {json:{...c,signed_url:u.startsWith('http')?u:$('Config').item.json.supabase_url+'/storage/v1'+u,url_kind:'supabase_signed'}};"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "7424a7ce-192a-5bd6-b9bb-f0823746c3f8",
+      "name": "R2 URL context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        230
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$json,asset=c.asset,method=String(c.signing_method||'GET').toUpperCase();\nif(asset.storage_provider!=='cloudflare_r2')throw new Error('Not an R2 asset');\nif(!['GET','DELETE'].includes(method))throw new Error('Unsupported R2 signing method');\nif(method==='GET'&&asset.public_url&&!c.force_signed)return {json:{...c,signed_url:asset.public_url,url_kind:'r2_public'}};\nconst config=$('Config').first().json;\nconst endpoint=String(config.r2_endpoint||'').replace(/\\/$/,''),access=String(config.r2_access_key_id||''),secret=String(config.r2_secret_access_key||'');\nif(!endpoint||!access||!secret||[endpoint,access,secret].some(value=>value.includes('_HIER_EINTRAGEN')))throw new Error('R2 signing config is incomplete');\nconst enc=new TextEncoder(),hex=b=>[...b].map(x=>x.toString(16).padStart(2,'0')).join('');\nconst sha256=value=>{const bytes=typeof value==='string'?[...enc.encode(value)]:[...value],r=(x,n)=>(x>>>n)|(x<<(32-n)),k=[];let p=2;\nwhile(k.length<64){let prime=true;for(let d=2;d*d<=p;d++)if(p%d===0){prime=false;break;}if(prime)k.push(Math.floor((p**(1/3)%1)*4294967296)>>>0);p++;}\nconst h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19],data=[...bytes,0x80];while(data.length%64!==56)data.push(0);\nconst bits=bytes.length*8;for(let i=7;i>=0;i--)data.push(Math.floor(bits/2**(i*8))&255);for(let o=0;o<data.length;o+=64){const w=new Array(64);for(let i=0;i<16;i++)w[i]=((data[o+i*4]<<24)|(data[o+i*4+1]<<16)|(data[o+i*4+2]<<8)|data[o+i*4+3])>>>0;\nfor(let i=16;i<64;i++){const a=w[i-15],b=w[i-2],s0=(r(a,7)^r(a,18)^(a>>>3))>>>0,s1=(r(b,17)^r(b,19)^(b>>>10))>>>0;w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;}let [a,b,c,d,e,f,g,z]=h;\nfor(let i=0;i<64;i++){const s1=(r(e,6)^r(e,11)^r(e,25))>>>0,ch=((e&f)^((~e)&g))>>>0,t1=(z+s1+ch+k[i]+w[i])>>>0,s0=(r(a,2)^r(a,13)^r(a,22))>>>0,maj=((a&b)^(a&c)^(b&c))>>>0,t2=(s0+maj)>>>0;z=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}for(const [i,v] of [a,b,c,d,e,f,g,z].entries())h[i]=(h[i]+v)>>>0;}\nconst out=[];for(const v of h)out.push(v>>>24,(v>>>16)&255,(v>>>8)&255,v&255);return new Uint8Array(out);};\nconst hmac=(key,value)=>{let kb=typeof key==='string'?[...enc.encode(key)]:[...key];const vb=typeof value==='string'?[...enc.encode(value)]:[...value];if(kb.length>64)kb=[...sha256(kb)];while(kb.length<64)kb.push(0);return sha256([...kb.map(x=>x^0x5c),...sha256([...kb.map(x=>x^0x36),...vb])]);};\nconst now=new Date(),amz=now.toISOString().replace(/[:-]|\\.\\d{3}/g,''),day=amz.slice(0,8),scope=`${day}/auto/s3/aws4_request`;\nconst host=endpoint.replace(/^https:\\/\\//,'').split('/')[0];\nif(!host||host.includes('?')||host.includes('#'))throw new Error('R2 endpoint is invalid');\nconst esc=value=>encodeURIComponent(value).replace(/[!'()*]/g,ch=>'%'+ch.charCodeAt(0).toString(16).toUpperCase());\nconst uri='/'+esc(asset.storage_bucket)+'/'+asset.storage_path.split('/').map(esc).join('/');\nconst query=[['X-Amz-Algorithm','AWS4-HMAC-SHA256'],['X-Amz-Credential',`${access}/${scope}`],['X-Amz-Date',amz],['X-Amz-Expires',String(Math.min(604800,Math.max(900,Number(config.r2_signed_url_ttl_seconds||86400))))],['X-Amz-SignedHeaders','host']].map(([k,v])=>`${esc(k)}=${esc(v)}`).sort().join('&');\nconst canonical=`${method}\\n${uri}\\n${query}\\nhost:${host}\\n\\nhost\\nUNSIGNED-PAYLOAD`,stringToSign=`AWS4-HMAC-SHA256\\n${amz}\\n${scope}\\n${hex(sha256(canonical))}`;\nconst kd=hmac('AWS4'+secret,day),kr=hmac(kd,'auto'),ks=hmac(kr,'s3'),key=hmac(ks,'aws4_request'),signature=hex(hmac(key,stringToSign));\nreturn {json:{...c,signed_url:`${endpoint}${uri}?${query}&X-Amz-Signature=${signature}`,url_kind:method==='DELETE'?'r2_signed_delete':'r2_signed'}};"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "0d49776a-09ab-5608-b965-5254dc68371a",
+      "name": "Download and verify Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        230
+      ],
+      "parameters": {
+        "url": "={{ $json.signed_url }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        },
+        "method": "GET",
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "a73449ce-fb16-56c3-b743-0d210fa3f5cf",
+      "name": "Validate Reel MP4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        230
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function sha256(bytes){const r=(x,n)=>(x>>>n)|(x<<(32-n)),k=[];let p=2;while(k.length<64){let prime=true;for(let d=2;d*d<=p;d++)if(p%d===0){prime=false;break;}if(prime)k.push(Math.floor((p**(1/3)%1)*4294967296)>>>0);p++;}const h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];const data=[...bytes,0x80];while(data.length%64!==56)data.push(0);const bits=bytes.length*8;for(let i=7;i>=0;i--)data.push(Math.floor(bits/2**(i*8))&255);for(let o=0;o<data.length;o+=64){const w=new Array(64);for(let i=0;i<16;i++)w[i]=((data[o+i*4]<<24)|(data[o+i*4+1]<<16)|(data[o+i*4+2]<<8)|data[o+i*4+3])>>>0;for(let i=16;i<64;i++){const a=w[i-15],b=w[i-2],s0=(r(a,7)^r(a,18)^(a>>>3))>>>0,s1=(r(b,17)^r(b,19)^(b>>>10))>>>0;w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;}let [a,b,c,d,e,f,g,z]=h;for(let i=0;i<64;i++){const s1=(r(e,6)^r(e,11)^r(e,25))>>>0,ch=((e&f)^((~e)&g))>>>0,t1=(z+s1+ch+k[i]+w[i])>>>0,s0=(r(a,2)^r(a,13)^r(a,22))>>>0,maj=((a&b)^(a&c)^(b&c))>>>0,t2=(s0+maj)>>>0;z=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}for(const [i,v] of [a,b,c,d,e,f,g,z].entries())h[i]=(h[i]+v)>>>0;}return h.map(x=>x.toString(16).padStart(8,'0')).join('');}\nconst c=$('Supabase URL context').isExecuted?$('Supabase URL context').item.json:$('R2 URL context').item.json,a=c.asset,item=$input.item,bytes=await this.helpers.getBinaryDataBuffer(0,'data');\nif(bytes.length!==Number(a.size_bytes)||bytes.length>52428800||bytes.length<12||bytes.toString('ascii',4,8)!=='ftyp'||sha256(bytes)!==a.media_sha256)throw new Error('Stored Reel validation failed');\nreturn {json:c,binary:item.binary};"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "03ff7c94-3b8b-59c7-98da-ebc491a4da49",
+      "name": "Public R2 URL failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        460
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Public R2 URL failed?",
+              "leftValue": "={{ $('R2 URL context').isExecuted && $('R2 URL context').item.json.url_kind === 'r2_public' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "15d8fc63-19fb-5229-a15f-950797c73879",
+      "name": "Force signed R2 URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$('R2 URL context').item.json;return {json:{...c,force_signed:true}};"
+      }
+    },
+    {
+      "id": "689d5110-0ca5-5e9d-8b08-36a0f4e0bc87",
+      "name": "Prepublish failure request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$('Claimed delivery context').item.json,p=c.publication,input=$json;\nconst message=String(input.error?.message||input.error||input.message||'Reel media preparation failed').slice(0,4000);\nreturn {json:{p_id:p.id,p_revision:p.revision,p_token:p.action_token,p_action:'fail',p_data:{error:message}}};"
+      }
+    },
+    {
+      "id": "1794393d-e17a-5c48-98b7-7e06cc27c31f",
+      "name": "Save prepublish failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        460
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_reel_transition' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "030f1775-7c8b-5ca0-82b8-88ccf931fef7",
+      "name": "Platform router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1120,
+        460
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.publication.platform }}",
+                    "rightValue": "instagram",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.publication.platform }}",
+                    "rightValue": "facebook",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.publication.platform }}",
+                    "rightValue": "youtube",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.publication.platform }}",
+                    "rightValue": "tiktok",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "12a43b04-9d60-5755-a82d-1f36d3229b59",
+      "name": "Instagram refresh context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$input.first().json;\nif(!c?.publication||c.publication.platform!=='instagram')throw new Error('Instagram publication context missing');\nreturn [{json:c}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "f9cdcd22-99a1-5b2c-a8fb-144c1ba21eb9",
+      "name": "Refresh token for insta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        460
+      ],
+      "parameters": {
+        "url": "https://graph.instagram.com/refresh_access_token",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "GET",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "ig_refresh_token"
+            },
+            {
+              "name": "access_token",
+              "value": "MIT_RICHTIGEM_KEY_ERSETZEN"
+            }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "6f92d6ca-861f-59f3-b1ba-b0d0d4a7d7cd",
+      "name": "Instagram access token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        460
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const response=$input.first().json;\nconst access_token=response.access_token;\nif(typeof access_token!=='string'||!access_token.trim()||access_token==='MIT_RICHTIGEM_KEY_ERSETZEN'||access_token.length>16384)throw new Error('Instagram token refresh failed');\nconst expires_in=Number(response.expires_in);\nif(!Number.isFinite(expires_in)||expires_in<=0)throw new Error('Instagram token expiry missing');\nreturn [{json:{...$('Instagram refresh context').item.json,access_token,expires_in}}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "2b7df053-c323-5111-8b2e-7f1152319788",
+      "name": "Create Instagram Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        690
+      ],
+      "parameters": {
+        "url": "={{ 'https://graph.instagram.com/v26.0/'+$json.publication.account_id+'/media' }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $('Instagram access token').first().json.access_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "media_type",
+              "value": "REELS"
+            },
+            {
+              "name": "video_url",
+              "value": "={{ $json.signed_url }}"
+            },
+            {
+              "name": "caption",
+              "value": "={{ $json.publication.description }}"
+            },
+            {
+              "name": "share_to_feed",
+              "value": "={{ String($json.publication.options.share_to_feed!==false) }}"
+            },
+            {
+              "name": "is_ai_generated",
+              "value": "true"
+            }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "d61e1578-5a0c-5d8c-af21-2f1b0acb1c28",
+      "name": "Instagram processing request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        690
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Validate Reel MP4').item.json,id=$input.first().json.id;if(!id)throw new Error('Instagram container missing');\nreturn [{json:{context:c,rpc:{p_id:c.publication.id,p_revision:c.publication.revision,p_token:c.publication.action_token,p_action:'processing',p_data:{container_id:id}}}}];"
+      }
+    },
+    {
+      "id": "497e84f0-1e4f-51d4-9c3f-ea4f40e07c6a",
+      "name": "Save Instagram processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        690
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_reel_transition' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.rpc }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "50a477b3-2ed0-5929-ac27-bd675a596af4",
+      "name": "Instagram polling context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        690
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:{publication:r.publication,asset:r.asset,polls:0}}];"
+      }
+    },
+    {
+      "id": "66ece302-b433-5674-8654-004405409efc",
+      "name": "Wait Instagram",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1120,
+        690
+      ],
+      "parameters": {
+        "amount": "={{ $('Config').item.json.poll_seconds }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "55fe3262-f3b6-576e-92c3-f29ea349111e",
+      "name": "Instagram Reel status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        690
+      ],
+      "parameters": {
+        "url": "={{ 'https://graph.instagram.com/v26.0/'+$json.publication.external_container_id }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "GET",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "status_code"
+            },
+            {
+              "name": "access_token",
+              "value": "={{ $('Instagram access token').first().json.access_token }}"
+            }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "70cbbcb0-397e-559b-b5c4-6e0b3b553074",
+      "name": "Instagram status context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        690
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Wait Instagram').item.json;return [{json:{...c,polls:c.polls+1,container_status:$json.status_code}}];"
+      }
+    },
+    {
+      "id": "6f0fcff1-150c-5700-823f-9cefeffc77bb",
+      "name": "Instagram ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        690
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Instagram ready?",
+              "leftValue": "={{ $json.container_status === 'FINISHED' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "4a00b1e0-00b5-5ffd-85b1-525bbbc23be1",
+      "name": "Instagram poll again?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        920
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Instagram poll again?",
+              "leftValue": "={{ $json.container_status !== 'ERROR' && $json.container_status !== 'EXPIRED' && $json.polls < $('Config').item.json.max_poll_attempts }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "8ab54580-08bd-5fdb-9b3d-4469b4564821",
+      "name": "Publish Instagram Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        920
+      ],
+      "parameters": {
+        "url": "={{ 'https://graph.instagram.com/v26.0/'+$json.publication.account_id+'/media_publish' }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $('Instagram access token').first().json.access_token }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "creation_id",
+              "value": "={{ $json.publication.external_container_id }}"
+            }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "e66ecef8-fcf4-5b58-848b-371ae4a37d3c",
+      "name": "Instagram success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        920
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Instagram status context').item.json,id=$json.id;if(!id)throw new Error('Instagram media id missing');return [{json:{...c,media_id:id,permalink:null}}];"
+      }
+    },
+    {
+      "id": "e1d2ff07-4b44-574e-bb50-fc53c980c0bf",
+      "name": "Start Facebook Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        920
+      ],
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/v26.0/'+$json.publication.account_id+'/video_reels' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {upload_phase:'start'} }}",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_facebookHeaderAuth",
+          "name": "BookPromotion Facebook Bearer"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "57b45130-1c9c-5ebf-9f3c-189dc92abfab",
+      "name": "Facebook start context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        920
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Validate Reel MP4').item.json,r=$json;if(!r.video_id||!r.upload_url)throw new Error('Facebook upload session missing');return [{json:{...c,video_id:r.video_id,upload_url:r.upload_url}}];"
+      },
+      "disabled": true
+    },
+    {
+      "id": "f7556cda-12e5-5ea4-8591-f0a20af0443d",
+      "name": "Transfer Facebook Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        920
+      ],
+      "parameters": {
+        "url": "={{ $json.upload_url }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "file_url",
+              "value": "={{ $json.signed_url }}"
+            }
+          ]
+        },
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_facebookHeaderAuth",
+          "name": "BookPromotion Facebook Bearer"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "631246b7-5823-5f5b-941c-aa1a26ea18f1",
+      "name": "Finish Facebook Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        920
+      ],
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/v26.0/'+$('Facebook start context').item.json.publication.account_id+'/video_reels' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {upload_phase:'finish',video_id:$('Facebook start context').item.json.video_id,video_state:'PUBLISHED',title:$('Facebook start context').item.json.publication.title,description:$('Facebook start context').item.json.publication.description} }}",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_facebookHeaderAuth",
+          "name": "BookPromotion Facebook Bearer"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "7ede02f1-35a0-582c-b4c2-c58ff8dd2d5c",
+      "name": "Facebook success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        920
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Facebook start context').item.json;if($json.success!==true)throw new Error('Facebook did not confirm publication');return [{json:{...c,media_id:String(c.video_id),permalink:null}}];"
+      },
+      "disabled": true
+    },
+    {
+      "id": "782ab527-827c-5915-8d95-f9b377921fea",
+      "name": "YouTube upload metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first(),c=item.json,p=c.publication;\nreturn [{json:{...c,youtube_body:{snippet:{title:p.title,description:p.description,categoryId:String(p.options.category_id||'22')},status:{privacyStatus:p.options.privacy_status||'private',selfDeclaredMadeForKids:p.options.made_for_kids===true}}},binary:item.binary}];"
+      }
+    },
+    {
+      "id": "d24043b5-8282-5e87-bb05-0e283f00b640",
+      "name": "Start YouTube upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        1150
+      ],
+      "parameters": {
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Upload-Content-Length",
+              "value": "={{ String($json.asset.size_bytes) }}"
+            },
+            {
+              "name": "X-Upload-Content-Type",
+              "value": "video/mp4"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.youtube_body }}",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "REPLACE_googleOAuth2Api",
+          "name": "BookPromotion YouTube OAuth2"
+        }
+      }
+    },
+    {
+      "id": "e38944e6-a12e-5de7-81bc-a9db555b18c1",
+      "name": "YouTube session context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Validate Reel MP4').item.json,u=$json.headers?.location||$json.headers?.Location||$json.location;if(!u)throw new Error('YouTube resumable URL missing');return [{json:{...c,upload_url:u},binary:$('Validate Reel MP4').item.binary}];"
+      }
+    },
+    {
+      "id": "260ad34c-e49d-5897-b69c-8631e77cd19b",
+      "name": "Upload YouTube Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        1150
+      ],
+      "parameters": {
+        "url": "={{ $json.upload_url }}",
+        "options": {
+          "timeout": 300000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "method": "PUT",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "REPLACE_googleOAuth2Api",
+          "name": "BookPromotion YouTube OAuth2"
+        }
+      }
+    },
+    {
+      "id": "f1defcbe-e2d3-5894-80da-1f13ee67c68c",
+      "name": "YouTube success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('YouTube session context').item.json,id=$json.id;if(!id)throw new Error('YouTube video id missing');return [{json:{...c,media_id:String(id),permalink:'https://youtu.be/'+id}}];"
+      }
+    },
+    {
+      "id": "d19a4c0f-baff-5096-9b02-6dc451bc4df7",
+      "name": "Query TikTok creator info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        1150
+      ],
+      "parameters": {
+        "url": "https://open.tiktokapis.com/v2/post/publish/creator_info/query/",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_tiktokHeaderAuth",
+          "name": "BookPromotion TikTok Bearer"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "4e762315-69b9-569f-91f4-a51c8ef90f8d",
+      "name": "Validate TikTok creator options",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Validate Reel MP4').item.json,r=$json,d=r.data||{};\nif(r.error?.code!=='ok')throw new Error('TikTok creator info unavailable: '+String(r.error?.code||'unknown'));\nconst privacy=c.publication.options.privacy_level||'SELF_ONLY',allowed=Array.isArray(d.privacy_level_options)?d.privacy_level_options:[];\nif(!allowed.includes(privacy))throw new Error('TikTok privacy option is no longer available for this creator');\nconst maximum=Number(d.max_video_post_duration_sec||0),duration=Number(c.asset.duration_seconds||0);\nif(maximum>0&&duration>maximum)throw new Error('TikTok creator duration limit exceeded');\nreturn [{json:{...c,tiktok_creator_info:d},binary:$('Validate Reel MP4').item.binary}];"
+      },
+      "onError": "continueErrorOutput",
+      "disabled": true
+    },
+    {
+      "id": "239b8909-da0c-55e0-a6ee-761ca1b7228d",
+      "name": "Initialize TikTok post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        1150
+      ],
+      "parameters": {
+        "url": "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {post_info:{title:$json.publication.description,privacy_level:$json.publication.options.privacy_level||'SELF_ONLY',disable_comment:$json.publication.options.allow_comment!==true,disable_duet:$json.publication.options.allow_duet!==true,disable_stitch:$json.publication.options.allow_stitch!==true,is_aigc:true},source_info:{source:'FILE_UPLOAD',video_size:$json.asset.size_bytes,chunk_size:$json.asset.size_bytes,total_chunk_count:1}} }}",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_tiktokHeaderAuth",
+          "name": "BookPromotion TikTok Bearer"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "3bb68189-2d08-5ddc-8df6-3ff8fd0d83f8",
+      "name": "TikTok upload context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1380
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Validate Reel MP4').item.json,r=$json;if(r.error?.code!=='ok'||!r.data?.publish_id||!r.data?.upload_url)throw new Error('TikTok upload session missing');return [{json:{...c,publish_id:r.data.publish_id,upload_url:r.data.upload_url},binary:$('Validate Reel MP4').item.binary}];"
+      },
+      "disabled": true
+    },
+    {
+      "id": "ef5b5afc-4d3d-555a-9f7f-d76ef8ed0d9f",
+      "name": "Upload TikTok Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        1380
+      ],
+      "parameters": {
+        "url": "={{ $json.upload_url }}",
+        "options": {
+          "timeout": 300000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "PUT",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Range",
+              "value": "={{ 'bytes 0-'+($json.asset.size_bytes-1)+'/'+$json.asset.size_bytes }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "video/mp4"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "onError": "continueErrorOutput"
+      },
+      "disabled": true
+    },
+    {
+      "id": "3a6be0c8-9287-5001-a451-007a90d5aa68",
+      "name": "Wait TikTok",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        560,
+        1380
+      ],
+      "parameters": {
+        "amount": 60,
+        "unit": "seconds"
+      },
+      "disabled": true
+    },
+    {
+      "id": "5adcf57e-1438-57a8-9e11-8991e99c6d62",
+      "name": "TikTok post status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        1380
+      ],
+      "parameters": {
+        "url": "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {publish_id:$('TikTok upload context').item.json.publish_id} }}",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_tiktokHeaderAuth",
+          "name": "BookPromotion TikTok Bearer"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "id": "8d81cbde-e10d-5123-9048-10b10d30b035",
+      "name": "TikTok success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        1380
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('TikTok upload context').item.json,r=$json;if(r.error?.code!=='ok'||r.data?.status!=='PUBLISH_COMPLETE')throw new Error('TikTok publication not confirmed: '+String(r.data?.status||r.error?.code||'unknown'));const ids=r.data.publicaly_available_post_id||[];return [{json:{...c,media_id:String(ids[0]||c.publish_id),permalink:null}}];"
+      },
+      "onError": "continueErrorOutput",
+      "disabled": true
+    },
+    {
+      "id": "69f93920-e15e-54c7-a42c-2266fdf7e03c",
+      "name": "Published transition request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        1380
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$input.first().json,p=c.publication;return [{json:{context:c,rpc:{p_id:p.id,p_revision:p.revision,p_token:p.action_token,p_action:'published',p_data:{media_id:c.media_id,permalink:c.permalink}}}}];"
+      }
+    },
+    {
+      "id": "fec1548e-36be-5b3f-b7ee-2e4e241922d1",
+      "name": "Save published delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        1380
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_reel_transition' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.rpc }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "38ba0c1b-6c5c-50f7-a576-70d4b989436b",
+      "name": "Asset ready for cleanup?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        1380
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Asset ready for cleanup?",
+              "leftValue": "={{ $json.asset.media_status === 'cleanup_pending' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ee29b529-28e1-532d-af8a-8f821c474c78",
+      "name": "Delivery complete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1610
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{outcome:'published_media_retained',publication:$json.publication,asset:$json.asset}}];"
+      }
+    },
+    {
+      "id": "a48b66b6-274c-5fee-94e9-b479302ebc75",
+      "name": "Cleanup from Supabase?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        1610
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Cleanup from Supabase?",
+              "leftValue": "={{ $json.asset.storage_provider === 'supabase' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ac6b6e6e-c9c2-5b55-93b5-8ede28530b27",
+      "name": "Delete Supabase Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        1610
+      ],
+      "parameters": {
+        "url": "={{ $('Config').item.json.supabase_url+'/storage/v1/object/'+$json.asset.storage_bucket+'/'+$json.asset.storage_path }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "method": "DELETE",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "509542fd-1453-586d-a4c1-4b83c8360cde",
+      "name": "R2 cleanup pending",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        1610
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:$input.first().json}];"
+      }
+    },
+    {
+      "id": "ad4f5942-f12a-57b4-a6c4-d40263163099",
+      "name": "Prepare R2 delete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        1610
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {json:{...$json,force_signed:true,signing_method:'DELETE'}};"
+      }
+    },
+    {
+      "id": "7ccedce0-d5f9-57af-9691-fd162b9cdc06",
+      "name": "Sign R2 delete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        1610
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$json,asset=c.asset,method=String(c.signing_method||'GET').toUpperCase();\nif(asset.storage_provider!=='cloudflare_r2')throw new Error('Not an R2 asset');\nif(!['GET','DELETE'].includes(method))throw new Error('Unsupported R2 signing method');\nif(method==='GET'&&asset.public_url&&!c.force_signed)return {json:{...c,signed_url:asset.public_url,url_kind:'r2_public'}};\nconst config=$('Config').first().json;\nconst endpoint=String(config.r2_endpoint||'').replace(/\\/$/,''),access=String(config.r2_access_key_id||''),secret=String(config.r2_secret_access_key||'');\nif(!endpoint||!access||!secret||[endpoint,access,secret].some(value=>value.includes('_HIER_EINTRAGEN')))throw new Error('R2 signing config is incomplete');\nconst enc=new TextEncoder(),hex=b=>[...b].map(x=>x.toString(16).padStart(2,'0')).join('');\nconst sha256=value=>{const bytes=typeof value==='string'?[...enc.encode(value)]:[...value],r=(x,n)=>(x>>>n)|(x<<(32-n)),k=[];let p=2;\nwhile(k.length<64){let prime=true;for(let d=2;d*d<=p;d++)if(p%d===0){prime=false;break;}if(prime)k.push(Math.floor((p**(1/3)%1)*4294967296)>>>0);p++;}\nconst h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19],data=[...bytes,0x80];while(data.length%64!==56)data.push(0);\nconst bits=bytes.length*8;for(let i=7;i>=0;i--)data.push(Math.floor(bits/2**(i*8))&255);for(let o=0;o<data.length;o+=64){const w=new Array(64);for(let i=0;i<16;i++)w[i]=((data[o+i*4]<<24)|(data[o+i*4+1]<<16)|(data[o+i*4+2]<<8)|data[o+i*4+3])>>>0;\nfor(let i=16;i<64;i++){const a=w[i-15],b=w[i-2],s0=(r(a,7)^r(a,18)^(a>>>3))>>>0,s1=(r(b,17)^r(b,19)^(b>>>10))>>>0;w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;}let [a,b,c,d,e,f,g,z]=h;\nfor(let i=0;i<64;i++){const s1=(r(e,6)^r(e,11)^r(e,25))>>>0,ch=((e&f)^((~e)&g))>>>0,t1=(z+s1+ch+k[i]+w[i])>>>0,s0=(r(a,2)^r(a,13)^r(a,22))>>>0,maj=((a&b)^(a&c)^(b&c))>>>0,t2=(s0+maj)>>>0;z=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}for(const [i,v] of [a,b,c,d,e,f,g,z].entries())h[i]=(h[i]+v)>>>0;}\nconst out=[];for(const v of h)out.push(v>>>24,(v>>>16)&255,(v>>>8)&255,v&255);return new Uint8Array(out);};\nconst hmac=(key,value)=>{let kb=typeof key==='string'?[...enc.encode(key)]:[...key];const vb=typeof value==='string'?[...enc.encode(value)]:[...value];if(kb.length>64)kb=[...sha256(kb)];while(kb.length<64)kb.push(0);return sha256([...kb.map(x=>x^0x5c),...sha256([...kb.map(x=>x^0x36),...vb])]);};\nconst now=new Date(),amz=now.toISOString().replace(/[:-]|\\.\\d{3}/g,''),day=amz.slice(0,8),scope=`${day}/auto/s3/aws4_request`;\nconst host=endpoint.replace(/^https:\\/\\//,'').split('/')[0];\nif(!host||host.includes('?')||host.includes('#'))throw new Error('R2 endpoint is invalid');\nconst esc=value=>encodeURIComponent(value).replace(/[!'()*]/g,ch=>'%'+ch.charCodeAt(0).toString(16).toUpperCase());\nconst uri='/'+esc(asset.storage_bucket)+'/'+asset.storage_path.split('/').map(esc).join('/');\nconst query=[['X-Amz-Algorithm','AWS4-HMAC-SHA256'],['X-Amz-Credential',`${access}/${scope}`],['X-Amz-Date',amz],['X-Amz-Expires',String(Math.min(604800,Math.max(900,Number(config.r2_signed_url_ttl_seconds||86400))))],['X-Amz-SignedHeaders','host']].map(([k,v])=>`${esc(k)}=${esc(v)}`).sort().join('&');\nconst canonical=`${method}\\n${uri}\\n${query}\\nhost:${host}\\n\\nhost\\nUNSIGNED-PAYLOAD`,stringToSign=`AWS4-HMAC-SHA256\\n${amz}\\n${scope}\\n${hex(sha256(canonical))}`;\nconst kd=hmac('AWS4'+secret,day),kr=hmac(kd,'auto'),ks=hmac(kr,'s3'),key=hmac(ks,'aws4_request'),signature=hex(hmac(key,stringToSign));\nreturn {json:{...c,signed_url:`${endpoint}${uri}?${query}&X-Amz-Signature=${signature}`,url_kind:method==='DELETE'?'r2_signed_delete':'r2_signed'}};"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "159038f9-80c3-55e1-b24e-84e110e7aa9b",
+      "name": "Delete R2 Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        1610
+      ],
+      "parameters": {
+        "url": "={{ $json.signed_url }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "DELETE",
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "476d1084-b264-5daf-9851-ce646860e5d8",
+      "name": "Cleanup request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        1610
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$('Save published delivery').item.json,a=r.asset;return [{json:{p_id:a.id,p_revision:a.revision,p_token:a.action_token,p_deleted_path:a.storage_path}}];"
+      }
+    },
+    {
+      "id": "409a68c1-7015-57a7-9d8d-29ae1a6825ad",
+      "name": "Save Reel cleanup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        1840
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_reel_cleanup' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "24d879b9-0b29-5e2e-9627-3008dfe3eed1",
+      "name": "Uncertain transition request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1840
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input=$input.first().json;\nlet p=input.publication||null;\nif(!p&&$('Save Instagram processing').isExecuted)p=$('Save Instagram processing').item.json.publication;\nif(!p)p=$('Validate Reel MP4').item.json.publication;\nconst message=String(input.error?.message||input.error||input.message||'Ambiguous platform publication response').slice(0,4000);\nreturn [{json:{p_id:p.id,p_revision:p.revision,p_token:p.action_token,p_action:'publish_uncertain',p_data:{error:message}}}];"
+      }
+    },
+    {
+      "id": "359f333b-52d7-543b-897d-caa44824508d",
+      "name": "Save uncertain delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        1840
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_reel_transition' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "77aac5bc-dd57-50a8-9615-c80faf89a703",
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        840,
+        1840
+      ],
+      "parameters": {
+        "content": "## Multi-platform Reel publisher (schema v8)\nInstagram and YouTube are currently enabled. Facebook and TikTok remain visible but disabled and are not claimed from the queue. Two schedules: daily FIFO and hourly fixed dates. Replace the Instagram token placeholder in `Refresh token for insta`, fill the four R2 values in `Config`, and configure Supabase and YouTube OAuth2 credentials. R2 GET and DELETE requests use short-lived signed URLs; no AWS credential is attached to either HTTP node. No server environment access is required. Keep publish_enabled=false until credentials and manual dry-runs are complete. Media is deleted only after every selected destination is published or cancelled.",
+        "height": 330,
+        "width": 560
+      }
+    }
+  ],
+  "connections": {
+    "Daily 20 Berlin": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hourly scheduled": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual test": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Publication gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publication gate": {
+      "main": [
+        [
+          {
+            "node": "Claim Reel delivery",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dry run stopped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Reel delivery": {
+      "main": [
+        [
+          {
+            "node": "Delivery claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivery claimed?": {
+      "main": [
+        [
+          {
+            "node": "Claimed delivery context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing for platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claimed delivery context": {
+      "main": [
+        [
+          {
+            "node": "Stored in Supabase?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stored in Supabase?": {
+      "main": [
+        [
+          {
+            "node": "Sign Supabase Reel URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "R2 URL context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Supabase Reel URL": {
+      "main": [
+        [
+          {
+            "node": "Supabase URL context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase URL context": {
+      "main": [
+        [
+          {
+            "node": "Download and verify Reel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "R2 URL context": {
+      "main": [
+        [
+          {
+            "node": "Download and verify Reel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download and verify Reel": {
+      "main": [
+        [
+          {
+            "node": "Validate Reel MP4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Public R2 URL failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Public R2 URL failed?": {
+      "main": [
+        [
+          {
+            "node": "Force signed R2 URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force signed R2 URL": {
+      "main": [
+        [
+          {
+            "node": "R2 URL context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepublish failure request": {
+      "main": [
+        [
+          {
+            "node": "Save prepublish failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Reel MP4": {
+      "main": [
+        [
+          {
+            "node": "Platform router",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Platform router": {
+      "main": [
+        [
+          {
+            "node": "Instagram refresh context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Start Facebook Reel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "YouTube upload metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query TikTok creator info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram refresh context": {
+      "main": [
+        [
+          {
+            "node": "Refresh token for insta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh token for insta": {
+      "main": [
+        [
+          {
+            "node": "Instagram access token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram access token": {
+      "main": [
+        [
+          {
+            "node": "Create Instagram Reel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepublish failure request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Instagram Reel": {
+      "main": [
+        [
+          {
+            "node": "Instagram processing request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram processing request": {
+      "main": [
+        [
+          {
+            "node": "Save Instagram processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Instagram processing": {
+      "main": [
+        [
+          {
+            "node": "Instagram polling context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram polling context": {
+      "main": [
+        [
+          {
+            "node": "Wait Instagram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Instagram": {
+      "main": [
+        [
+          {
+            "node": "Instagram Reel status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Reel status": {
+      "main": [
+        [
+          {
+            "node": "Instagram status context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram status context": {
+      "main": [
+        [
+          {
+            "node": "Instagram ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram ready?": {
+      "main": [
+        [
+          {
+            "node": "Publish Instagram Reel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Instagram poll again?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram poll again?": {
+      "main": [
+        [
+          {
+            "node": "Wait Instagram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Instagram Reel": {
+      "main": [
+        [
+          {
+            "node": "Instagram success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Facebook Reel": {
+      "main": [
+        [
+          {
+            "node": "Facebook start context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook start context": {
+      "main": [
+        [
+          {
+            "node": "Transfer Facebook Reel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transfer Facebook Reel": {
+      "main": [
+        [
+          {
+            "node": "Finish Facebook Reel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finish Facebook Reel": {
+      "main": [
+        [
+          {
+            "node": "Facebook success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube upload metadata": {
+      "main": [
+        [
+          {
+            "node": "Start YouTube upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start YouTube upload": {
+      "main": [
+        [
+          {
+            "node": "YouTube session context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube session context": {
+      "main": [
+        [
+          {
+            "node": "Upload YouTube Reel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload YouTube Reel": {
+      "main": [
+        [
+          {
+            "node": "YouTube success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query TikTok creator info": {
+      "main": [
+        [
+          {
+            "node": "Validate TikTok creator options",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate TikTok creator options": {
+      "main": [
+        [
+          {
+            "node": "Initialize TikTok post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize TikTok post": {
+      "main": [
+        [
+          {
+            "node": "TikTok upload context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok upload context": {
+      "main": [
+        [
+          {
+            "node": "Upload TikTok Reel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload TikTok Reel": {
+      "main": [
+        [
+          {
+            "node": "Wait TikTok",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait TikTok": {
+      "main": [
+        [
+          {
+            "node": "TikTok post status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok post status": {
+      "main": [
+        [
+          {
+            "node": "TikTok success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram success": {
+      "main": [
+        [
+          {
+            "node": "Published transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook success": {
+      "main": [
+        [
+          {
+            "node": "Published transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube success": {
+      "main": [
+        [
+          {
+            "node": "Published transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok success": {
+      "main": [
+        [
+          {
+            "node": "Published transition request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uncertain transition request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Published transition request": {
+      "main": [
+        [
+          {
+            "node": "Save published delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save published delivery": {
+      "main": [
+        [
+          {
+            "node": "Asset ready for cleanup?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Asset ready for cleanup?": {
+      "main": [
+        [
+          {
+            "node": "Cleanup from Supabase?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delivery complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup from Supabase?": {
+      "main": [
+        [
+          {
+            "node": "Delete Supabase Reel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "R2 cleanup pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "R2 cleanup pending": {
+      "main": [
+        [
+          {
+            "node": "Prepare R2 delete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare R2 delete": {
+      "main": [
+        [
+          {
+            "node": "Sign R2 delete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign R2 delete": {
+      "main": [
+        [
+          {
+            "node": "Delete R2 Reel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Supabase Reel": {
+      "main": [
+        [
+          {
+            "node": "Cleanup request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete R2 Reel": {
+      "main": [
+        [
+          {
+            "node": "Cleanup request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup request": {
+      "main": [
+        [
+          {
+            "node": "Save Reel cleanup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uncertain transition request": {
+      "main": [
+        [
+          {
+            "node": "Save uncertain delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Berlin",
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "executionTimeout": 1800
+  },
+  "pinData": {}
+}

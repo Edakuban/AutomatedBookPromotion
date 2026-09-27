@@ -105,6 +105,39 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 1rem; }
 .quote-card { padding: 1.2rem 0; border-bottom: 1px solid var(--border); }
 .quote-card blockquote { margin: 1rem 0; padding-left: 1rem; border-left: 3px solid #7b98bc; }
 .quote-card details, .analysis-profile { margin-top: 1.3rem; }
+.reel-dialog { width: min(72rem, calc(100% - 2rem)); height: min(92vh, 58rem); padding: 0; border: 1px solid #a3afbd; border-radius: 10px; color: #202b3b; box-shadow: 0 18px 60px rgb(20 29 43 / 35%); }
+.reel-dialog::backdrop { background: rgb(20 29 43 / 62%); }
+.reel-dialog-frame { min-height: 100%; background: #f5f6f8; }
+.reel-dialog-heading { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.3rem; border-bottom: 1px solid var(--border); background: #fff; }
+.reel-dialog-heading h2 { margin-top: .25rem; font-size: 1.3rem; }
+.reel-dialog-close { flex-shrink: 0; }
+.reel-workshop { padding: 1.2rem; }
+.reel-quote { margin: 0 0 1rem; padding: .8rem 1rem; border-left: 3px solid #7b98bc; background: #fff; white-space: pre-wrap; }
+.reel-steps { display: grid; gap: 1rem; }
+.reel-step { padding: 1.1rem; border: 1px solid var(--border); border-radius: 7px; background: #fff; }
+.reel-step-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
+.reel-step h3 { margin: 0; font-size: 1rem; }
+.reel-step label { display: flex; flex-direction: column; gap: .35rem; margin-top: .8rem; }
+.reel-step textarea, .reel-step input, .reel-step select { width: 100%; padding: .6rem; font: inherit; border: 1px solid #a3afbd; border-radius: 4px; background: #fff; }
+.reel-step textarea { min-height: 7rem; resize: vertical; }
+.reel-step input[type="range"] { padding: 0; }
+.reel-preview-grid { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(15rem, 1fr); gap: 1rem; align-items: start; margin-top: 1rem; }
+.reel-media-preview { width: 100%; max-height: 34rem; object-fit: contain; border: 1px solid #a3afbd; border-radius: 6px; background: #111923; }
+.reel-caption-preview { padding: 1rem; border: 1px solid var(--border); border-radius: 5px; background: #fafbfc; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reel-inline-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+.reel-audio-editor { margin-top: 1rem; padding: .85rem; border: 1px solid var(--border); border-radius: 6px; background: #f7f9fb; }
+.reel-audio-editor canvas { display: block; width: 100%; height: 9rem; border-radius: 5px; cursor: ew-resize; touch-action: none; }
+.reel-audio-selection-times { display: flex; justify-content: space-between; gap: 1rem; margin-top: .45rem; font-variant-numeric: tabular-nums; }
+.reel-audio-editor > audio { display: block; width: 100%; margin-top: .75rem; }
+.reel-audio-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; margin-top: .75rem; }
+.reel-step .reel-audio-loop { flex-direction: row; align-items: center; gap: .45rem; margin: 0 0 0 auto; }
+.reel-step .reel-audio-loop input { width: auto; }
+.reel-publish-options { margin-top: 1rem; padding: .5rem 1rem 1rem; border: 1px solid var(--border); border-radius: 6px; }
+.reel-publish-options legend { padding: 0 .35rem; font-weight: 600; }
+.reel-step .reel-publish-options .checkbox-label, .reel-step .reel-publish-options .radio-label { flex-direction: row; align-items: flex-start; gap: .6rem; }
+.reel-step .reel-publish-options input[type="checkbox"], .reel-step .reel-publish-options input[type="radio"] { width: auto; margin-top: .25rem; }
+.reel-status { margin-top: .8rem; }
+.reel-status[aria-busy="true"] { color: var(--accent); }
 .analysis-profile h3 { font-size: 1rem; margin-bottom: .4rem; }
 .settings-fields { padding: 1.3rem; }
 .settings-fields label { display: flex; flex-direction: column; gap: .4rem; margin: 1rem 0; }
@@ -121,6 +154,18 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 1rem; }
 .radio-label span { display: flex; flex-direction: column; gap: .15rem; }
 .radio-label small { color: var(--muted); }
 .asset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; margin-top: 1rem; }
+.character-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.2rem; }
+.character-card { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 7px; background: #fafbfc; }
+.character-card-heading { display: flex; justify-content: space-between; align-items: center; gap: .8rem; }
+.character-card-heading h3 { margin: 0; }
+.character-card > img, .character-placeholder { display: block; width: 100%; height: 22rem; margin: .8rem 0; border-radius: 6px; border: 1px solid #a3afbd; background: #111923; object-fit: contain; }
+.character-analysis-actions { margin: 1rem 0; }
+.character-analysis-actions progress { display: block; width: min(32rem, 100%); margin-top: .8rem; }
+.character-placeholder { display: grid; place-items: center; color: #c4ccd6; }
+.character-image-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.character-image-actions form { min-width: 0; }
+.character-image-actions button { margin-top: .7rem; }
+.character-create { margin-top: 1.3rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 .asset-card { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 6px; background: #fafbfc; }
 .asset-card h3 { margin-top: 0; }
 .asset-card > img { display: block; width: auto; max-width: 100%; height: 220px; object-fit: contain; margin: .8rem 0; background: repeating-conic-gradient(#edf0f4 0 25%, #fff 0 50%) 50% / 20px 20px; }
@@ -142,6 +187,10 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 1rem; }
   .upload-panel { padding: 1.2rem; }
   .settings-grid { grid-template-columns: 1fr; }
   .asset-grid { grid-template-columns: 1fr; }
+  .character-grid, .character-image-actions { grid-template-columns: 1fr; }
+  .reel-preview-grid, .reel-inline-fields { grid-template-columns: 1fr; }
+  .reel-step .reel-audio-loop { width: 100%; margin-left: 0; }
+  .reel-dialog { width: calc(100% - 1rem); height: calc(100vh - 1rem); }
   .chapter-row { grid-template-columns: 1fr; }
   .empty-state { padding: 2rem 1rem; }
   .site-footer { flex-wrap: wrap; justify-content: flex-start; padding-top: 1rem; padding-bottom: 1rem; }

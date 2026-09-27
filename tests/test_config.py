@@ -55,13 +55,17 @@ def test_explicit_missing_file_is_an_error(capsys):
     assert "ENV-Datei" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("require", ["supabase", "openwebui", "all"])
+@pytest.mark.parametrize("require", ["supabase", "openwebui", "comfyui", "all"])
 def test_required_integration_is_incomplete(require):
     assert main(["check-config", "--require", require]) == 2
 
 
 def test_complete_config_does_not_expose_values(tmp_path, capsys):
     secret = "TEST_SECRET_DO_NOT_DISPLAY"
+    (tmp_path / "workflows").mkdir()
+    (tmp_path / "workflows" / "reel-image.json").write_text("{}")
+    (tmp_path / "workflows" / "reel-reference.json").write_text("{}")
+    (tmp_path / "workflows" / "reel-video.json").write_text("{}")
     (tmp_path / ".env").write_text(
         f"SUPABASE_URL=https://example.supabase.co\nSUPABASE_SECRET_KEY={secret}\n"
         f"OPENWEBUI_URL=http://localhost:3000\nOPENWEBUI_API_KEY={secret}\n"

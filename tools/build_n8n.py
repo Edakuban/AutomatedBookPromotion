@@ -1,4 +1,4 @@
-"""Build the two credential-free n8n 2.35.4 carousel workflows.
+"""Build credential-free n8n 2.35.4 carousel and Reel workflows.
 
 This generator is offline: it only writes JSON below ``n8n/`` and never
 contacts the configured n8n instance or any external service.
@@ -15,12 +15,13 @@ CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1350
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MODES = ("review", "auto")
+WORKFLOW_KINDS = (*MODES, "reel", "prompt")
 INSTAGRAM_TOKEN_PLACEHOLDER = "MIT_RICHTIGEM_KEY_ERSETZEN"
 
 
 class Workflow:
     def __init__(self, mode: str):
-        if mode not in MODES:
+        if mode not in WORKFLOW_KINDS:
             raise ValueError(f"Unsupported workflow mode: {mode}")
         self.mode = mode
         self.nodes: list[dict] = []
@@ -129,9 +130,15 @@ class Workflow:
             + "p_action:'" + action + "',p_data:" + data + "}}];")
 
     def export(self):
-        title = "Review" if self.mode == "review" else "Auto"
+        if self.mode == "reel":
+            name = "Book Promotion · Multi-Platform Reel · Publisher"
+        elif self.mode == "prompt":
+            name = "Book Promotion · Reel Prompt Helper"
+        else:
+            title = "Review" if self.mode == "review" else "Auto"
+            name = f"Book Promotion · Instagram Carousel · {title}"
         return {
-            "name": f"Book Promotion · Instagram Carousel · {title}",
+            "name": name,
             "nodes": self.nodes,
             "connections": self.connections,
             "active": False,
@@ -851,10 +858,33 @@ def build_all():
     return {mode: build(mode) for mode in MODES}
 
 
+def build_reel_publisher():
+    try:
+        from tools.build_n8n_reels import build_reel_publisher as builder
+    except ModuleNotFoundError:  # direct ``python tools/build_n8n.py`` execution
+        from build_n8n_reels import build_reel_publisher as builder
+    return builder(Workflow, instagram_http, SHA256_JS, INSTAGRAM_TOKEN_PLACEHOLDER)
+
+
+def build_reel_prompt_helper():
+    try:
+        from tools.build_n8n_reels import build_reel_prompt_helper as builder
+    except ModuleNotFoundError:  # direct ``python tools/build_n8n.py`` execution
+        from build_n8n_reels import build_reel_prompt_helper as builder
+    return builder(Workflow)
+
+
 def write_workflows(root=Path("n8n")):
     root.mkdir(exist_ok=True)
     for mode, workflow in build_all().items():
         target = root / f"book-promotion-{mode}.json"
+        target.write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"Generated {target.as_posix()}")
+    for filename, workflow in (
+        ("book-promotion-reel-publisher.json", build_reel_publisher()),
+        ("book-promotion-reel-prompt-helper.json", build_reel_prompt_helper()),
+    ):
+        target = root / filename
         target.write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"Generated {target.as_posix()}")
     legacy = root / "book-promotion.json"

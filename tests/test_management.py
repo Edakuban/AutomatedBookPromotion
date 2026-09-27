@@ -10,11 +10,13 @@ from bookpromo.analysis import AnalysisOptions
 from bookpromo.analysis_worker import run_analysis_once
 from bookpromo.extraction_store import ExtractionStore
 from bookpromo.management import BookDetails, ManagementStore
+from bookpromo.reels import ReelStore
 from bookpromo.overlay import font_names
 from bookpromo.uploads import UploadError
-from bookpromo.web import create_app
+from bookpromo.web import _reel_delivery_asset_id, create_app
 from test_analysis import setup, FakeAPI, TEXT
 from test_extraction import package, p
+from test_reels import wav_bytes
 
 
 def analyzed(setup, **kwargs):
@@ -39,6 +41,96 @@ def test_read_does_not_create_management_tables(setup):
     with closing(uploads._read_connection()) as connection:
         assert not store.exists(connection, 'local_book_settings')
         assert not store.exists(connection, 'local_quote_controls')
+
+
+def test_usable_quote_opens_reel_workshop_and_saves_reviewed_copy(setup):
+    settings, uploads, book, _, _ = setup
+    settings.supabase_enabled = True
+    management_store = analyzed(setup)
+    current = management_store.get(book.id)
+    quote = current["quotes"][0]["quote"]
+    base = f"/books/local/{book.id}/chapters/{quote.chapter_id}"
+    reel_url = f"{base}/quotes/{quote.id}/reel"
+    with TestClient(
+        create_app(settings, start_worker=False), base_url="http://127.0.0.1:8000",
+        headers={"Accept": "application/json"},
+    ) as client:
+        chapter = client.get(base, headers={"Accept": "text/html"})
+        assert chapter.status_code == 200 and "Reel erzeugen" in chapter.text
+        workshop = client.get(reel_url, headers={"Accept": "text/html"})
+        assert workshop.status_code == 200
+        assert "Instagram-Text und Bildprompt" in workshop.text
+        assert "Dieses Buch wurde noch nicht nach Supabase übertragen" in workshop.text
+
+        draft = ReelStore(uploads).list_drafts(book.id)[0]
+        saved = client.post(reel_url + "/copy/save", data={
+            "revision": str(draft.revision),
+            "addition": "Ein kurzer Begleittext.",
+            "image_prompt": "A cinematic vertical portrait without text",
+        })
+        assert saved.status_code == 200 and saved.json()["workshop_url"].endswith("/reel")
+        draft = ReelStore(uploads).get_draft(draft.id)
+        assert draft.final_caption.startswith(quote.text + "\n\nEin kurzer Begleittext.")
+        assert draft.image_prompt == "A cinematic vertical portrait without text"
+
+        uploaded = client.post(
+            reel_url + "/audio/upload",
+            data={"title": ""},
+            files={"file": ("Kira Theme.wav", wav_bytes().getvalue(), "audio/wav")},
+        )
+        assert uploaded.status_code == 200
+        workshop = client.get(reel_url, headers={"Accept": "text/html"})
+        assert "Kira Theme · 2.0 s" in workshop.text
+        assert "Songtitel" in workshop.text and "(optional)" in workshop.text
+        assert "data-audio-waveform" in workshop.text and "Auswahl wiederholen" in workshop.text
+        track = ReelStore(uploads).list_audio(book.id)[0]
+        source_url = reel_url + f"/audio/source/{track.id}.wav"
+        waveform_url = reel_url + f"/audio/waveform/{track.id}.json"
+        source = client.get(source_url)
+        assert source.status_code == 200 and source.headers["content-type"].startswith("audio/wav")
+        waveform = client.get(waveform_url)
+        assert waveform.status_code == 200
+        assert waveform.json()["duration_ms"] == 2_000
+        assert len(waveform.json()["peaks"]) == 720
+        assert client.get(reel_url + f"/audio/waveform/{uuid4()}.json").status_code == 404
+
+        foreign = client.post(
+            reel_url + "/image", headers={"Origin": "https://foreign.example"},
+        )
+        assert foreign.status_code == 403
+
+        with ReelStore(uploads).connection() as connection, connection:
+            connection.execute(
+                "update local_reel_drafts set state='stocked',remote_video_path=? where id=?",
+                (f"{draft.id}/{'a' * 64}.mp4", draft.id),
+            )
+        stocked_workshop = client.get(reel_url, headers={"Accept": "text/html"})
+        assert "Bereits übertragen" in stocked_workshop.text
+        assert "Erneut in Reel-Vorrat stellen" in stocked_workshop.text
+        assert 'name="requeue" value="1"' in stocked_workshop.text
+
+
+def test_repeated_reel_transfer_uses_a_fresh_asset_id(setup):
+    _, uploads, book, _, _ = setup
+    draft = ReelStore(uploads).get_or_create_draft(
+        book.id, "a" * 64, str(uuid4()), str(uuid4()), "Zitat",
+    )
+    assert _reel_delivery_asset_id(draft, requeue=False) == draft.id
+    with pytest.raises(UploadError, match="noch nicht übertragen"):
+        _reel_delivery_asset_id(draft, requeue=True)
+
+    with ReelStore(uploads).connection() as connection, connection:
+        ReelStore.schema(connection)
+        connection.execute(
+            "update local_reel_drafts set state='stocked',remote_video_path=? where id=?",
+            (f"{draft.id}/{'a' * 64}.mp4", draft.id),
+        )
+    stocked = ReelStore(uploads).get_draft(draft.id)
+    repeated_id = _reel_delivery_asset_id(stocked, requeue=True)
+    assert repeated_id != stocked.id
+    assert UUID(repeated_id)
+    with pytest.raises(UploadError, match="bereits übertragen"):
+        _reel_delivery_asset_id(stocked, requeue=False)
 
 
 def test_saved_profile_survives_reanalysis_and_preview_is_read_only(setup):
