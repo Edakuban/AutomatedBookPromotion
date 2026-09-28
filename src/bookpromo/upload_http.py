@@ -23,6 +23,7 @@ class UploadLimitMiddleware:
             scope["path"].startswith("/books/local/") and (
                 "/settings/assets/" in scope["path"]
                 or ("/settings/characters/" in scope["path"] and scope["path"].endswith("/upload"))
+                or scope["path"].endswith("/reel/image/upload")
             )
         )
         is_audio_upload = (

@@ -16,7 +16,7 @@ from bookpromo.uploads import UploadError
 from bookpromo.web import _reel_delivery_asset_id, create_app
 from test_analysis import setup, FakeAPI, TEXT
 from test_extraction import package, p
-from test_reels import wav_bytes
+from test_reels import png_bytes, wav_bytes
 
 
 def analyzed(setup, **kwargs):
@@ -72,6 +72,27 @@ def test_usable_quote_opens_reel_workshop_and_saves_reviewed_copy(setup):
         draft = ReelStore(uploads).get_draft(draft.id)
         assert draft.final_caption.startswith(quote.text + "\n\nEin kurzer Begleittext.")
         assert draft.image_prompt == "A cinematic vertical portrait without text"
+
+        picture = client.post(
+            reel_url + "/image/upload",
+            data={"revision": str(draft.revision)},
+            files={"file": ("eigenes-bild.png", png_bytes().getvalue(), "image/png")},
+        )
+        assert picture.status_code == 200
+        draft = ReelStore(uploads).get_draft(draft.id)
+        assert draft.uploaded_image_path and draft.selected_image_path is None
+        image = client.get(reel_url + "/image.bin?source=upload")
+        assert image.status_code == 200 and image.content.startswith(b"\x89PNG\r\n\x1a\n")
+        picture_workshop = client.get(reel_url, headers={"Accept": "text/html"})
+        assert "Eigenes Bild" in picture_workshop.text
+        assert "Bild für das Video" in picture_workshop.text
+        assert "Charaktere optimieren" in picture_workshop.text
+        selected = client.post(reel_url + "/image/select", data={
+            "revision": str(draft.revision), "source": "upload",
+        })
+        assert selected.status_code == 200
+        draft = ReelStore(uploads).get_draft(draft.id)
+        assert draft.selected_image_source == "upload"
 
         uploaded = client.post(
             reel_url + "/audio/upload",

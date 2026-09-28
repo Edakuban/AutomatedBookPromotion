@@ -224,6 +224,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         )
         tracks = await run_in_threadpool(reel_store.list_audio, str(book_id))
         characters = await run_in_threadpool(character_store.list, str(book_id))
+        selected_character_ids = set(draft.character_ids)
         publication_defaults = await run_in_threadpool(
             reel_store.get_publication_defaults, settings.reel_storage_provider,
         )
@@ -245,6 +246,10 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             context={
                 "book": book, "chapter": chapter, "quote": quote, "management": management,
                 "draft": draft, "tracks": tracks, "characters": characters,
+                "has_selected_references": any(
+                    character.id in selected_character_ids and character.has_reference
+                    for character in characters
+                ),
                 "job": latest, "message": None,
                 "default_duration": settings.reel_default_duration_seconds,
                 "publication_defaults": publication_defaults,
@@ -549,7 +554,66 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     async def generate_reel_image_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         require_local_origin(request)
         _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
-        await run_in_threadpool(reel_jobs.enqueue, draft.id, "image")
+        await run_in_threadpool(reel_jobs.enqueue, draft.id, "image", {"operation": "scene"})
+        return action_response(request, book_id, chapter_id, quote_id)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image/optimize",
+        name="optimize_reel_image_route",
+    )
+    async def optimize_reel_image_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        selected = {
+            character.id: character for character in await run_in_threadpool(
+                character_store.list, str(book_id)
+            )
+        }
+        if not any(selected.get(item) and selected[item].has_reference for item in draft.character_ids):
+            raise UploadError("Für die ausgewählten Charaktere fehlt ein Referenzbild.", 409)
+        await run_in_threadpool(reel_jobs.enqueue, draft.id, "image", {"operation": "optimize"})
+        return action_response(request, book_id, chapter_id, quote_id)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image/upload",
+        name="upload_reel_image_route",
+    )
+    async def upload_reel_image_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        if not request.headers.get("content-type", "").startswith("multipart/form-data"):
+            raise UploadError("Bitte genau eine PNG-, JPEG- oder WebP-Datei auswählen.", 415)
+        async with request.form(max_files=1, max_fields=1) as form:
+            file = form.get("file")
+            revision = form.get("revision")
+            if set(form) != {"file", "revision"} or not isinstance(file, UploadFile) or not isinstance(revision, str):
+                raise UploadError("Bitte genau eine Bilddatei auswählen.")
+            try:
+                expected_revision = int(revision)
+            except ValueError:
+                raise UploadError("Die Reel-Werkstatt ist veraltet. Bitte neu laden.", 409) from None
+            await run_in_threadpool(
+                reel_store.save_uploaded_image, draft.id, expected_revision,
+                file.file, file.filename or "upload",
+            )
+        return action_response(request, book_id, chapter_id, quote_id)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image/select",
+        name="select_reel_image_route",
+    )
+    async def select_reel_image_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        async with request.form(max_files=0, max_fields=2) as form:
+            if set(form) != {"revision", "source"}:
+                raise UploadError("Bitte eine Bildvariante auswählen.")
+            try:
+                revision = int(str(form["revision"]))
+                source = str(form["source"])
+            except (TypeError, ValueError):
+                raise UploadError("Bitte eine gültige Bildvariante auswählen.") from None
+        await run_in_threadpool(reel_store.select_image, draft.id, revision, source)
         return action_response(request, book_id, chapter_id, quote_id)
 
     @app.post(
@@ -620,7 +684,10 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 genre=details.genre, mood=details.mood,
                 duration_seconds=draft.duration_ms / 1000,
             )
-        identity_context = _snapshot_identity_context(draft.character_snapshot)
+        identity_context = (
+            _snapshot_identity_context(draft.character_snapshot)
+            if draft.selected_image_source == "optimized" else ""
+        )
         if identity_context:
             prompt = f"{prompt} Identity map: {identity_context}"
         try:
@@ -669,11 +736,14 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image.bin",
         name="reel_image",
     )
-    async def reel_image(book_id: UUID, chapter_id: UUID, quote_id: UUID):
+    async def reel_image(
+        book_id: UUID, chapter_id: UUID, quote_id: UUID,
+        source: Literal["selected", "scene", "optimized", "upload"] = "selected",
+    ):
         _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id)
         if draft is None:
             raise HTTPException(404)
-        path = await run_in_threadpool(reel_store.artifact_path, draft, "image")
+        path = await run_in_threadpool(reel_store.candidate_image_path, draft, source)
         if path is None:
             raise HTTPException(404)
         media = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(path.suffix.lower())

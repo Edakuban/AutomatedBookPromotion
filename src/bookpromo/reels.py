@@ -23,6 +23,8 @@ from typing import BinaryIO, Literal
 from uuid import UUID, uuid4
 import wave
 
+from PIL import Image, UnidentifiedImageError
+
 from .uploads import LocalUploadStore, UploadError
 from .publication import PublicationDefaults, StoredPublicationDefaults
 
@@ -92,6 +94,13 @@ class ReelDraft:
     video_prompt: str
     character_ids_json: str
     character_snapshot_json: str
+    scene_image_path: str | None
+    scene_image_sha256: str | None
+    optimized_image_path: str | None
+    optimized_image_sha256: str | None
+    uploaded_image_path: str | None
+    uploaded_image_sha256: str | None
+    selected_image_source: str
     selected_image_path: str | None
     selected_image_sha256: str | None
     selected_video_path: str | None
@@ -105,7 +114,19 @@ class ReelDraft:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ReelDraft":
-        values = {key: row[key] for key in cls.__annotations__}
+        present = set(row.keys())
+        values = {key: row[key] for key in cls.__annotations__ if key in present}
+        # Read-only pages may encounter a database created by an older version
+        # before the next write performs the additive migration.
+        selected_path = values.get("selected_image_path")
+        selected_hash = values.get("selected_image_sha256")
+        values.setdefault("scene_image_path", selected_path)
+        values.setdefault("scene_image_sha256", selected_hash)
+        values.setdefault("optimized_image_path", None)
+        values.setdefault("optimized_image_sha256", None)
+        values.setdefault("uploaded_image_path", None)
+        values.setdefault("uploaded_image_sha256", None)
+        values.setdefault("selected_image_source", "scene")
         values["image_stale"] = bool(values["image_stale"])
         values["video_stale"] = bool(values["video_stale"])
         return cls(**values)
@@ -117,6 +138,18 @@ class ReelDraft:
     @property
     def character_snapshot(self) -> tuple[dict, ...]:
         return tuple(json.loads(self.character_snapshot_json or "[]"))
+
+    @property
+    def image_candidates(self) -> tuple[tuple[str, str, str], ...]:
+        candidates = []
+        for source, label, path in (
+            ("scene", "Szenenbild", self.scene_image_path),
+            ("optimized", "Charakteroptimiert", self.optimized_image_path),
+            ("upload", "Eigenes Bild", self.uploaded_image_path),
+        ):
+            if path:
+                candidates.append((source, label, path))
+        return tuple(candidates)
 
 
 @dataclass(frozen=True)
@@ -181,6 +214,10 @@ class ReelStore:
                 image_prompt text not null, video_prompt text not null,
                 character_ids_json text not null default '[]',
                 character_snapshot_json text not null default '[]',
+                scene_image_path text, scene_image_sha256 text,
+                optimized_image_path text, optimized_image_sha256 text,
+                uploaded_image_path text, uploaded_image_sha256 text,
+                selected_image_source text not null default 'scene',
                 selected_image_path text, selected_image_sha256 text,
                 selected_video_path text, selected_video_sha256 text,
                 image_stale integer not null check(image_stale in (0,1)),
@@ -219,6 +256,22 @@ class ReelStore:
             connection.execute("alter table local_reel_drafts add column character_ids_json text not null default '[]'")
         if "character_snapshot_json" not in columns:
             connection.execute("alter table local_reel_drafts add column character_snapshot_json text not null default '[]'")
+        had_scene_image = "scene_image_path" in columns
+        for name in (
+            "scene_image_path", "scene_image_sha256", "optimized_image_path",
+            "optimized_image_sha256", "uploaded_image_path", "uploaded_image_sha256",
+        ):
+            if name not in columns:
+                connection.execute(f"alter table local_reel_drafts add column {name} text")
+        if "selected_image_source" not in columns:
+            connection.execute(
+                "alter table local_reel_drafts add column selected_image_source text not null default 'scene'"
+            )
+        if not had_scene_image:
+            connection.execute(
+                """update local_reel_drafts set scene_image_path=selected_image_path,
+                scene_image_sha256=selected_image_sha256 where selected_image_path is not null"""
+            )
 
     def get_publication_defaults(self, default_provider: str = "supabase") -> StoredPublicationDefaults:
         if not self.uploads.db_path.is_file():
@@ -616,6 +669,120 @@ class ReelStore:
             raise UploadError("Die gespeicherte Mediendatei fehlt.", 503)
         return path
 
+    def candidate_image_path(self, draft: ReelDraft | str, source: str = "selected") -> Path | None:
+        if isinstance(draft, str):
+            found = self.get_draft(draft)
+            if found is None:
+                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+            draft = found
+        paths = {
+            "selected": draft.selected_image_path,
+            "scene": draft.scene_image_path,
+            "optimized": draft.optimized_image_path,
+            "upload": draft.uploaded_image_path,
+        }
+        if source not in paths:
+            raise UploadError("Die Bildvariante ist ungültig.")
+        return self.artifact_path(draft, "image", paths[source])
+
+    def select_image(self, draft_id: str, revision: int, source: str) -> ReelDraft:
+        fields = {
+            "scene": ("scene_image_path", "scene_image_sha256"),
+            "optimized": ("optimized_image_path", "optimized_image_sha256"),
+            "upload": ("uploaded_image_path", "uploaded_image_sha256"),
+        }
+        if source not in fields:
+            raise UploadError("Bitte eine vorhandene Bildvariante auswählen.")
+        path_field, hash_field = fields[source]
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            draft = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,)
+            ).fetchone()
+            if draft is None:
+                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+            if draft["revision"] != revision:
+                raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            relative, digest = draft[path_field], draft[hash_field]
+            if not relative or not digest:
+                raise UploadError("Die ausgewählte Bildvariante ist nicht mehr vorhanden.", 409)
+            self._validate_stored_image(draft, relative, digest)
+            if (draft["selected_image_source"] == source
+                    and draft["selected_image_path"] == relative and not draft["image_stale"]):
+                return ReelDraft.from_row(draft)
+            connection.execute(
+                """update local_reel_drafts set selected_image_source=?,selected_image_path=?,
+                selected_image_sha256=?,image_stale=0,video_stale=1,state='editing',error=null,
+                revision=revision+1,updated_at=? where id=? and revision=?""",
+                (source, relative, digest, time.time(), draft_id, revision),
+            )
+            saved = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,)
+            ).fetchone()
+        return ReelDraft.from_row(saved)
+
+    def save_uploaded_image(
+        self, draft_id: str, revision: int, source: BinaryIO, filename: str,
+    ) -> ReelDraft:
+        relative, digest = self.save_artifact(draft_id, "image", source, filename)
+        stored_path = self.root / relative
+        try:
+            with Image.open(stored_path) as image:
+                expected_suffixes = {
+                    "PNG": {".png"}, "JPEG": {".jpg", ".jpeg"}, "WEBP": {".webp"},
+                }
+                if (image.format not in expected_suffixes
+                        or stored_path.suffix.casefold() not in expected_suffixes[image.format]
+                        or image.width < 64 or image.height < 64
+                        or image.width * image.height > 50_000_000):
+                    raise UploadError(
+                        "Das Bildformat oder die Bildabmessungen werden nicht unterstützt.", 415,
+                    )
+                image.verify()
+        except UploadError:
+            stored_path.unlink(missing_ok=True)
+            raise
+        except (UnidentifiedImageError, OSError, SyntaxError):
+            stored_path.unlink(missing_ok=True)
+            raise UploadError("Die hochgeladene Bilddatei ist beschädigt.", 415) from None
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            draft = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,)
+            ).fetchone()
+            if draft is None:
+                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+            if draft["revision"] != revision:
+                raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            self._validate_stored_image(draft, relative, digest)
+            connection.execute(
+                """update local_reel_drafts set uploaded_image_path=?,uploaded_image_sha256=?,
+                error=null,
+                revision=revision+1,updated_at=? where id=? and revision=?""",
+                (relative, digest, time.time(), draft_id, revision),
+            )
+            saved = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,)
+            ).fetchone()
+        return ReelDraft.from_row(saved)
+
+    def _validate_stored_image(self, draft, relative: str, digest: str) -> None:
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise UploadError("Der gespeicherte Bildhash ist ungültig.", 503)
+        path = (self.root / relative).resolve()
+        expected_root = (self.root / "reels" / draft["book_id"] / draft["id"] / "image").resolve()
+        try:
+            path.relative_to(expected_root)
+        except ValueError:
+            raise UploadError("Der gespeicherte Bildpfad ist ungültig.", 503) from None
+        if not path.is_file():
+            raise UploadError("Die gespeicherte Bilddatei fehlt.", 503)
+        with path.open("rb") as stored:
+            if hashlib.file_digest(stored, "sha256").hexdigest() != digest:
+                raise UploadError("Die gespeicherte Bilddatei ist beschädigt.", 503)
+
     def delete_book_assets(self, book_id: str) -> None:
         """Remove this feature's rows and exact book-scoped directories.
 
@@ -739,11 +906,25 @@ class ReelStore:
 
             image_stale = bool(current["image_stale"])
             video_stale = bool(current["video_stale"])
-            if "image_prompt" in changes and changes["image_prompt"] != current["image_prompt"]:
-                image_stale = video_stale = True
+            generated_inputs_changed = (
+                "image_prompt" in changes and changes["image_prompt"] != current["image_prompt"]
+            ) or (
+                "character_ids_json" in changes
+                and changes["character_ids_json"] != current["character_ids_json"]
+            )
+            if generated_inputs_changed:
+                changes.update(
+                    scene_image_path=None, scene_image_sha256=None,
+                    optimized_image_path=None, optimized_image_sha256=None,
+                )
+                if current["selected_image_source"] != "upload":
+                    changes.update(selected_image_path=None, selected_image_sha256=None)
+                    image_stale = True
+                else:
+                    image_stale = False
+                video_stale = True
             if ("character_ids_json" in changes
                     and changes["character_ids_json"] != current["character_ids_json"]):
-                image_stale = video_stale = True
                 changes["character_snapshot_json"] = "[]"
             if any(
                 key in changes and changes[key] != current[key]
@@ -843,8 +1024,11 @@ class ReelJobStore:
     def enqueue(self, draft_id: str, kind: JobKind, payload: dict | None = None) -> ReelJob:
         if kind not in {"prompt", "image", "video", "upload"}:
             raise ValueError("Unbekannter Reel-Job.")
+        payload = payload or {}
+        if kind == "image" and payload.get("operation", "scene") not in {"scene", "optimize"}:
+            raise ValueError("Unbekannter Bildschritt.")
         try:
-            encoded = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+            encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         except (TypeError, ValueError):
             raise ValueError("Der Reel-Job enthält nicht serialisierbare Daten.") from None
         if len(encoded.encode()) > 64 * 1024:
@@ -859,6 +1043,9 @@ class ReelJobStore:
                 raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
             if kind == "image" and not draft["image_prompt"]:
                 raise UploadError("Bitte zuerst einen Bildprompt erzeugen oder eingeben.", 409)
+            if (kind == "image" and payload.get("operation") == "optimize"
+                    and (not draft["scene_image_path"] or draft["image_stale"])):
+                raise UploadError("Bitte zuerst ein aktuelles Szenenbild erzeugen.", 409)
             if kind == "video" and (
                 not draft["selected_image_path"] or draft["image_stale"]
                 or not draft["video_prompt"] or not draft["audio_track_id"]
@@ -1030,8 +1217,22 @@ class ReelJobStore:
                 relative, digest = result.get("path"), result.get("sha256")
                 self._validate_artifact_result(draft, job.kind, relative, digest)
                 if job.kind == "image":
-                    updates.update(selected_image_path=relative, selected_image_sha256=digest,
-                                   image_stale=0, video_stale=1)
+                    candidate = result.get("candidate", "scene")
+                    if candidate not in {"scene", "optimized"}:
+                        raise ValueError("Der Bildjob hat eine ungültige Bildvariante geliefert.")
+                    if candidate == "scene":
+                        updates.update(
+                            scene_image_path=relative, scene_image_sha256=digest,
+                            optimized_image_path=None, optimized_image_sha256=None,
+                            selected_image_source="scene", selected_image_path=relative,
+                            selected_image_sha256=digest, image_stale=0, video_stale=1,
+                        )
+                    else:
+                        if not draft["scene_image_path"]:
+                            raise ValueError("Dem Optimierungsjob fehlt das Szenenbild.")
+                        updates.update(
+                            optimized_image_path=relative, optimized_image_sha256=digest,
+                        )
                     snapshot = result.get("character_snapshot", [])
                     if not isinstance(snapshot, list) or len(snapshot) > 4:
                         raise ValueError("Der Bildjob hat ungültige Charakterdaten geliefert.")

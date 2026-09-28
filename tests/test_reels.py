@@ -7,6 +7,7 @@ from uuid import uuid4
 import wave
 
 import pytest
+from PIL import Image
 
 from bookpromo.reels import REEL_LEASE_SECONDS, ReelJobStore, ReelStore
 from bookpromo.uploads import LocalUploadStore, UploadError
@@ -19,6 +20,13 @@ def wav_bytes(seconds=2, rate=8_000):
         target.setsampwidth(2)
         target.setframerate(rate)
         target.writeframes(struct.pack("<h", 100) * int(seconds * rate))
+    output.seek(0)
+    return output
+
+
+def png_bytes(size=(64, 96)):
+    output = BytesIO()
+    Image.new("RGB", size, "#234567").save(output, "PNG")
     output.seek(0)
     return output
 
@@ -142,6 +150,64 @@ def test_successful_artifacts_survive_failed_regeneration(setup):
     assert failed.state == "failed"
     assert failed.selected_image_path == image_path
     assert failed.selected_image_sha256 == image_hash
+
+
+def test_scene_optimized_and_uploaded_images_remain_selectable(setup):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    draft = reels.update_draft(draft.id, draft.revision, image_prompt="A cinematic image")
+
+    scene_path, scene_hash = reels.save_artifact(
+        draft.id, "image", BytesIO(b"\x89PNG\r\n\x1a\nscene"), "scene.png",
+    )
+    jobs.enqueue(draft.id, "image", {"operation": "scene"})
+    jobs.finish(jobs.claim(now=1), result={
+        "path": scene_path, "sha256": scene_hash, "candidate": "scene",
+    }, now=2)
+    scene = reels.get_draft(draft.id)
+    assert scene.scene_image_path == scene_path
+    assert scene.selected_image_source == "scene"
+
+    optimized_path, optimized_hash = reels.save_artifact(
+        draft.id, "image", BytesIO(b"\x89PNG\r\n\x1a\noptimized"), "optimized.png",
+    )
+    jobs.enqueue(draft.id, "image", {"operation": "optimize"})
+    jobs.finish(jobs.claim(now=3), result={
+        "path": optimized_path, "sha256": optimized_hash, "candidate": "optimized",
+    }, now=4)
+    optimized = reels.get_draft(draft.id)
+    assert optimized.scene_image_path == scene_path
+    assert optimized.optimized_image_path == optimized_path
+    assert optimized.selected_image_source == "scene"
+
+    selected_optimized = reels.select_image(optimized.id, optimized.revision, "optimized")
+    assert selected_optimized.selected_image_path == optimized_path
+    assert selected_optimized.selected_image_source == "optimized" and selected_optimized.video_stale
+    selected_scene = reels.select_image(
+        selected_optimized.id, selected_optimized.revision, "scene",
+    )
+    assert selected_scene.selected_image_path == scene_path
+    assert selected_scene.selected_image_source == "scene" and selected_scene.video_stale
+
+    uploaded = reels.save_uploaded_image(
+        selected_scene.id, selected_scene.revision,
+        png_bytes(), "mine.png",
+    )
+    assert uploaded.selected_image_source == "scene"
+    assert uploaded.uploaded_image_path != uploaded.selected_image_path
+    assert [source for source, _, _ in uploaded.image_candidates] == ["scene", "optimized", "upload"]
+    assert reels.candidate_image_path(uploaded, "optimized") == reels.root / optimized_path
+
+    selected_upload = reels.select_image(uploaded.id, uploaded.revision, "upload")
+    assert selected_upload.selected_image_source == "upload"
+    assert selected_upload.uploaded_image_path == selected_upload.selected_image_path
+
+    edited = reels.update_draft(
+        selected_upload.id, selected_upload.revision, image_prompt="A changed cinematic image",
+    )
+    assert edited.selected_image_source == "upload" and not edited.image_stale
+    assert edited.scene_image_path is None and edited.optimized_image_path is None
+    assert edited.uploaded_image_path == uploaded.uploaded_image_path
 
 
 def test_job_completion_is_fenced_by_lease_and_draft_revision(setup):

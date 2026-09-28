@@ -41,11 +41,36 @@
 
     <section class="reel-step" aria-labelledby="reel-image-title">
       <div class="reel-step-heading"><h3 id="reel-image-title">2 · Bild</h3>{% if draft and draft.selected_image_path and not draft.image_stale %}<span class="badge badge-ready">Erstellt</span>{% endif %}</div>
-      {% if draft and draft.selected_image_path %}
-        <img class="reel-media-preview" src="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?revision={{ draft.revision }}" alt="Generiertes Reel-Ausgangsbild">
-      {% else %}<p class="muted">Zuerst Text und Bildprompt erzeugen.</p>{% endif %}
+      {% if draft and draft.image_candidates %}
+        <div class="reel-image-candidates">
+          {% for source, label, path in draft.image_candidates %}
+            <figure class="reel-image-candidate{% if source == draft.selected_image_source %} is-selected{% endif %}">
+              <img class="reel-media-preview" src="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?source={{ source }}&revision={{ draft.revision }}" alt="{{ label }}">
+              <figcaption>{{ label }}{% if source == draft.selected_image_source %}<span class="badge badge-ready">Für Video gewählt</span>{% endif %}</figcaption>
+            </figure>
+          {% endfor %}
+        </div>
+        <form method="post" action="{{ url_for('select_reel_image_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Bildauswahl wird übernommen …">
+          <input type="hidden" name="revision" value="{{ draft.revision }}">
+          <label>Bild für das Video
+            <select name="source" required>
+              {% for source, label, path in draft.image_candidates %}<option value="{{ source }}" {% if source == draft.selected_image_source %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+          </label>
+          <div class="form-actions"><button type="submit" {% if job and job.active %}disabled{% endif %}>Auswahl übernehmen</button></div>
+        </form>
+      {% else %}<p class="muted">Ein Szenenbild erzeugen oder ein eigenes Bild hochladen.</p>{% endif %}
       <form method="post" action="{{ url_for('generate_reel_image_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Bildgenerierung wird in ComfyUI vorgemerkt …" class="form-actions">
-        <button type="submit" {% if not draft or not draft.image_prompt or (job and job.active) %}disabled{% endif %}>{{ 'Bild neu erzeugen' if draft and draft.selected_image_path else 'Bild erzeugen' }}</button>
+        <button type="submit" {% if not draft or not draft.image_prompt or (job and job.active) %}disabled{% endif %}>{{ 'Szenenbild neu erzeugen' if draft and draft.scene_image_path else 'Bild erzeugen' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('optimize_reel_image_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Charaktere werden anhand der Referenzbilder optimiert …" class="form-actions">
+        <button type="submit" {% if not draft or not draft.scene_image_path or draft.image_stale or not has_selected_references or (job and job.active) %}disabled{% endif %}>{{ 'Charaktere erneut optimieren' if draft and draft.optimized_image_path else 'Charaktere optimieren' }}</button>
+      </form>
+      {% if draft and draft.character_ids and not has_selected_references %}<p class="muted small">Für die ausgewählten Charaktere ist noch kein Referenzbild hinterlegt.</p>{% endif %}
+      <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_reel_image_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Eigenes Bild wird gespeichert …">
+        <input type="hidden" name="revision" value="{{ draft.revision }}">
+        <label>Eigenes Bild hochladen <input type="file" name="file" accept="image/png,image/jpeg,image/webp" required></label>
+        <div class="form-actions"><button type="submit" {% if job and job.active %}disabled{% endif %}>Bild hochladen</button></div>
       </form>
     </section>
 

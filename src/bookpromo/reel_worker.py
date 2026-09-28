@@ -66,19 +66,10 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
         )
         if job.kind == "image":
             character_store = CharacterStore(uploads)
-            book_details = ManagementStore(uploads).get(draft.book_id)["details"]
-            effective_prompt = compose_image_generation_prompt(
-                scene_prompt=draft.image_prompt,
-                art_direction=book_details.image_prompt_base,
-            )
             available = {item.id: item for item in character_store.list(draft.book_id)}
             selected = [available[item] for item in draft.character_ids if item in available]
             selected = order_scene_characters(
                 selected, f"{draft.image_prompt}\n{draft.quote_text}",
-            )
-            generated = generator.generate_image(
-                reel_id=draft.id,
-                image_prompt=character_scene_prompt(effective_prompt, selected),
             )
             references = []
             for character in selected:
@@ -107,21 +98,44 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                 }
                 for character in selected
             ]
-            if references:
+            operation = job.payload.get("operation", "scene")
+            if operation == "scene":
+                book_details = ManagementStore(uploads).get(draft.book_id)["details"]
+                effective_prompt = compose_image_generation_prompt(
+                    scene_prompt=draft.image_prompt,
+                    art_direction=book_details.image_prompt_base,
+                )
+                generated = generator.generate_image(
+                    reel_id=draft.id,
+                    image_prompt=character_scene_prompt(effective_prompt, selected),
+                )
+                candidate = "scene"
+            elif operation == "optimize":
+                if not references:
+                    jobs.finish(job, error="Für die ausgewählten Charaktere fehlt ein Referenzbild.")
+                    return True
+                scene = reels.candidate_image_path(draft, "scene")
+                if scene is None:
+                    jobs.finish(job, error="Das zu optimierende Szenenbild wurde nicht gefunden.")
+                    return True
                 sheet, identity_context = stitch_character_references(
                     references,
                     reels.root / "reel-work" / draft.id / f"character-sheet-{job.input_revision}.png",
                 )
                 generated = generator.apply_character_references(
-                    reel_id=draft.id, scene_image_path=generated,
+                    reel_id=draft.id, scene_image_path=scene,
                     reference_sheet_path=sheet, identity_context=identity_context,
                 )
+                candidate = "optimized"
+            else:
+                jobs.finish(job, error="Der angeforderte Bildschritt ist ungültig.")
+                return True
             if lost.is_set():
                 return True
             with generated.open("rb") as source:
                 relative, digest = reels.save_artifact(draft.id, "image", source, generated.name)
             jobs.finish(job, result={"path": relative, "sha256": digest,
-                                     "character_snapshot": snapshot})
+                                     "candidate": candidate, "character_snapshot": snapshot})
             return True
 
         track = next((item for item in reels.list_audio(draft.book_id) if item.id == draft.audio_track_id), None)
