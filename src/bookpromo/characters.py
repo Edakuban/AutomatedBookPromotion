@@ -416,25 +416,29 @@ def stitch_character_references(
         visual = " ".join(character.image_prompt.split())
         details = []
         if description:
-            details.append(f"book description: {description[:500]}")
+            details.append(f"book description: {description[:180]}")
         if visual:
-            details.append(f"visual identity: {visual[:700]}")
+            details.append(f"visual identity: {visual[:320]}")
         return f"{character.name}. {'; '.join(details)}" if details else character.name
 
-    if len(characters) == 1:
-        context = (
-            f"The sole reference portrait shows {identity(characters[0][0])}. "
-            f"The only person in Image 1 is {characters[0][0].name}."
-        )
-    else:
+    def build_context(include_details: bool) -> str:
+        identify = identity if include_details else lambda character: character.name
+        if len(characters) == 1:
+            return (
+                f"The sole reference portrait shows {identify(characters[0][0])}. "
+                f"The only person in Image 1 is {characters[0][0].name}."
+            )
         scene_positions = _identity_positions(len(characters))
         reference_positions = [position.replace("person", "portrait") for position in scene_positions]
-        context = "Reference sheet identity order, left to right: " + "; ".join(
-            f"{reference_positions[index]} is {identity(character)}"
+        return "Reference sheet identity order, left to right: " + "; ".join(
+            f"{reference_positions[index]} is {identify(character)}"
             for index, (character, _) in enumerate(characters)
         ) + ". Scene assignment in Image 1: " + "; ".join(
             f"{scene_positions[index]} is {character.name} and may receive identity features only "
             f"from the {reference_positions[index]}"
             for index, (character, _) in enumerate(characters)
         ) + ". Never swap these identities or leak one portrait's features into another person."
+    context = build_context(include_details=True)
+    if len(context) > 3_900:
+        context = build_context(include_details=False)
     return target, context

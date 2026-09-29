@@ -12,6 +12,7 @@ from bookpromo.characters import (
     CharacterStore, character_scene_prompt, order_scene_characters,
     stitch_character_references,
 )
+from bookpromo.reel_generation import build_reference_edit_prompt
 from bookpromo.uploads import LocalUploadStore, UploadError
 from bookpromo.web import _detected_character_ids, create_app
 from test_analysis import FakeAPI, setup
@@ -115,6 +116,26 @@ def test_reference_images_are_normalized_and_stitched_left_to_right(character_st
 
     with pytest.raises(UploadError, match="mindestens"):
         store.save_reference_file(book.id, kira.id, kira.revision, image_file("white", (100, 100)))
+
+
+def test_four_detailed_references_fit_reference_workflow_prompt(character_store, tmp_path):
+    _, book, store = character_store
+    references = []
+    for index, name in enumerate(("Alex", "Dex", "Lila", "Voros")):
+        character = store.create(
+            book.id, name=name, description=(f"Detailed book description {index}. " * 150),
+            image_prompt=(f"Detailed visual identity {index}. " * 180),
+        )
+        character = store.save_reference_file(
+            book.id, character.id, character.revision,
+            image_file((40 + index * 30, 80, 120)),
+        )
+        references.append((character, store.reference_path(character)))
+
+    _, context = stitch_character_references(references, tmp_path / "four-sheet.png")
+    assert len(context) <= 3_900
+    assert all(name in context for name in ("Alex", "Dex", "Lila", "Voros"))
+    assert "Do not swap identities" in build_reference_edit_prompt(context)
 
 
 def test_character_settings_create_edit_upload_and_serve_reference(setup):
