@@ -32,7 +32,7 @@ def render_teaser(**overrides):
     templates = Path(__file__).parents[1] / "src" / "bookpromo" / "templates"
     environment = Environment(loader=FileSystemLoader(templates), autoescape=select_autoescape())
     context = dict(
-        url_for=lambda name, **kwargs: "/" + name,
+        url_for=lambda name, **kwargs: "/static/" + kwargs["path"] if name == "static" else "/" + name,
         book=NS(id="book", title="Roman"), active_page="books",
         tracks=[], rows=[], project=None, chapter_run=None, render_job=None,
         chapter_teaser_configured=False, chapter_teaser_providers=[],
@@ -68,6 +68,7 @@ def test_empty_teaser_page_keeps_phase_buttons_visible_but_disabled():
         assert any(tag == "button" and "disabled" in attrs for tag, attrs in form["controls"])
     assert '<details class="panel teaser-advanced next-settings">' in html
     assert '<dialog id="chapter-image-lightbox"' in html
+    assert 'page_position.js' in html
 
 
 def test_chapter_prompt_dialog_escapes_content_and_uses_revision_fencing():
@@ -93,6 +94,7 @@ def test_chapter_prompt_dialog_escapes_content_and_uses_revision_fencing():
     assert '&lt;/textarea&gt;&lt;script&gt;' in html
     assert '<script>alert' not in html
     assert 'data-teaser-image-open' in html
+    assert 'data-page-position-anchor="chapter-chapter"' in html
     assert 'aria-labelledby="chapter-prompt-title-chapter"' in html
     editor = next(form for form in forms if form["attrs"].get("action") == "/save_chapter_teaser_prompt")
     controls = {attrs.get("name"): attrs for _, attrs in editor["controls"] if attrs.get("name")}

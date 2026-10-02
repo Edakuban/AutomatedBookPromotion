@@ -125,7 +125,7 @@
         <tbody>
           {% for plan in chapter_run.plans %}
           {% set chapter = record.result.chapters[plan.position - 1] %}
-          <tr>
+          <tr data-page-position-anchor="chapter-{{ plan.chapter_id }}">
             <td><strong>{{ chapter.position }}. {{ chapter.title }}</strong></td>
             <td>
               {% if plan.suggestion %}

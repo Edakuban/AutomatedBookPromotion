@@ -13,7 +13,7 @@
     {% if analysis and analysis.result %}
       {% for item in quote_items %}
         {% set quote = item.quote %}
-        <article class="quote-card">
+        <article class="quote-card" data-page-position-anchor="quote-{{ quote.id }}">
           <p><span class="badge">{{ 'Gesperrt' if item.blocked else 'Nutzbar' if item.usable else 'Nicht geeignet' }}</span> <span class="muted small">Bewertung {{ '%.2f' | format(quote.scores.average) }}/5 · Spoiler: {{ {'none':'keine','low':'gering','high':'hoch'}[quote.spoiler] }}</span></p>
           <blockquote class="book-text">{{ quote.text }}</blockquote>
           <p>{{ quote.reason }}</p>
