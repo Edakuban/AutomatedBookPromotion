@@ -54,3 +54,5 @@ def test_character_references_do_not_force_standing_portraits(setup):
     assert "Never replace its scene with a standing portrait" in prompt
     assert "MANDATORY SCENE IDENTITY LAYOUT" not in prompt
     assert "human visual identity" not in prompt
+    assert "reference-image prompt: Red eyes, dark hair." in prompt
+    assert "A demon lord" not in prompt

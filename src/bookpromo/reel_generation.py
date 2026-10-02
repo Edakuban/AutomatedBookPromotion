@@ -17,6 +17,8 @@ from typing import Any, Callable
 import uuid
 import wave
 
+from PIL import Image, ImageChops, ImageFilter
+
 from .comfy import ComfyClient, load_workflow, output_node_ids, with_output_prefix
 from .reel_prompts import validate_video_prompt
 
@@ -94,6 +96,15 @@ class ReelVideoResult:
     raw_video_path: Path
     final_video_path: Path
     prompt_id: str
+
+
+@dataclass(frozen=True)
+class CharacterReferenceSpec:
+    name: str
+    reference_image_path: Path
+    selector_prompt: str
+    identity_prompt: str
+    forbidden_features: tuple[str, ...] = ()
 
 
 def audio_duration(path: str | Path, *, ffprobe_binary: str = "ffprobe", runner: Runner = subprocess.run) -> float:
@@ -311,6 +322,275 @@ class ReelGenerator:
             self.client, reference, target, comfy_output_root=self.comfy_output_root,
         )
 
+    def apply_character_references_masked(
+        self,
+        *,
+        reel_id: str,
+        scene_image_path: str | Path,
+        references: list[CharacterReferenceSpec],
+        timeout_seconds: float = 1800,
+    ) -> Path:
+        """Apply references one character at a time inside semantic SAM masks."""
+        if self.reference_workflow_path is None:
+            raise ReelGenerationError("Kein ComfyUI-Referenzworkflow konfiguriert.")
+        if not 1 <= len(references) <= 4:
+            raise ValueError("One to four character references are supported")
+        safe_id = _safe_reel_id(reel_id)
+        source = Path(scene_image_path).resolve(strict=True)
+        if not source.is_file():
+            raise ValueError("Scene image must be a file")
+        names = [item.name.strip() for item in references]
+        if any(not name for name in names) or len(set(name.casefold() for name in names)) != len(names):
+            raise ValueError("Character reference names must be unique and non-empty")
+        if any(not item.selector_prompt.strip() or not item.identity_prompt.strip() for item in references):
+            raise ReelGenerationError(
+                "Für die automatische Charaktermaske benötigt jede ausgewählte Figur einen "
+                "Referenzbild-Prompt in den Bucheinstellungen."
+            )
+        work = self.output_root / safe_id
+        work.mkdir(parents=True, exist_ok=True)
+        with Image.open(source) as opened:
+            original = opened.convert("RGB")
+        masks: list[Image.Image] = []
+        for index, item in enumerate(references):
+            selector = item.selector_prompt.strip() or "the only visible person"
+            mask_path = self._detect_character_mask(
+                reel_id=safe_id,
+                scene_image_path=source,
+                selector_prompt=selector,
+                output_path=work / f"mask-{index}-{uuid.uuid4().hex}.png",
+                timeout_seconds=min(timeout_seconds, 600),
+            )
+            mask = _validated_character_mask(mask_path, original.size, item.name)
+            masks.append(mask)
+
+        # Explicit negative traits in a reference prompt (for example "no wings") live outside
+        # the ordinary person/creature silhouette.  Detect those traits separately and assign each
+        # connected region to the nearest selected character before extending only that mask.
+        forbidden_masks = [Image.new("L", original.size, 0) for _ in references]
+        for index, item in enumerate(references):
+            for feature_index, feature in enumerate(item.forbidden_features):
+                feature_path = self._detect_character_mask(
+                    reel_id=safe_id,
+                    scene_image_path=source,
+                    selector_prompt=feature,
+                    output_path=work / (
+                        f"forbidden-{index}-{feature_index}-{uuid.uuid4().hex}.png"
+                    ),
+                    timeout_seconds=min(timeout_seconds, 600),
+                )
+                owned = _owned_feature_mask(feature_path, original.size, masks, index)
+                forbidden_masks[index] = ImageChops.lighter(forbidden_masks[index], owned)
+
+        for index, (mask, item) in enumerate(zip(masks, references, strict=True)):
+            for previous, previous_item in zip(masks[:index], references[:index], strict=True):
+                if _mask_overlap_ratio(mask, previous) > 0.42:
+                    raise ReelGenerationError(
+                        f"Die automatischen Masken für {previous_item.name} und {item.name} "
+                        "überlappen zu stark. Bitte die Referenzbild-Prompts eindeutiger formulieren."
+                    )
+
+        current = original
+        for index, (item, mask) in enumerate(zip(references, masks, strict=True)):
+            reference = Path(item.reference_image_path).resolve(strict=True)
+            if not reference.is_file():
+                raise ValueError("Character reference image must be a file")
+            reference = self._prepare_character_reference(
+                reel_id=safe_id,
+                reference_image_path=reference,
+                selector_prompt=item.selector_prompt,
+                output_path=work / f"reference-cutout-{index}-{uuid.uuid4().hex}.png",
+                timeout_seconds=min(timeout_seconds, 600),
+            )
+            forbidden_mask = forbidden_masks[index]
+            if forbidden_mask.getbbox() is not None:
+                forbidden_box = _padded_mask_box(forbidden_mask, padding_ratio=0.16)
+                forbidden_crop = current.crop(forbidden_box)
+                forbidden_mask_crop = forbidden_mask.crop(forbidden_box)
+                forbidden_crop_path = work / (
+                    f"forbidden-scene-{index}-{uuid.uuid4().hex}.png"
+                )
+                forbidden_crop.save(forbidden_crop_path, format="PNG", optimize=True)
+                neutral_reference = work / f"neutral-reference-{index}.png"
+                if not neutral_reference.is_file():
+                    Image.new("RGB", (512, 512), (112, 112, 112)).save(
+                        neutral_reference, format="PNG", optimize=True,
+                    )
+                cleaned = self._apply_single_character_reference(
+                    reel_id=safe_id,
+                    scene_image_path=forbidden_crop_path,
+                    reference_image_path=neutral_reference,
+                    prompt=build_forbidden_feature_removal_prompt(
+                        item.name, item.forbidden_features,
+                    ),
+                    tag=f"forbidden-{index}",
+                    timeout_seconds=timeout_seconds,
+                    preserve_geometry=False,
+                )
+                with Image.open(cleaned) as opened:
+                    replacement = opened.convert("RGB").resize(
+                        forbidden_crop.size, Image.Resampling.LANCZOS,
+                    )
+                composited = Image.composite(
+                    replacement, forbidden_crop, forbidden_mask_crop,
+                )
+                current.paste(composited, (forbidden_box[0], forbidden_box[1]))
+            box = _padded_mask_box(mask, padding_ratio=0.12)
+            scene_crop = current.crop(box)
+            mask_crop = mask.crop(box)
+            crop_path = work / f"masked-scene-{index}-{uuid.uuid4().hex}.png"
+            scene_crop.save(crop_path, format="PNG", optimize=True)
+            edited = self._apply_single_character_reference(
+                reel_id=safe_id,
+                scene_image_path=crop_path,
+                reference_image_path=reference,
+                prompt=build_masked_reference_edit_prompt(item.name, item.identity_prompt),
+                tag=f"masked-{index}",
+                timeout_seconds=timeout_seconds,
+            )
+            with Image.open(edited) as opened:
+                replacement = opened.convert("RGB").resize(scene_crop.size, Image.Resampling.LANCZOS)
+            composited = Image.composite(replacement, scene_crop, mask_crop)
+            current.paste(composited, (box[0], box[1]))
+
+        target = work / f"character-masked-{uuid.uuid4().hex}.png"
+        current.save(target, format="PNG", optimize=True)
+        return target
+
+    def _prepare_character_reference(
+        self,
+        *,
+        reel_id: str,
+        reference_image_path: Path,
+        selector_prompt: str,
+        output_path: Path,
+        timeout_seconds: float,
+    ) -> Path:
+        """Remove a portrait's setting so Flux cannot copy it into the book scene."""
+        mask_path = output_path.with_name(f".{output_path.stem}-mask.png")
+        self._detect_character_mask(
+            reel_id=reel_id,
+            scene_image_path=reference_image_path,
+            selector_prompt=selector_prompt,
+            output_path=mask_path,
+            timeout_seconds=timeout_seconds,
+        )
+        with Image.open(reference_image_path) as opened:
+            portrait = opened.convert("RGB")
+        with Image.open(mask_path) as opened:
+            mask = opened.convert("L").resize(portrait.size, Image.Resampling.BILINEAR)
+        mask = mask.point(lambda value: 255 if value >= 32 else 0)
+        ratio = sum(mask.get_flattened_data()) / 255 / (portrait.width * portrait.height)
+        if ratio < 0.008:
+            raise ReelGenerationError(
+                "Im Referenzbild wurde die beschriebene Figur nicht sicher erkannt."
+            )
+        # A nearly full-frame reference has no meaningful background to leak and can be used as-is.
+        if ratio > 0.97:
+            return reference_image_path
+        mask = mask.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(4))
+        neutral = Image.new("RGB", portrait.size, (112, 112, 112))
+        Image.composite(portrait, neutral, mask).save(output_path, format="PNG", optimize=True)
+        return output_path
+
+    def _detect_character_mask(
+        self,
+        *,
+        reel_id: str,
+        scene_image_path: Path,
+        selector_prompt: str,
+        output_path: Path,
+        timeout_seconds: float,
+    ) -> Path:
+        uploaded = self.client.upload_image(
+            scene_image_path, subfolder=f"BookPromo/reels/{reel_id}/mask-inputs",
+        )
+        prefix = f"BookPromo/reels/{reel_id}/masks"
+        workflow = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": uploaded}},
+            # This model is stored below ComfyUI/models after its first load, so later ComfyUI
+            # restarts do not depend on an external account or token.  Character identity remains
+            # entirely data-driven by selector_prompt.
+            "2": {"class_type": "DownloadAndLoadCLIPSeg", "inputs": {
+                "model": "Kijai/clipseg-rd64-refined-fp16",
+            }},
+            "3": {"class_type": "BatchCLIPSeg", "inputs": {
+                "images": ["1", 0], "text": selector_prompt, "threshold": 0.5,
+                "binary_mask": True, "combine_mask": False, "use_cuda": True,
+                "blur_sigma": 1.0, "opt_model": ["2", 0],
+                "image_bg_level": 0.5, "invert": False,
+            }},
+            "4": {"class_type": "GrowMask", "inputs": {
+                "mask": ["3", 0], "expand": 6, "tapered_corners": True,
+            }},
+            "5": {"class_type": "FeatherMask", "inputs": {
+                "mask": ["4", 0], "left": 10, "top": 10, "right": 10, "bottom": 10,
+            }},
+            "6": {"class_type": "MaskToImage", "inputs": {"mask": ["5", 0]}},
+            "7": {"class_type": "SaveImage", "inputs": {
+                "images": ["6", 0], "filename_prefix": prefix,
+            }},
+        }
+        result = self.client.run_workflow(
+            workflow, timeout_sec=timeout_seconds, partial_execution_targets=["7"],
+        )
+        if not result.ok:
+            raise ReelGenerationError(
+                "Die automatische Charaktermaske konnte nicht erzeugt werden: " + str(result.error)
+            )
+        reference = _pick_output(result, {".png", ".jpg", ".jpeg", ".webp"}, "character mask")
+        return self.client.download_output(reference, output_path)
+
+    def _apply_single_character_reference(
+        self,
+        *,
+        reel_id: str,
+        scene_image_path: Path,
+        reference_image_path: Path,
+        prompt: str,
+        tag: str,
+        timeout_seconds: float,
+        denoise: float | None = None,
+        preserve_geometry: bool = True,
+    ) -> Path:
+        subfolder = f"BookPromo/reels/{reel_id}/masked-inputs"
+        uploaded_scene = self.client.upload_image(scene_image_path, subfolder=subfolder)
+        uploaded_reference = self.client.upload_image(reference_image_path, subfolder=subfolder)
+        workflow = randomize_workflow_seeds(load_workflow(self.reference_workflow_path))
+        workflow = inject_reference_inputs(workflow, uploaded_scene, uploaded_reference, prompt)
+        if not preserve_geometry:
+            empty_latent = _first_node_id(workflow, "EmptyFlux2LatentImage")
+            full_sigmas = _first_node_id(workflow, "Flux2Scheduler")
+            if not empty_latent or not full_sigmas:
+                raise ReelGenerationError(
+                    "Der Referenzworkflow unterstützt keine vollständige Merkmalsentfernung."
+                )
+            _set_first_class_input(
+                workflow, "SamplerCustomAdvanced", "latent_image", [empty_latent, 0],
+            )
+            _set_first_class_input(
+                workflow, "SamplerCustomAdvanced", "sigmas", [full_sigmas, 0],
+            )
+        if denoise is not None:
+            if not 0 < denoise <= 1:
+                raise ValueError("Reference edit denoise must be in (0, 1]")
+            if not _set_first_class_input(
+                workflow, "SplitSigmasDenoise", "denoise", float(denoise),
+            ):
+                raise ReelGenerationError(
+                    "Der Referenzworkflow unterstützt keine getrennte Merkmalskorrektur."
+                )
+        workflow = with_output_prefix(workflow, f"BookPromo/reels/{reel_id}/{tag}")
+        targets = output_node_ids(workflow, {"SaveImage"})
+        result = self.client.run_workflow(
+            workflow, timeout_sec=timeout_seconds, partial_execution_targets=targets or None,
+        )
+        reference = _pick_output(result, {".png", ".jpg", ".jpeg", ".webp"}, "character image")
+        target = self.output_root / reel_id / f"{tag}-{uuid.uuid4().hex}{Path(reference).suffix or '.png'}"
+        return localize_comfy_output(
+            self.client, reference, target, comfy_output_root=self.comfy_output_root,
+        )
+
     def generate_video(
         self,
         *,
@@ -430,6 +710,154 @@ def build_reference_edit_prompt(identity_context: str) -> str:
     )
 
 
+def build_masked_reference_edit_prompt(name: str, identity_prompt: str) -> str:
+    character = " ".join(str(name).split())
+    identity = " ".join(str(identity_prompt).split())[:2_000]
+    if not character or not identity:
+        raise ValueError("Masked character identity is incomplete")
+    return (
+        f"Edit only the single existing target character {character} in Image 1. "
+        "Image 1 is a tightly cropped scene region and is authoritative for the target's exact "
+        "pose, body position, clothing, expression, gaze, scale, perspective, lighting, shadows, "
+        "occlusion, background and composition. Image 2 is an appearance reference for this same "
+        f"character only. Reference-image prompt: {identity} "
+        "Transfer identity and stable appearance from Image 2 onto the already existing target in "
+        "Image 1. Do not add, duplicate, remove, reposition or replace any person. Do not create a "
+        "second copy of the reference character. Do not copy Image 2's pose, clothing, background, "
+        "framing or lighting. Preserve every non-target pixel and produce one seamless scene with "
+        "no collage, inset, border, label, text, logo or watermark."
+    )
+
+
+def build_forbidden_feature_removal_prompt(
+    name: str,
+    features: tuple[str, ...],
+) -> str:
+    character = " ".join(str(name).split())
+    forbidden = ", ".join(" ".join(item.split()) for item in features if item.strip())
+    if not character or not forbidden:
+        raise ValueError("Forbidden-feature edit prompt is incomplete")
+    return (
+        f"Remove only these incorrect visible features from the existing character {character} "
+        f"in Image 1: {forbidden}. Reconstruct only the surrounding Image 1 background, "
+        "architecture, lighting and "
+        "occlusion naturally where those features were removed. Image 1 remains authoritative for "
+        "the character's exact pose, body, face, clothing, scale and location. Image 2 is a neutral "
+        "technical placeholder and must contribute no subject, shape, colour or setting. "
+        "The removed area must contain empty continuation of Image 1's environment: no person, "
+        "face, head, body, limb, hand, clothing, creature or character fragment. Do not add, "
+        "duplicate, remove or reposition any person. Produce one seamless scene with no collage, "
+        "border, text, logo or watermark."
+    )
+
+
+def _validated_character_mask(path: Path, size: tuple[int, int], name: str) -> Image.Image:
+    with Image.open(path) as opened:
+        mask = opened.convert("L").resize(size, Image.Resampling.BILINEAR)
+    mask = mask.point(lambda value: 255 if value >= 32 else 0)
+    area = sum(mask.get_flattened_data()) / 255
+    ratio = area / (size[0] * size[1])
+    if ratio < 0.008:
+        raise ReelGenerationError(
+            f"Für {name} wurde im Szenenbild keine sichere Charaktermaske gefunden. "
+            "Bitte den Referenzbild-Prompt mit klaren sichtbaren Merkmalen ergänzen."
+        )
+    if ratio > 0.78:
+        raise ReelGenerationError(
+            f"Die automatische Charaktermaske für {name} umfasst fast das ganze Bild und wurde "
+            "aus Sicherheitsgründen nicht verwendet."
+        )
+    return mask.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.GaussianBlur(6))
+
+
+def _mask_overlap_ratio(first: Image.Image, second: Image.Image) -> float:
+    first_binary = first.point(lambda value: 255 if value >= 64 else 0)
+    second_binary = second.point(lambda value: 255 if value >= 64 else 0)
+    intersection = sum(ImageChops.multiply(first_binary, second_binary).get_flattened_data()) / 255
+    first_area = sum(first_binary.get_flattened_data()) / 255
+    second_area = sum(second_binary.get_flattened_data()) / 255
+    return intersection / max(1.0, min(first_area, second_area))
+
+
+def _owned_feature_mask(
+    path: Path,
+    size: tuple[int, int],
+    character_masks: list[Image.Image],
+    owner_index: int,
+) -> Image.Image:
+    """Keep only connected feature regions nearest to the requested character mask."""
+    with Image.open(path) as opened:
+        feature = opened.convert("L").resize(size, Image.Resampling.BILINEAR)
+    binary = feature.point(lambda value: 255 if value >= 64 else 0)
+    width, height = size
+    source = bytearray(binary.tobytes())
+    visited = bytearray(len(source))
+    selected = bytearray(len(source))
+    centers = []
+    for mask in character_masks:
+        box = mask.point(lambda value: 255 if value >= 64 else 0).getbbox()
+        centers.append(
+            ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+            if box else (width / 2, height / 2)
+        )
+    minimum_area = max(12, round(width * height * 0.0002))
+    for start, value in enumerate(source):
+        if value == 0 or visited[start]:
+            continue
+        stack = [start]
+        visited[start] = 1
+        component: list[int] = []
+        sum_x = sum_y = 0
+        while stack:
+            position = stack.pop()
+            component.append(position)
+            y, x = divmod(position, width)
+            sum_x += x
+            sum_y += y
+            if x and source[position - 1] and not visited[position - 1]:
+                visited[position - 1] = 1
+                stack.append(position - 1)
+            if x + 1 < width and source[position + 1] and not visited[position + 1]:
+                visited[position + 1] = 1
+                stack.append(position + 1)
+            if y and source[position - width] and not visited[position - width]:
+                visited[position - width] = 1
+                stack.append(position - width)
+            if y + 1 < height and source[position + width] and not visited[position + width]:
+                visited[position + width] = 1
+                stack.append(position + width)
+        if len(component) < minimum_area:
+            continue
+        center = (sum_x / len(component), sum_y / len(component))
+        nearest = min(
+            range(len(centers)),
+            key=lambda candidate: (
+                (centers[candidate][0] - center[0]) ** 2
+                + (centers[candidate][1] - center[1]) ** 2
+            ),
+        )
+        if nearest == owner_index:
+            for position in component:
+                selected[position] = 255
+    return (
+        Image.frombytes("L", size, bytes(selected))
+        .filter(ImageFilter.MaxFilter(5))
+        .filter(ImageFilter.GaussianBlur(4))
+    )
+
+
+def _padded_mask_box(mask: Image.Image, *, padding_ratio: float) -> tuple[int, int, int, int]:
+    box = mask.point(lambda value: 255 if value >= 32 else 0).getbbox()
+    if box is None:
+        raise ReelGenerationError("Die Charaktermaske ist leer.")
+    width, height = mask.size
+    padding = max(24, round(max(box[2] - box[0], box[3] - box[1]) * padding_ratio))
+    return (
+        max(0, box[0] - padding), max(0, box[1] - padding),
+        min(width, box[2] + padding), min(height, box[3] + padding),
+    )
+
+
 def inject_reference_inputs(
     workflow: dict[str, Any], scene_image: str, reference_sheet: str, prompt: str,
 ) -> dict[str, Any]:
@@ -544,6 +972,13 @@ def _set_first_class_input(workflow: dict[str, Any], class_type: str, field: str
             node["inputs"][field] = value
             return True
     return False
+
+
+def _first_node_id(workflow: dict[str, Any], class_type: str) -> str | None:
+    for node_id, node in workflow.items():
+        if isinstance(node, dict) and str(node.get("class_type", "")).casefold() == class_type.casefold():
+            return str(node_id)
+    return None
 
 
 def _split_wav_fallback(source: Path, start: float, duration: float, target: Path) -> None:

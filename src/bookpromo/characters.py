@@ -343,6 +343,76 @@ def order_scene_characters(
     ]
 
 
+def character_mask_selector(character: BookCharacter) -> str:
+    """Return a compact visual phrase for locating this character in a scene."""
+    visual = " ".join(character.image_prompt.split())
+    if not visual:
+        return ""
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", visual) if part.strip()]
+    first = sentences[0] if sentences else visual
+    name = re.escape(" ".join(character.name.split()))
+    first = re.sub(rf"^{name}\s*(?:is|:|-)?\s*", "", first, flags=re.IGNORECASE)
+    # Prefer the short subject phrase ("tall clockwork fox") over an entire portrait prompt.
+    # CLIPSeg becomes less precise when pose, atmosphere and reference-background prose are mixed
+    # into the locator.  This is deliberately vocabulary-agnostic: it works for people, animals,
+    # monsters, robots and any other subject described by the book.
+    subject = re.search(
+        r"(?:^|\b(?:is|appears as)\s+)(?:a|an|the)\s+(.+?)"
+        r"(?=\s+(?:with|who|whose|wearing|dressed|in|standing|sitting|lying)\b|$)",
+        first,
+        flags=re.IGNORECASE,
+    )
+    selector = subject.group(1) if subject else first
+    selector = re.sub(r"[,;]+", " ", selector)
+    selector = re.sub(r"\s+", " ", selector).strip(" .")
+
+    # A concise body-material or colour phrase is often the strongest distinction between two
+    # otherwise similar figures.  Pull it from the description without maintaining a species,
+    # gender or colour catalogue.
+    appearance = re.search(
+        r"\b(?:skin|fur|feathers|scales|shell|body)\s+"
+        r"(?:is|are|appears?|looks?)\s+([^,.;]+)",
+        visual,
+        flags=re.IGNORECASE,
+    )
+    if appearance:
+        modifier = re.split(r"\s+(?:and|with|as|that|which)\s+", appearance.group(1), 1)[0]
+        modifier = " ".join(modifier.split())[:60].strip(" .")
+        if modifier and modifier.casefold() not in selector.casefold():
+            selector = f"{modifier} {selector}"
+    return selector[:240].rstrip(" .")
+
+
+def character_forbidden_features(character: BookCharacter) -> tuple[str, ...]:
+    """Extract concrete visible features which the reference prompt explicitly forbids."""
+    visual = " ".join(character.image_prompt.split())
+    if not visual:
+        return ()
+    candidates: list[str] = []
+    ignored = {
+        "anime", "background", "border", "cartoon", "frame", "logo", "text",
+        "watermark", "fully transformed body", "fully transformed form",
+    }
+
+    def add(value: str) -> None:
+        feature = " ".join(value.lower().split()).strip(" .-")
+        if feature and feature not in ignored and feature not in candidates:
+            candidates.append(feature)
+
+    for match in re.finditer(
+        r"\bno\s+([a-z][a-z -]{0,45}?)(?=\s*(?:,|;|\.|\band\b|\bor\b))",
+        visual,
+        flags=re.IGNORECASE,
+    ):
+        add(match.group(1))
+    for match in re.finditer(
+        r"\b(?:without|lacks?)\s+([^.;]{1,100})", visual, flags=re.IGNORECASE,
+    ):
+        for part in re.split(r"\s*(?:,|\band\b|\bor\b)\s*", match.group(1)):
+            add(part)
+    return tuple(candidates[:6])
+
+
 def _identity_positions(count: int) -> list[str]:
     positions = {
         1: ["only person"],
@@ -357,22 +427,16 @@ def _identity_positions(count: int) -> list[str]:
 
 
 def character_scene_prompt(base_prompt: str, characters: Iterable[BookCharacter]) -> str:
-    """Add book-scoped identity descriptions only for the local ComfyUI render."""
+    """Add the characters' reference-image prompts to the local ComfyUI render."""
     prompt = str(base_prompt).strip()
     if not prompt:
         raise ValueError("Scene image prompt is empty")
     selected = list(characters)
     entries = []
     for index, character in enumerate(selected):
-        description = " ".join(character.description.split())
         visual = " ".join(character.image_prompt.split())
-        details = []
-        if description:
-            details.append(f"book description: {description[:700]}")
         if visual:
-            details.append(f"visual identity: {visual[:900]}")
-        if details:
-            entries.append(f"{index + 1}. {character.name}: {'; '.join(details)}")
+            entries.append(f"{index + 1}. {character.name}: reference-image prompt: {visual[:1600]}")
     if entries:
         layout = "; ".join(
             f"{position} is {character.name}"
@@ -385,9 +449,8 @@ def character_scene_prompt(base_prompt: str, characters: Iterable[BookCharacter]
             "scene with a standing portrait or a location, pose or action from these references. "
             "Only when the scene leaves horizontal placement unspecified, use this identity order: "
             + layout + ". Never exchange faces, ages, hair or other identity features. "
-            "Use each character's visual identity for appearance, including explicitly described "
-            "non-human traits. Book descriptions are context only; do not introduce extra people, "
-            "objects, actions or locations.\n"
+            "Use only each character's reference-image prompt for appearance, including explicitly "
+            "described non-human traits. Do not introduce extra people, objects, actions or locations.\n"
             "BOOK-SPECIFIC CHARACTER LOCKS:\n" + "\n".join(entries)
         )
     if len(prompt) > 20_000:
@@ -416,14 +479,11 @@ def stitch_character_references(
     sheet.save(temporary, format="PNG", optimize=True)
     temporary.replace(target)
     def identity(character: BookCharacter) -> str:
-        description = " ".join(character.description.split())
         visual = " ".join(character.image_prompt.split())
-        details = []
-        if description:
-            details.append(f"book description: {description[:180]}")
-        if visual:
-            details.append(f"visual identity: {visual[:320]}")
-        return f"{character.name}. {'; '.join(details)}" if details else character.name
+        return (
+            f"{character.name}. reference-image prompt: {visual[:500]}"
+            if visual else character.name
+        )
 
     def build_context(include_details: bool) -> str:
         identify = identity if include_details else lambda character: character.name

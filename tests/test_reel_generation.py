@@ -4,11 +4,15 @@ import subprocess
 import wave
 
 import pytest
+from PIL import Image
 
 from bookpromo.comfy import ComfyResult
 from bookpromo.reel_generation import (
+    CharacterReferenceSpec,
     ReelGenerator,
     audio_duration,
+    build_masked_reference_edit_prompt,
+    build_forbidden_feature_removal_prompt,
     build_reference_edit_prompt,
     inject_reference_inputs,
     inject_video_inputs,
@@ -144,6 +148,169 @@ def test_reference_edit_ignores_portrait_background_and_integrates_identity_into
     assert "illumination, color grading, shadows and occlusion" in prompt
     assert "one seamless, coherent scene" in prompt
     assert "original visual style" in prompt
+
+
+def test_reference_workflow_starts_from_scene_latent_with_bounded_denoise():
+    workflow = json.loads(Path("workflows/reel-reference.json").read_text(encoding="utf-8"))
+    sampler = workflow["92:103"]["inputs"]
+    assert sampler["latent_image"] == ["92:126", 0]
+    assert sampler["sigmas"] == ["92:116", 1]
+    assert workflow["92:116"]["class_type"] == "SplitSigmasDenoise"
+    assert 0.25 <= workflow["92:116"]["inputs"]["denoise"] <= 0.5
+
+
+def test_forbidden_feature_pass_uses_full_latent_only_inside_external_mask(tmp_path):
+    captured = {}
+
+    class FakeClient:
+        def upload_image(self, path, *, subfolder):
+            return f"{subfolder}/{Path(path).name}"
+
+        def run_workflow(self, workflow, **kwargs):
+            captured["workflow"] = workflow
+            return ComfyResult("feature-edit", True, ["feature.png"])
+
+        def download_output(self, reference, target):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).write_bytes(b"feature")
+            return Path(target)
+
+    scene = tmp_path / "scene.png"
+    reference = tmp_path / "reference.png"
+    scene.write_bytes(b"scene")
+    reference.write_bytes(b"reference")
+    generator = ReelGenerator(
+        FakeClient(),
+        image_workflow_path="workflows/reel-image.json",
+        reference_workflow_path="workflows/reel-reference.json",
+        video_workflow_path="workflows/reel-video.json",
+        output_root=tmp_path / "output",
+        ffmpeg_binary="ffmpeg",
+    )
+    generator._apply_single_character_reference(
+        reel_id="feature-pass",
+        scene_image_path=scene,
+        reference_image_path=reference,
+        prompt="remove wings",
+        tag="forbidden",
+        timeout_seconds=30,
+        preserve_geometry=False,
+    )
+    sampler = captured["workflow"]["92:103"]["inputs"]
+    assert sampler["latent_image"] == ["92:109", 0]
+    assert sampler["sigmas"] == ["92:115", 0]
+
+
+def test_masked_reference_prompt_forbids_duplicates_and_preserves_scene():
+    prompt = build_masked_reference_edit_prompt(
+        "Unit 7", "Weathered brass body, triangular blue eye, white spiral shoulder mark."
+    )
+    assert "single existing target character Unit 7" in prompt
+    assert "Do not add, duplicate, remove, reposition or replace any person" in prompt
+    assert "Do not create a second copy" in prompt
+    assert "preserve" in prompt.casefold()
+
+
+def test_forbidden_feature_prompt_removes_traits_without_changing_pose():
+    prompt = build_forbidden_feature_removal_prompt(
+        "Unit 7", ("wings", "horns"),
+    )
+    assert "wings, horns" in prompt
+    assert "Reconstruct only the surrounding Image 1 background" in prompt
+    assert "exact pose" in prompt
+    assert "neutral technical placeholder" in prompt
+    assert "no person, face, head, body, limb" in prompt
+    assert "Do not add, duplicate, remove or reposition any person" in prompt
+
+
+def test_mask_detection_workflow_is_visual_prompt_driven_and_locally_cached(tmp_path):
+    scene = tmp_path / "scene.png"
+    Image.new("RGB", (96, 128), "white").save(scene)
+    calls = {}
+
+    class FakeClient:
+        def upload_image(self, path, *, subfolder):
+            calls["upload"] = (Path(path), subfolder)
+            return f"{subfolder}/scene.png"
+
+        def run_workflow(self, workflow, **kwargs):
+            calls["workflow"] = workflow
+            calls["kwargs"] = kwargs
+            return ComfyResult("mask-prompt", True, ["mask.png"])
+
+        def download_output(self, reference, target):
+            Image.new("L", (96, 128), 255).save(target)
+            return Path(target)
+
+    generator = ReelGenerator.__new__(ReelGenerator)
+    generator.client = FakeClient()
+    output = generator._detect_character_mask(
+        reel_id="generic-book-character",
+        scene_image_path=scene,
+        selector_prompt="weathered brass automaton with a triangular blue eye",
+        output_path=tmp_path / "mask.png",
+        timeout_seconds=30,
+    )
+    workflow = calls["workflow"]
+    assert output.is_file()
+    assert workflow["3"]["inputs"]["text"] == (
+        "weathered brass automaton with a triangular blue eye"
+    )
+    assert workflow["2"]["class_type"] == "DownloadAndLoadCLIPSeg"
+    assert workflow["3"]["class_type"] == "BatchCLIPSeg"
+    assert calls["kwargs"]["partial_execution_targets"] == ["7"]
+
+
+def test_masked_reference_edits_arbitrary_characters_sequentially(tmp_path):
+    scene = tmp_path / "scene.png"
+    Image.new("RGB", (240, 120), "white").save(scene)
+    references = []
+    for name, prompt, color in (
+        ("Clockwork fox", "copper clockwork fox with green glass eyes", "#a06020"),
+        ("Crystal golem", "blue crystal golem with a cracked gold chest", "#2060c0"),
+    ):
+        path = tmp_path / f"{name}.png"
+        Image.new("RGB", (80, 100), color).save(path)
+        references.append(CharacterReferenceSpec(name, path, prompt, prompt))
+
+    mask_paths = []
+    for index, box in enumerate(((20, 15, 90, 110), (150, 10, 225, 110))):
+        mask = Image.new("L", (240, 120), 0)
+        mask.paste(255, box)
+        path = tmp_path / f"mask-{index}.png"
+        mask.save(path)
+        mask_paths.append(path)
+
+    generator = ReelGenerator.__new__(ReelGenerator)
+    generator.reference_workflow_path = tmp_path / "reference.json"
+    generator.output_root = tmp_path / "output"
+    selectors = []
+    edit_names = []
+
+    def detect(**kwargs):
+        selectors.append(kwargs["selector_prompt"])
+        return mask_paths[len(selectors) - 1]
+
+    def edit(**kwargs):
+        edit_names.append(kwargs["prompt"])
+        with Image.open(kwargs["scene_image_path"]) as crop:
+            output = tmp_path / f"edit-{len(edit_names)}.png"
+            Image.new("RGB", crop.size, "#111111").save(output)
+        return output
+
+    generator._detect_character_mask = detect
+    generator._prepare_character_reference = lambda **kwargs: kwargs["reference_image_path"]
+    generator._apply_single_character_reference = edit
+    result = generator.apply_character_references_masked(
+        reel_id="arbitrary-characters", scene_image_path=scene, references=references,
+    )
+    assert result.is_file()
+    assert selectors == [item.selector_prompt for item in references]
+    assert "Clockwork fox" in edit_names[0] and "Crystal golem" in edit_names[1]
+    with Image.open(result) as rendered:
+        assert rendered.getpixel((55, 60)) != (255, 255, 255)
+        assert rendered.getpixel((187, 60)) != (255, 255, 255)
+        assert rendered.getpixel((120, 60)) == (255, 255, 255)
 
 
 def test_final_mux_maps_selected_audio_as_only_audio_track(tmp_path):

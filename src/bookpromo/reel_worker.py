@@ -9,11 +9,13 @@ from pathlib import Path
 
 from .comfy import ComfyClient
 from .characters import (
-    CharacterStore, character_scene_prompt, order_scene_characters,
-    stitch_character_references,
+    CharacterStore, character_forbidden_features, character_mask_selector,
+    character_scene_prompt, order_scene_characters,
 )
 from .config import Settings, load_settings
-from .reel_generation import ReelGenerator, ffmpeg_binary, split_audio_segment
+from .reel_generation import (
+    CharacterReferenceSpec, ReelGenerator, ffmpeg_binary, split_audio_segment,
+)
 from .reels import ReelJobStore, ReelStore
 from .uploads import LocalUploadStore
 
@@ -77,16 +79,6 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                 path = character_store.reference_path(character)
                 if path is not None:
                     references.append((character, path))
-            positions = {
-                1: ["sole reference portrait"],
-                2: ["left reference portrait", "right reference portrait"],
-                3: ["left reference portrait", "center reference portrait", "right reference portrait"],
-                4: ["leftmost reference portrait", "second reference portrait from the left",
-                    "second reference portrait from the right", "rightmost reference portrait"],
-            }[len(references)] if references else []
-            position_by_id = {
-                character.id: positions[index] for index, (character, _) in enumerate(references)
-            }
             snapshot = [
                 {
                     "id": character.id,
@@ -95,7 +87,10 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                     "description": character.description,
                     "image_prompt": character.image_prompt,
                     "reference_image_sha256": character.reference_image_sha256,
-                    "position": position_by_id.get(character.id, "prompt-only character without reference portrait"),
+                    "mask_selector": character_mask_selector(character),
+                    "position": "semantic mask target" if any(
+                        item.id == character.id for item, _ in references
+                    ) else "prompt-only character without reference portrait",
                 }
                 for character in selected
             ]
@@ -119,13 +114,19 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                 if scene is None:
                     jobs.finish(job, error="Das zu optimierende Szenenbild wurde nicht gefunden.")
                     return True
-                sheet, identity_context = stitch_character_references(
-                    references,
-                    reels.root / "reel-work" / draft.id / f"character-sheet-{job.input_revision}.png",
-                )
-                generated = generator.apply_character_references(
-                    reel_id=draft.id, scene_image_path=scene,
-                    reference_sheet_path=sheet, identity_context=identity_context,
+                generated = generator.apply_character_references_masked(
+                    reel_id=draft.id,
+                    scene_image_path=scene,
+                    references=[
+                        CharacterReferenceSpec(
+                            name=character.name,
+                            reference_image_path=path,
+                            selector_prompt=character_mask_selector(character),
+                            identity_prompt=character.image_prompt,
+                            forbidden_features=character_forbidden_features(character),
+                        )
+                        for character, path in references
+                    ],
                 )
                 candidate = "optimized"
             else:
@@ -137,7 +138,10 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                 relative, digest = reels.save_artifact(draft.id, "image", source, generated.name)
             jobs.finish(job, result={"path": relative, "sha256": digest,
                                      "candidate": candidate, "character_snapshot": snapshot,
-                                     "effective_image_prompt": effective_prompt})
+                                     "effective_image_prompt": effective_prompt,
+                                     "optimization_strategy": (
+                                         "semantic-masks-sequential" if operation == "optimize" else None
+                                     )})
             return True
 
         track = next((item for item in reels.list_audio(draft.book_id) if item.id == draft.audio_track_id), None)

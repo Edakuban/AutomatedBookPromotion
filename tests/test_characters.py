@@ -9,8 +9,8 @@ from bookpromo.analysis import CharacterSuggestion
 from bookpromo.analysis_store import AnalysisStore
 from bookpromo.analysis_worker import run_analysis_once
 from bookpromo.characters import (
-    CharacterStore, character_scene_prompt, order_scene_characters,
-    stitch_character_references,
+    CharacterStore, character_forbidden_features, character_mask_selector,
+    character_scene_prompt, order_scene_characters, stitch_character_references,
 )
 from bookpromo.reel_generation import build_reference_edit_prompt
 from bookpromo.uploads import LocalUploadStore, UploadError
@@ -24,6 +24,37 @@ def image_file(color, size=(700, 900)) -> BytesIO:
     Image.new("RGB", size, color).save(output, format="PNG")
     output.seek(0)
     return output
+
+
+def test_mask_selector_is_generic_and_uses_only_the_reference_prompt(character_store):
+    _, book, store = character_store
+    character = store.create(
+        book.id,
+        name="Unit 7",
+        description="A plot description that must never drive visual matching.",
+        image_prompt=(
+            "Unit 7 is a weathered brass automaton with a triangular blue eye and a white spiral shoulder mark. "
+            "Full-body reference portrait on a neutral backdrop."
+        ),
+    )
+    selector = character_mask_selector(character)
+    assert "brass automaton" in selector
+    assert not selector.startswith("Unit 7")
+    assert "plot description" not in selector
+    assert "neutral backdrop" not in selector
+
+
+def test_forbidden_features_extracts_visible_traits_not_rendering_constraints(character_store):
+    _, book, store = character_store
+    character = store.create(
+        book.id,
+        name="Rook",
+        image_prompt=(
+            "Rook is a human-looking mage without horns or wings. "
+            "No tail, no fully transformed body, no text, no anime, no watermark."
+        ),
+    )
+    assert character_forbidden_features(character) == ("tail", "horns", "wings")
 
 
 def test_generated_image_prompt_contributes_to_character_preselection():
@@ -87,8 +118,14 @@ def test_analysis_merge_is_book_scoped_and_never_overwrites_manual_profiles(char
 
 def test_reference_images_are_normalized_and_stitched_left_to_right(character_store, tmp_path):
     _, book, store = character_store
-    kira = store.create(book.id, name="Kira", description="Eine junge Wanderin.")
-    lukas = store.create(book.id, name="Lukas", description="Ein großer Mann mit Brille.")
+    kira = store.create(
+        book.id, name="Kira", description="Eine junge Wanderin.",
+        image_prompt="Adult woman with a green hood and a narrow face.",
+    )
+    lukas = store.create(
+        book.id, name="Lukas", description="Ein großer Mann mit Brille.",
+        image_prompt="Tall adult man with square glasses and short brown hair.",
+    )
     kira = store.save_reference_file(book.id, kira.id, kira.revision, image_file("#cc2233"))
     lukas = store.save_reference_file(book.id, lukas.id, lukas.revision, image_file("#2255cc"))
     assert kira.has_reference and lukas.has_reference
@@ -105,14 +142,19 @@ def test_reference_images_are_normalized_and_stitched_left_to_right(character_st
     assert "right portrait is Lukas" in context
     assert "left person is Kira" in context
     assert "right person is Lukas" in context
-    assert "Eine junge Wanderin" in context
-    assert "Ein großer Mann mit Brille" in context
+    assert "green hood and a narrow face" in context
+    assert "square glasses and short brown hair" in context
+    assert "Eine junge Wanderin" not in context
+    assert "Ein großer Mann mit Brille" not in context
     assert "Never swap" in context
 
     effective = character_scene_prompt("A rainy station scene.", [kira, lukas])
     assert effective.startswith("A rainy station scene.")
     assert "1. Kira" in effective and "2. Lukas" in effective
     assert "left person is Kira" in effective and "right person is Lukas" in effective
+    assert "reference-image prompt" in effective
+    assert "green hood and a narrow face" in effective
+    assert "Eine junge Wanderin" not in effective
 
     with pytest.raises(UploadError, match="mindestens"):
         store.save_reference_file(book.id, kira.id, kira.revision, image_file("white", (100, 100)))
