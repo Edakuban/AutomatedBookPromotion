@@ -352,7 +352,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 item["state"] in {"queued", "running"} for item in statuses
             )
             plan["can_select_image"] = bool(
-                chapter_run["state"] in {"done", "partial"}
+                chapter_run["state"] in {"done", "partial", "failed"}
                 and plan["state"] in {"analyzed", "done", "failed"} and not plan["media_active"]
             )
             if plan["media_active"]:
@@ -391,16 +391,34 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 and draft.image_prompt and settings.reel_image_workflow.is_file()
             )
             plan["can_edit_prompt"] = bool(draft and plan["can_select_image"] and plan.get("suggestion"))
+            video_step_available = bool(
+                chapter_run["state"] in {"done", "partial", "failed", "rendering"}
+                and plan["state"] in {"analyzed", "done", "failed"} and not plan["media_active"]
+            )
             plan["can_start_video"] = bool(
-                draft and plan["can_select_image"] and draft.selected_image_path
+                draft and video_step_available and draft.selected_image_path
                 and not draft.image_stale and any(option["selected"] for option in plan["image_sources"])
                 and settings.reel_video_workflow.is_file()
             )
             plan["can_retry_video"] = bool(
-                draft and plan["can_select_image"] and plan["state"] == "failed"
-                and draft.selected_image_path and not draft.image_stale
-                and settings.reel_video_workflow.is_file()
+                plan["can_start_video"] and plan["state"] == "failed"
             )
+            plan["video_disabled_reason"] = ""
+            if draft and not plan["can_start_video"]:
+                if plan["media_active"]:
+                    plan["video_disabled_reason"] = "Für dieses Kapitel läuft bereits ein Bild- oder Videojob."
+                elif chapter_run["state"] in {"queued", "running"}:
+                    plan["video_disabled_reason"] = "Bitte zuerst die laufende Kapitelanalyse abschließen lassen."
+                elif chapter_run["state"] == "stale":
+                    plan["video_disabled_reason"] = "Der Buchstand wurde geändert. Bitte die Kapitelanalyse aktualisieren."
+                elif draft.image_stale:
+                    plan["video_disabled_reason"] = "Das Bild ist veraltet. Bitte zuerst das Bild neu erzeugen."
+                elif not draft.selected_image_path or not any(option["selected"] for option in plan["image_sources"]):
+                    plan["video_disabled_reason"] = "Bitte zuerst ein gültiges Kapitelbild auswählen."
+                elif not settings.reel_video_workflow.is_file():
+                    plan["video_disabled_reason"] = "Der ComfyUI-Video-Workflow ist nicht eingerichtet."
+                else:
+                    plan["video_disabled_reason"] = "Der Bildschritt dieses Kapitels ist noch nicht abgeschlossen."
             plan["can_bulk_optimize"] = bool(
                 plan["can_optimize"] and not draft.optimized_image_path
             )
@@ -471,6 +489,17 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         )
         chapter_teaser_providers = configured_providers(settings)
         plans = (chapter_run or {}).get("plans", [])
+        for plan in plans:
+            plan["show_retry_analysis"] = bool(
+                not plan.get("suggestion") and not plan["draft"]
+                and plan["state"] in {"pending", "failed"}
+            )
+            plan["can_retry_analysis"] = bool(
+                plan["show_retry_analysis"] and chapter_run["state"] in {"done", "partial", "failed"}
+                and not chapter_media_active
+                and not provider_missing(settings, chapter_run.get("provider", "openwebui"))
+                and settings.reel_image_workflow.is_file()
+            )
         complete_teaser_ready = bool(
             chapter_run and chapter_run["state"] in {"done", "partial"}
             and len(plans) == len(record.result.chapters)
@@ -782,6 +811,26 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if path is None:
             raise HTTPException(404)
         return FileResponse(path)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/analysis/retry",
+        name="retry_chapter_teaser_analysis",
+    )
+    async def retry_chapter_teaser_analysis(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next((item for item in (context["chapter_run"] or {}).get("plans", [])
+                     if item["chapter_id"] == str(chapter_id)), None)
+        if plan is None or not plan.get("can_retry_analysis"):
+            raise UploadError("Die Kapitelanalyse kann jetzt nicht erneut gestartet werden.", 409)
+        async with request.form(max_files=0, max_fields=1) as form:
+            if (set(form) != {"run_id"} or len(form.getlist("run_id")) != 1
+                    or form["run_id"] != context["chapter_run"]["id"]):
+                raise UploadError("Der Kapitel-Lauf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+        await run_in_threadpool(
+            chapter_teaser_store.retry_analysis, str(book_id), context["chapter_run"]["id"], str(chapter_id),
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
 
     @app.post(
         "/books/local/{book_id}/teaser/chapters/{chapter_id}/prompt",

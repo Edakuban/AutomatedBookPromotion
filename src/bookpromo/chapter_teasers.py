@@ -189,6 +189,8 @@ class ChapterTeaserStore:
                 "alter table local_chapter_teaser_runs add column provider text "
                 "not null default 'openwebui'"
             )
+        if "retry_chapter_id" not in run_columns:
+            connection.execute("alter table local_chapter_teaser_runs add column retry_chapter_id text")
 
     def enqueue(
         self,
@@ -278,7 +280,7 @@ class ChapterTeaserStore:
                     now = time.time()
                     connection.execute(
                         """update local_chapter_teaser_runs set state='queued',stage='Wird fortgesetzt',
-                        attempts=0,error=null,updated_at=? where id=?""", (now, old["id"]),
+                        attempts=0,error=null,retry_chapter_id=null,updated_at=? where id=?""", (now, old["id"]),
                     )
                     connection.execute(
                         """update local_chapter_teaser_plans set
@@ -398,13 +400,56 @@ class ChapterTeaserStore:
             )
         return True
 
+    def retry_analysis(self, book_id: str, run_id: str, chapter_id: str) -> None:
+        """Queue exactly one missing chapter analysis; preserve every other chapter."""
+        now = time.time()
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            ReelStore.schema(connection)
+            connection.execute("begin immediate")
+            run = connection.execute(
+                """select r.* from local_chapter_teaser_runs r join local_extractions e
+                on e.book_id=r.book_id and e.revision=r.extraction_revision
+                where r.id=? and r.book_id=?""", (run_id, book_id),
+            ).fetchone()
+            latest = connection.execute(
+                """select id from local_chapter_teaser_runs where book_id=?
+                order by updated_at desc,rowid desc limit 1""", (book_id,),
+            ).fetchone()
+            if run is None or latest is None or latest["id"] != run_id:
+                raise UploadError("Der Kapitel-Lauf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            if run["state"] not in {"done", "partial", "failed"}:
+                raise UploadError("Bitte zuerst den laufenden Kapitel-Schritt abschließen lassen.", 409)
+            if connection.execute(
+                """select 1 from local_reel_jobs j join local_reel_drafts d on d.id=j.draft_id
+                where d.book_id=? and j.state in ('queued','running') limit 1""", (book_id,),
+            ).fetchone():
+                raise UploadError("Für dieses Buch läuft noch ein Verarbeitungsschritt.", 409)
+            plan = connection.execute(
+                "select * from local_chapter_teaser_plans where run_id=? and chapter_id=?",
+                (run_id, chapter_id),
+            ).fetchone()
+            if (plan is None or plan["state"] not in {"pending", "failed"}
+                    or plan["suggestion_json"] is not None or plan["draft_id"] is not None):
+                raise UploadError("Für dieses Kapitel ist keine erneute Analyse erforderlich.", 409)
+            connection.execute(
+                """update local_chapter_teaser_plans set state='pending',error=null,updated_at=?
+                where run_id=? and chapter_id=?""", (now, run_id, chapter_id),
+            )
+            connection.execute(
+                """update local_chapter_teaser_runs set state='queued',attempts=0,error=null,
+                stage=?,retry_chapter_id=?,token=null,lease_until=null,updated_at=? where id=?""",
+                (f"Kapitel {plan['position']} wird erneut analysiert", chapter_id, now, run_id),
+            )
+
     def pending_positions(self, job) -> list[int]:
         with closing(self.connection()) as connection:
             if not self._owned(connection, job, time.time()):
                 raise ChapterTeaserError("Der Kapitel-Teaser-Job ist nicht mehr aktiv.")
             rows = connection.execute(
                 """select position from local_chapter_teaser_plans
-                where run_id=? and state='pending' order by position""", (job["id"],),
+                where run_id=? and state='pending' and (? is null or chapter_id=?)
+                order by position""", (job["id"], job.get("retry_chapter_id"), job.get("retry_chapter_id")),
             ).fetchall()
         return [row["position"] for row in rows]
 
@@ -495,7 +540,7 @@ class ChapterTeaserStore:
             ).fetchone()
             if run is None:
                 raise UploadError("Der Kapitel-Teaser-Lauf wurde nicht gefunden.", 404)
-            if run["state"] not in {"done", "partial"}:
+            if run["state"] not in {"done", "partial", "failed"}:
                 raise UploadError("Die Kapitelbilder sind noch nicht vollständig vorbereitet.", 409)
             rows = connection.execute(
                 """select p.draft_id,p.state,d.selected_image_path,d.image_stale,
@@ -573,7 +618,7 @@ class ChapterTeaserStore:
             ).fetchone()
             if run is None:
                 raise UploadError("Der Kapitel-Teaser-Lauf wurde nicht gefunden.", 404)
-            if run["state"] not in {"done", "partial"}:
+            if run["state"] not in {"done", "partial", "failed"}:
                 raise UploadError("Bitte zuerst den laufenden Kapitel-Schritt abschließen lassen.", 409)
             placeholders = ",".join("?" for _ in normalized_drafts)
             rows = connection.execute(
@@ -615,11 +660,13 @@ class ChapterTeaserStore:
                 ("image_queued" if regenerate else "analyzed", now, normalized_run, *normalized_drafts),
             )
             failed = connection.execute(
-                "select count(*) from local_chapter_teaser_plans where run_id=? and state='failed'",
+                "select count(*) from local_chapter_teaser_plans where run_id=? and state in ('failed','pending')",
                 (normalized_run,),
             ).fetchone()[0]
             connection.execute(
-                """update local_chapter_teaser_runs set state=?,stage=?,completed=total,
+                """update local_chapter_teaser_runs set state=?,stage=?,completed=(select count(*)
+                from local_chapter_teaser_plans where run_id=local_chapter_teaser_runs.id
+                and state in ('analyzed','done','failed')),
                 error=?,token=null,lease_until=null,updated_at=? where id=?""",
                 (
                     "rendering" if regenerate else ("partial" if failed else "done"),
@@ -630,11 +677,6 @@ class ChapterTeaserStore:
                     now, normalized_run,
                 ),
             )
-            if regenerate:
-                connection.execute(
-                    """update local_chapter_teaser_runs set completed=total-? where id=?""",
-                    (len(normalized_drafts), normalized_run),
-                )
 
     def save_prompt(
         self, book_id: str, run_id: str, draft_id: str, revision: int, *,
@@ -700,15 +742,18 @@ class ChapterTeaserStore:
             self._review_summary(connection, run_id, now)
 
     @staticmethod
-    def _editable_plan(connection, book_id: str, run_id: str, draft_id: str):
+    def _editable_plan(connection, book_id: str, run_id: str, draft_id: str, *, allow_rendering: bool = False):
         plan = connection.execute(
             """select p.*,r.state as run_state,r.context_json from local_chapter_teaser_plans p
             join local_chapter_teaser_runs r on r.id=p.run_id
             join local_extractions e on e.book_id=r.book_id and e.revision=r.extraction_revision
             where r.id=? and r.book_id=? and p.draft_id=?""", (run_id, book_id, draft_id),
         ).fetchone()
+        allowed_states = {"done", "partial", "failed"}
+        if allow_rendering:
+            allowed_states.add("rendering")
         if (plan is None or plan["state"] not in {"analyzed", "done", "failed"}
-                or plan["run_state"] not in {"done", "partial"}):
+                or plan["run_state"] not in allowed_states):
             raise UploadError("Dieses Kapitel kann jetzt nicht bearbeitet werden.", 409)
         if connection.execute(
             """select 1 from local_reel_jobs where draft_id=?
@@ -720,11 +765,12 @@ class ChapterTeaserStore:
     @staticmethod
     def _review_summary(connection, run_id: str, now: float) -> None:
         failed = connection.execute(
-            "select count(*) from local_chapter_teaser_plans where run_id=? and state='failed'", (run_id,),
+            "select count(*) from local_chapter_teaser_plans where run_id=? and state in ('failed','pending')", (run_id,),
         ).fetchone()[0]
         connection.execute(
             """update local_chapter_teaser_runs set state=?,stage='Kapitelbilder bereit',
-            error=?,completed=total,updated_at=? where id=?""",
+            error=?,completed=(select count(*) from local_chapter_teaser_plans
+            where run_id=local_chapter_teaser_runs.id and state<>'pending'),updated_at=? where id=?""",
             ("partial" if failed else "done",
              f"{failed} Kapitel konnten nicht erzeugt werden." if failed else None, now, run_id),
         )
@@ -738,7 +784,7 @@ class ChapterTeaserStore:
             self.schema(connection)
             ReelStore.schema(connection)
             connection.execute("begin immediate")
-            plan = self._editable_plan(connection, book_id, run_id, draft_id)
+            plan = self._editable_plan(connection, book_id, run_id, draft_id, allow_rendering=True)
             draft = connection.execute("select * from local_reel_drafts where id=?", (draft_id,)).fetchone()
             if draft is None or (revision is not None and draft["revision"] != revision):
                 raise UploadError("Der Kapitel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
@@ -775,7 +821,7 @@ class ChapterTeaserStore:
                 (run_id, book_id, draft_id),
             ).fetchone()
             if (row is None or row["state"] != "failed"
-                    or row["run_state"] not in {"partial", "done"}):
+                    or row["run_state"] not in {"partial", "done", "failed", "rendering"}):
                 raise UploadError("Das Kapitelvideo kann jetzt nicht erneut gestartet werden.", 409)
             if connection.execute(
                 """select 1 from local_reel_jobs where draft_id=?
@@ -822,7 +868,7 @@ class ChapterTeaserStore:
                 (run_id, book_id, draft_id),
             ).fetchone()
             if (row is None or row["state"] not in {"analyzed", "done", "failed"}
-                    or row["run_state"] not in {"done", "partial"}):
+                    or row["run_state"] not in {"done", "partial", "failed"}):
                 raise UploadError("Das Kapitelbild kann jetzt nicht geändert werden.", 409)
             if connection.execute(
                 """select 1 from local_reel_jobs where draft_id=?
@@ -845,7 +891,7 @@ class ChapterTeaserStore:
                 if row["state"] == "failed":
                     failed = connection.execute(
                         """select count(*) from local_chapter_teaser_plans
-                        where run_id=? and state='failed'""", (run_id,),
+                        where run_id=? and state in ('failed','pending')""", (run_id,),
                     ).fetchone()[0]
                     connection.execute(
                         """update local_chapter_teaser_runs set state=?,error=?,
@@ -911,15 +957,16 @@ class ChapterTeaserStore:
             if not self._owned(connection, job, now):
                 return
             pending = connection.execute(
-                "select count(*) from local_chapter_teaser_plans where run_id=? and state='pending'",
-                (job["id"],),
+                """select count(*) from local_chapter_teaser_plans where run_id=? and state='pending'
+                and (? is null or chapter_id=?)""",
+                (job["id"], job.get("retry_chapter_id"), job.get("retry_chapter_id")),
             ).fetchone()[0]
             if pending:
                 raise ChapterTeaserError("Nicht alle Kapitel wurden analysiert.")
             connection.execute(
                 """update local_chapter_teaser_runs set state='rendering',
                 stage='Szenenbilder werden erzeugt',token=null,lease_until=null,
-                completed=0,error=null,updated_at=? where id=?""", (now, job["id"]),
+                completed=0,error=null,retry_chapter_id=null,updated_at=? where id=?""", (now, job["id"]),
             )
         self.refresh_run(job["id"])
 
@@ -976,17 +1023,18 @@ class ChapterTeaserStore:
                     + counts.get("failed", 0)
                 )
                 stage = f"{finished} von {row['total']} Kapitelbildern fertig"
-            if finished < row["total"]:
+            if counts.get("image_queued", 0) or counts.get("video_queued", 0):
                 connection.execute(
                     """update local_chapter_teaser_runs set completed=?,stage=?,updated_at=? where id=?""",
                     (finished, stage, time.time(), run_id),
                 )
                 return
-            state = "partial" if counts.get("failed", 0) else "done"
+            missing = counts.get("failed", 0) + counts.get("pending", 0)
+            state = "partial" if missing else "done"
             if video_phase:
                 stage = LABELS[state]
                 error = (
-                    f"{counts.get('failed', 0)} Kapitel-Reels konnten nicht erzeugt werden."
+                    f"{missing} Kapitel-Reels konnten nicht erzeugt werden."
                     if state == "partial" else None
                 )
             else:
@@ -995,7 +1043,7 @@ class ChapterTeaserStore:
                     if state == "done" else "Kapitelbilder teilweise bereit"
                 )
                 error = (
-                    f"{counts.get('failed', 0)} Kapitelbilder konnten nicht erzeugt werden."
+                    f"{missing} Kapitelbilder konnten nicht erzeugt werden."
                     if state == "partial" else None
                 )
             connection.execute(

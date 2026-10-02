@@ -170,27 +170,43 @@
                   {% endfor %}
                 </div>
               {% endif %}
-              {% if plan.can_regenerate_image %}
-                <form method="post" action="{{ url_for('regenerate_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form"><button type="submit">Bild neu erzeugen</button></form>
+              {% if not plan.suggestion and not plan.draft and plan.state in ['failed', 'pending'] %}
+                {% if plan.show_retry_analysis is defined %}
+                <form method="post" action="{{ url_for('retry_chapter_teaser_analysis', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form">
+                  <input type="hidden" name="run_id" value="{{ chapter_run.id }}">
+                  <button type="submit" {% if not plan.can_retry_analysis %}disabled{% endif %}>Kapitel erneut analysieren</button>
+                </form>
+                {% else %}
+                <button type="button" class="chapter-optimize-form" disabled>Kapitel erneut analysieren</button>
+                <small class="muted">Dieser neue Retry ist nach einem Server-Neustart verfügbar. Bitte den laufenden Kapitel-Schritt zuerst abschließen lassen.</small>
+                {% endif %}
+                <small class="muted">Zuerst die Kapitelanalyse wiederholen; danach wird das Szenenbild automatisch erzeugt. Andere Kapitel bleiben erhalten.</small>
               {% endif %}
-              {% if plan.can_configure_characters %}
+              {% if (plan.draft and plan.suggestion) or plan.can_regenerate_image %}
+                <form method="post" action="{{ url_for('regenerate_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form"><button type="submit" {% if not plan.can_regenerate_image %}disabled{% endif %}>Bild neu erzeugen</button></form>
+              {% endif %}
+              {% if (plan.draft and plan.draft.scene_image_path) or plan.can_configure_characters %}
                 <form method="post" action="{{ url_for('optimize_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form">
                   <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
                   <details {% if not plan.has_character_references %}open{% endif %}>
                     <summary>Charaktere für dieses Bild auswählen</summary>
                     <p class="small muted">Ein bis vier Figuren aus den Bucheinstellungen auswählen. Die Referenzen werden auf das Szenenbild angewendet; das Original bleibt erhalten.</p>
                     {% for character in plan.character_options %}
-                      <label class="checkbox-label"><input type="checkbox" name="character_id" value="{{ character.id }}" {% if character.selected %}checked{% endif %}> {{ character.name }}</label>
+                      <label class="checkbox-label"><input type="checkbox" name="character_id" value="{{ character.id }}" {% if character.selected %}checked{% endif %} {% if not plan.can_configure_characters %}disabled{% endif %}> {{ character.name }}</label>
+                    {% else %}
+                      <p class="muted small">Bitte zuerst Charakterreferenzen in den Bucheinstellungen hinterlegen.</p>
                     {% endfor %}
                   </details>
-                  <button type="submit">{{ 'Charakteroptimierung erneut versuchen' if plan.image_job and plan.image_job.state == 'failed' else 'Charaktere optimieren' }}</button>
+                  <button type="submit" {% if not plan.can_configure_characters %}disabled{% endif %}>{{ 'Charakteroptimierung erneut versuchen' if plan.image_job and plan.image_job.state == 'failed' else 'Charaktere optimieren' }}</button>
                 </form>
               {% endif %}
+              {% if chapter_production_active %}<small class="muted">Gesperrte Aktionen sind nach dem laufenden Kapitel-Schritt wieder verfügbar.</small>{% endif %}
               {% if plan.draft %}
                 <form method="post" action="{{ url_for('start_chapter_teaser_video', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form">
                   <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
                   <button type="submit" {% if not plan.can_start_video %}disabled{% endif %}>{{ 'Textfassung aktualisieren' if plan.state == 'analyzed' and plan.draft.selected_video_path and not plan.draft.video_stale and not plan.draft.image_stale else 'Video neu erzeugen' if plan.state == 'done' else 'Video erneut versuchen' if plan.state == 'failed' else 'Video aus ausgewähltem Bild erzeugen' }}</button>
                 </form>
+                {% if plan.video_disabled_reason %}<small class="muted">{{ plan.video_disabled_reason }}</small>{% endif %}
               {% endif %}
               {% if plan.draft and plan.draft.image_stale %}<small class="teaser-warning">Bildprompt geändert: Bitte zuerst das Bild neu erzeugen.</small>{% elif plan.draft and plan.draft.video_stale %}<small class="teaser-warning">Bild oder Videoprompt geändert: Bitte Video neu erzeugen.</small>{% endif %}
               {% if plan.state == 'pending' %}Wartet
