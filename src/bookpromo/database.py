@@ -11,13 +11,16 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from .config import Settings
 from .overlay import OVERLAY_BUCKET
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
+MIN_SCHEMA_VERSION = 8
 REEL_BUCKET = "book-promotion-reels"
 MESSAGES = {
     "disabled": "Supabase ist bis Schritt 3.2 deaktiviert.",
     "configuration": "Supabase-URL und Server-Schlüssel fehlen oder sind ungeeignet.",
     "credentials": "Supabase hat den Zugriff abgelehnt. Server-Schlüssel und Berechtigungen prüfen.",
-    "schema": "Das Supabase-Schema ist nicht auf Version 8. Bitte zuerst die vorbereiteten Migrationen bis v8 einspielen.",
+    "schema": "Das Supabase-Schema ist nicht kompatibel (unterstützt: v8–v10). Bitte die vorbereiteten Migrationen prüfen.",
+    "chapter_schema": "Die Veröffentlichungsqueue für Kapitel-Reels benötigt die noch ausstehende Supabase-Migration auf v9. Lokale Bilder und Videos sind davon unabhängig.",
+    "book_teaser_schema": "Die Veröffentlichungsqueue für das Gesamt-Teaservideo benötigt die noch ausstehende Supabase-Migration auf v10 (nach v9). Lokale Bilder und Videos sind davon unabhängig.",
     "unavailable": "Supabase ist derzeit nicht erreichbar. Verbindung und Server prüfen.",
     "response": "Supabase hat eine unerwartete Antwort geliefert.",
     "conflict": "Supabase enthält einen neueren Stand oder einen offenen Post. Bitte den Datenbankstand prüfen und den offenen Post abschließen.",
@@ -228,10 +231,17 @@ class SupabaseRepository:
             raise DatabaseError("response")
         return value
 
-    async def check_schema(self, *, full: bool = False) -> None:
+    async def check_schema(self, *, full: bool = False, chapters: bool = False,
+                           book_teasers: bool = False) -> int:
         rows = await self._read("bookpromo_schema", {"select": "version", "limit": "2"})
-        if len(rows) != 1 or type(rows[0].get("version")) is not int or rows[0]["version"] != SCHEMA_VERSION:
+        if (len(rows) != 1 or type(rows[0].get("version")) is not int
+                or not MIN_SCHEMA_VERSION <= rows[0]["version"] <= SCHEMA_VERSION):
             raise DatabaseError("schema")
+        version = rows[0]["version"]
+        if chapters and version < 9:
+            raise DatabaseError("chapter_schema")
+        if book_teasers and version < 10:
+            raise DatabaseError("book_teaser_schema")
         if full:
             # Empty result sets also validate the exposed objects, columns and read grants.
             relations = {
@@ -247,8 +257,11 @@ class SupabaseRepository:
                 "reel_assets": "id,quote_id,book_id,storage_provider,storage_bucket,storage_path,media_status,media_sha256",
                 "reel_publications": "id,reel_id,platform,account_id,queue_mode,scheduled_for,status,title,description,options",
             }
+            if version >= 9:
+                relations["reel_assets"] += ",source_kind,chapter_id"
             for relation, columns in relations.items():
                 await self._read(relation, {"select": columns, "limit": "0"})
+        return version
 
     async def reel_account_id(self) -> str:
         rows = await self._read("promotion_settings", {
@@ -260,12 +273,19 @@ class SupabaseRepository:
         return account.strip()
 
     async def upload_reel(self, object_path: str, data: bytes) -> str:
+        return await self._upload_video(object_path, data, max_bytes=50 * 1024 * 1024)
+
+    async def upload_book_teaser(self, object_path: str, data: bytes) -> str:
+        """v10 allows larger finished trailers; quote/chapter limits remain unchanged."""
+        return await self._upload_video(object_path, data, max_bytes=300 * 1024 * 1024)
+
+    async def _upload_video(self, object_path: str, data: bytes, *, max_bytes: int) -> str:
         match = re.fullmatch(
             r"(?P<id>[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/"
             r"(?P<digest>[0-9a-f]{64})\.mp4",
             object_path,
         )
-        if (match is None or not 12 <= len(data) <= 50 * 1024 * 1024
+        if (match is None or not 12 <= len(data) <= max_bytes
                 or data[4:8] != b"ftyp" or hashlib.sha256(data).hexdigest() != match.group("digest")):
             raise ValueError("Ungültiges Reel-Video")
         headers = {**self._headers, "Content-Type": "video/mp4", "x-upsert": "true"}

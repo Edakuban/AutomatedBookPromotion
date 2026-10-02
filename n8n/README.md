@@ -15,6 +15,21 @@ schreibt ausschließlich lokale Dateien und überträgt keinen Workflow an n8n.
 
 ## Reel-Produktion und Publisher
 
+Kapitel-Reels benötigen zusätzlich Schema v9; Gesamt-Teaservideos benötigen
+v10 (`20261002080336_book_teaser_sources.sql`, nach v9). Beide Migrationen
+sind nur lokal vorbereitet und werden nicht beim Einreihen automatisch ausgeführt.
+Der aktualisierte Publisher bleibt mit v8-Zitat-Reels kompatibel. Für Gesamt-Teaser
+prüft er eine separate Obergrenze von 300 MiB und 600 Sekunden; normale Reels
+behalten 50 MiB und 60 Sekunden. Die lokale Queue prüft tatsächliche MP4-Dimensionen,
+Dauer, Audio und Hash vor jedem Upload.
+
+Gesamt-Teaser gehen aktuell an YouTube (16:9/9:16) oder Instagram (9:16).
+Facebook/TikTok für Gesamt-Teaser sind noch nicht unterstützt. YouTube wird über
+die Videos-API ohne hinzugefügtes `#Shorts` veröffentlicht; Hochformat bis 180 Sekunden
+klassifiziert YouTube selbst als Short. Für ein eindeutig normales Video 16:9 wählen.
+Den geänderten Publisher neu importieren und `publish_enabled=false` bis zum
+freigegebenen Dry-Run beibehalten. Hier wurden keine Live-Veröffentlichungen gestartet.
+
 Die kreative Reel-Produktion bleibt lokal. Das Webprojekt friert Zitat, Titel,
 Beschreibung, Bild- und Videoprompt sowie das geprüfte MP4 in `reel_assets`
 ein. Für jedes gewählte Ziel entsteht in `reel_publications` ein eigener

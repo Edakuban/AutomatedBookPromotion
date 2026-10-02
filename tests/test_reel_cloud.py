@@ -110,6 +110,18 @@ def test_reel_signed_url_is_verified_against_frozen_manifest():
     assert "R2_ENDPOINT_HIER_EINTRAGEN" in config
     assert "R2_ACCESS_KEY_ID_HIER_EINTRAGEN" in config
     assert "R2_SECRET_ACCESS_KEY_HIER_EINTRAGEN" in config
+
+
+def test_full_book_teasers_have_separate_limits_and_do_not_require_quote_caption():
+    by_name = nodes(build_reel_publisher())
+    claimed = by_name["Claimed delivery context"]["parameters"]["jsCode"]
+    assert "a.source_kind!=='book_teaser'" in claimed
+    assert "p.platform==='youtube'" in claimed
+    validated = by_name["Validate Reel MP4"]["parameters"]["jsCode"]
+    assert "a.source_kind==='book_teaser'?314572800:52428800" in validated
+    assert "a.source_kind==='book_teaser'?600000:60000" in validated
+    metadata = by_name["YouTube upload metadata"]["parameters"]["jsCode"]
+    assert "#Shorts" not in metadata
     signer = by_name["R2 URL context"]["parameters"]["jsCode"]
     assert "AWS4-HMAC-SHA256" in signer and "config.r2_secret_access_key" in signer
     assert "$env" not in signer
@@ -204,6 +216,19 @@ def test_v8_migration_separates_assets_destinations_and_safe_cleanup():
     assert "status not in ('published','cancelled')" in sql
     assert "media_status='cleanup_pending'" in sql
     assert "update public.bookpromo_schema set version=8 where version=7" in sql
+
+
+def test_v9_migration_supports_chapter_reels_and_sixty_second_assets():
+    sql = (ROOT / "supabase" / "migrations" / "20260930090000_chapter_reel_sources.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "Schema v9 requires schema v8" in sql
+    assert "add column chapter_id uuid references public.chapters" in sql
+    assert "source_kind in ('quote','chapter')" in sql
+    assert "duration_ms between 4000 and 60000" in sql
+    assert "create or replace function public.bookpromo_reel_enqueue" in sql
+    assert "security invoker set search_path = ''" in sql
+    assert "update public.bookpromo_schema set version=9 where version=8" in sql
 
 
 def test_claim_patch_supports_one_worker_for_multiple_accounts():

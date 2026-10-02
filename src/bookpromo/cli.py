@@ -99,14 +99,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "check-db":
-        from .database import SCHEMA_VERSION, DatabaseError, SupabaseRepository
+        from .database import DatabaseError, SupabaseRepository
 
         try:
-            asyncio.run(SupabaseRepository(settings).check_schema(full=True))
+            checked_version = asyncio.run(SupabaseRepository(settings).check_schema(full=True))
         except DatabaseError as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        print(f"Supabase: Schema v{SCHEMA_VERSION}, Tabellen, Ansichten und Lesezugriff geprüft.")
+        print(f"Supabase: Schema v{checked_version}, Tabellen, Ansichten und Lesezugriff geprüft.")
         print("Keine Daten geschrieben. RLS und Schreibrechte separat mit SQL prüfen.")
         return 0
 

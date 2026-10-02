@@ -21,7 +21,12 @@
            data-result-url="{{ url_for('profile_result', book_id=book.id) }}">
     <h2>Profil mit KI ausfüllen</h2>
     <p>Erstellt ausschließlich Vorschläge für die acht Profilfelder, mit je einem eigenen KI-Aufruf. Ein passender gespeicherter Buchkontext wird wiederverwendet. Fehlt er, wird er einmalig aus dem Buchtext vorbereitet. Kapitel und Zitate werden dabei nicht verändert.</p>
-    <p class="muted small">Verwendet dein Open-WebUI-Modell und verursacht Modellaufrufe. <a href="{{ url_for('local_book', book_id=book.id) }}#chapter-review">Kapitelaufteilung und Importhinweise prüfen</a>. Titel, Autor, Zieladresse und Promotion-Auswahl bearbeitest du selbst.</p>
+    <p class="muted small">Verwendet den unten gewählten Text-KI-Provider. <a href="{{ url_for('local_book', book_id=book.id) }}#chapter-review">Kapitelaufteilung und Importhinweise prüfen</a>. Titel, Autor, Zieladresse und Promotion-Auswahl bearbeitest du selbst.</p>
+    <label>Text-KI für Profilvorschläge
+      <select data-profile-provider required>
+        {% for provider in text_ai_providers %}<option value="{{ provider.id }}">{{ provider.label }} · {{ provider.model }}</option>{% endfor %}
+      </select>
+    </label>
     <p data-profile-status role="status">Profilstatus wird geladen …</p>
     <progress data-profile-progress aria-label="Profilanalyse läuft" hidden></progress>
     <div class="form-actions">
@@ -176,6 +181,11 @@
     {% else %}
       <p class="muted">Noch keine Charakterprofile vorhanden.</p>
       <div class="character-analysis-actions">
+        <label>Text-KI für Charakteranalyse
+          <select data-character-analysis-provider required>
+            {% for provider in text_ai_providers %}<option value="{{ provider.id }}">{{ provider.label }} · {{ provider.model }}</option>{% endfor %}
+          </select>
+        </label>
         <button type="button" data-character-analysis-start>Charaktere aus Buch analysieren</button>
         <progress data-character-analysis-progress aria-label="Charakteranalyse läuft" hidden></progress>
         <p class="small muted" data-character-analysis-status role="status">Charakteranalyse-Status wird geladen …</p>

@@ -3,7 +3,7 @@
 {% block content %}
   <p class="breadcrumb"><a href="{{ url_for('books') }}">← Bücher</a></p>
   <div class="page-heading"><h1>{{ book.title }}</h1><span class="badge">{{ job.label if job else record.status if record else 'Datei gespeichert' }}</span></div>
-  <p><a href="{{ url_for('book_settings', book_id=book.id) }}">Bucheinstellungen bearbeiten</a> · {{ 'Für Promotion vorgemerkt' if management.details.promotion_enabled else 'Promotion pausiert' }}{% if management.details.author %} · {{ management.details.author }}{% endif %}</p>
+  <p><a href="{{ url_for('book_settings', book_id=book.id) }}">Bucheinstellungen bearbeiten</a>{% if result %} · <a href="{{ url_for('book_teaser', book_id=book.id) }}">Book-Teaser zusammenbauen</a>{% endif %} · {{ 'Für Promotion vorgemerkt' if management.details.promotion_enabled else 'Promotion pausiert' }}{% if management.details.author %} · {{ management.details.author }}{% endif %}</p>
   <section class="panel" aria-labelledby="file-title">
     <div class="panel-heading"><h2 id="file-title">Word-Dokument</h2></div>
     <dl class="setting-list">
@@ -83,6 +83,7 @@
       <h2 id="analysis-title">KI-Buchanalyse</h2>
       {% if analysis %}
         <p><strong>{{ analysis.label }}</strong></p>
+        <p class="muted small">Text-KI: {{ 'ComfyUI · Qwen lokal' if analysis.provider == 'comfyui_qwen' else 'Open WebUI · ' ~ analysis.model_id }}</p>
         {% if analysis.active %}
           <p data-analysis-stage aria-live="polite">{{ analysis.stage }}</p>
           <progress aria-label="KI-Analyse läuft"></progress>
@@ -96,13 +97,21 @@
       {% if result.needs_review %}
         <p class="notice">Vor der KI-Analyse bitte die offenen Hinweise zur Textextraktion klären.</p>
       {% elif not analysis_configured %}
-        <p>Bitte zuerst <a href="{{ url_for('settings') }}">Open WebUI und das Modell einrichten</a>.</p>
+        <p>Bitte zuerst unter <a href="{{ url_for('settings') }}">mindestens einen Text-KI-Provider einrichten</a>.</p>
       {% elif not analysis or not analysis.active %}
-        <p>Die Analyse überträgt Buchabschnitte an dein konfiguriertes Open WebUI. Sie erstellt internen Buchkontext und wählt Originalzitate aus. Dabei entstehen Modellaufrufe.</p>
+        <p>Die Analyse erstellt internen Buchkontext und wählt Originalzitate aus. Beim externen Provider werden Buchabschnitte an Open WebUI übertragen; Qwen verarbeitet sie lokal in ComfyUI.</p>
         <form method="post" action="{{ url_for('analyze_book', book_id=book.id) }}" class="analysis-start-form">
+          <label>Text-KI für Buch- und Zitat-Analyse
+            <select name="ai_provider" required>
+              {% for provider in text_ai_providers %}
+                {% set selected_provider = analysis.provider if analysis else 'openwebui' %}
+                <option value="{{ provider.id }}" {% if selected_provider == provider.id or (not selected_provider and loop.first) %}selected{% endif %}>{{ provider.label }} · {{ provider.model }}</option>
+              {% endfor %}
+            </select>
+          </label>
           <div class="form-actions"><button type="submit">{% if analysis and analysis.state == 'failed' %}KI-Analyse fortsetzen{% elif analysis and analysis.state in ['done','empty'] %}Mit aktueller Konfiguration analysieren{% else %}KI-Analyse starten{% endif %}</button></div>
         </form>
-        <p class="small muted">Identische fertige Analyseläufe werden wiederverwendet. Geänderte Modell- oder Analyseeinstellungen erzeugen einen neuen Lauf.</p>
+        <p class="small muted">Identische fertige Analyseläufe werden wiederverwendet. Ein anderer Provider, ein anderes Modell oder geänderte Analyseeinstellungen erzeugen einen neuen Lauf.</p>
       {% endif %}
       {% if analysis and analysis.result %}
         {% if analysis.result.rejected_candidates %}

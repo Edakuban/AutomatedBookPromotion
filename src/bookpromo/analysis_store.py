@@ -14,6 +14,8 @@ from .extraction_store import ExtractionStore
 from .jobs import LEASE_SECONDS, MAX_ATTEMPTS
 from .uploads import UploadError
 from .characters import CharacterStore
+from .config import TextAIProvider
+from .text_ai import provider_endpoint_hash, provider_missing, provider_model_id
 
 LABELS = {"queued": "KI-Analyse wartet", "running": "KI-Analyse läuft", "done": "KI-Analyse abgeschlossen",
           "empty": "Keine geeigneten Zitate", "failed": "KI-Analyse fehlgeschlagen", "stale": "Analyse veraltet"}
@@ -40,7 +42,8 @@ class AnalysisStore:
     def schema(connection):
         connection.execute("""create table if not exists local_analysis_runs (
             id text primary key, book_id text not null, extraction_revision integer not null,
-            fingerprint text not null, model_id text not null, endpoint_hash text not null,
+            fingerprint text not null, provider text not null default 'openwebui',
+            model_id text not null, endpoint_hash text not null,
             options_json text not null, prompt_version text not null, source_json text not null,
             state text not null check(state in ('queued','running','done','empty','failed','stale')),
             stage text not null, attempts integer not null default 0, calls_started integer not null default 0,
@@ -48,14 +51,26 @@ class AnalysisStore:
             unique(book_id,fingerprint)
         )""")
         connection.execute("create unique index if not exists local_analysis_active on local_analysis_runs(book_id) where state in ('queued','running')")
+        columns = {row[1] for row in connection.execute("pragma table_info(local_analysis_runs)")}
+        if "provider" not in columns:
+            connection.execute(
+                "alter table local_analysis_runs add column provider text "
+                "not null default 'openwebui'"
+            )
         connection.execute("""create table if not exists local_analysis_checkpoints (
             run_id text not null, step_key text not null, payload_json text not null,
             primary key(run_id,step_key)
         )""")
 
-    def enqueue(self, book_id, settings, options: AnalysisOptions):
-        if settings.missing_for("openwebui"):
-            raise UploadError("Bitte zuerst die Open-WebUI-Verbindung und das Modell einrichten.", 409)
+    def enqueue(
+        self, book_id, settings, options: AnalysisOptions,
+        provider: TextAIProvider = "openwebui",
+    ):
+        if provider not in {"openwebui", "comfyui_qwen"}:
+            raise UploadError("Bitte einen gültigen Text-KI-Provider auswählen.")
+        if provider_missing(settings, provider):
+            label = "Open WebUI" if provider == "openwebui" else "ComfyUI/Qwen"
+            raise UploadError(f"Bitte zuerst {label} für Text-KI einrichten.", 409)
         with closing(self.connection()) as connection, connection:
             self.schema(connection)
             connection.execute("begin immediate")
@@ -76,9 +91,25 @@ class AnalysisStore:
             if options.purpose == "full":
                 fingerprint_options.pop("purpose")
                 fingerprint_options.pop("profile_prompt_version")
-            fingerprint = hashlib.sha256(json.dumps([source["revision"], settings.openwebui_model,
-                endpoint_hash(settings), fingerprint_options, PROMPT_VERSION], sort_keys=True).encode()).hexdigest()
-            old = connection.execute("select id,state from local_analysis_runs where book_id=? and fingerprint=?", (book_id, fingerprint)).fetchone()
+            model_id = provider_model_id(settings, provider)
+            provider_endpoint = provider_endpoint_hash(settings, provider)
+            fingerprint = hashlib.sha256(json.dumps([
+                source["revision"], provider, model_id, provider_endpoint,
+                fingerprint_options, PROMPT_VERSION,
+            ], sort_keys=True).encode()).hexdigest()
+            fingerprints = [fingerprint]
+            if provider == "openwebui":
+                legacy = hashlib.sha256(json.dumps([
+                    source["revision"], settings.openwebui_model, endpoint_hash(settings),
+                    fingerprint_options, PROMPT_VERSION,
+                ], sort_keys=True).encode()).hexdigest()
+                fingerprints.append(legacy)
+            placeholders = ",".join("?" for _ in fingerprints)
+            old = connection.execute(
+                f"select id,state from local_analysis_runs where book_id=? "
+                f"and fingerprint in ({placeholders}) order by updated_at desc limit 1",
+                (book_id, *fingerprints),
+            ).fetchone()
             if old:
                 connection.execute("update local_analysis_runs set updated_at=? where id=?", (time.time(), old["id"]))
                 if old["state"] == "failed":
@@ -87,9 +118,11 @@ class AnalysisStore:
                 return old["id"]
             run_id, now = str(uuid4()), time.time()
             connection.execute("""insert into local_analysis_runs
-                (id,book_id,extraction_revision,fingerprint,model_id,endpoint_hash,options_json,prompt_version,source_json,state,stage,created_at,updated_at)
-                values (?,?,?,?,?,?,?,?,?,'queued','Wartet auf KI-Verarbeitung',?,?)""",
-                (run_id, book_id, source["revision"], fingerprint, settings.openwebui_model, endpoint_hash(settings),
+                (id,book_id,extraction_revision,fingerprint,provider,model_id,endpoint_hash,
+                 options_json,prompt_version,source_json,state,stage,created_at,updated_at)
+                values (?,?,?,?,?,?,?,?,?,?,'queued','Wartet auf KI-Verarbeitung',?,?)""",
+                (run_id, book_id, source["revision"], fingerprint, provider, model_id,
+                 provider_endpoint,
                  options.model_dump_json(), PROMPT_VERSION, source["result_json"], now, now))
             self.reuse_context(connection, run_id)
             return run_id
@@ -170,7 +203,11 @@ class AnalysisStore:
         if not self.uploads.db_path.is_file(): return None
         with closing(self.uploads._read_connection()) as connection:
             if not connection.execute("select 1 from sqlite_master where name='local_analysis_runs'").fetchone(): return None
-            fields = "id,book_id,extraction_revision,model_id,state,stage,attempts,calls_started,error,options_json"
+            columns = {
+                item[1] for item in connection.execute("pragma table_info(local_analysis_runs)")
+            }
+            provider_field = "provider" if "provider" in columns else "'openwebui' as provider"
+            fields = f"id,book_id,extraction_revision,{provider_field},model_id,state,stage,attempts,calls_started,error,options_json"
             if include_result: fields += ",result_json"
             row = connection.execute(f"select {fields} from local_analysis_runs where book_id=? and coalesce(json_extract(options_json,'$.purpose'),'full')=? order by updated_at desc,rowid desc limit 1", (book_id, purpose)).fetchone()
             if row is None: return None

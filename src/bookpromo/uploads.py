@@ -193,6 +193,27 @@ class LocalUploadStore:
                         raise UploadError(
                             "Das Buch kann während einer laufenden Reel-Erzeugung nicht gelöscht werden.", 409
                         )
+                    if (
+                        self._table_exists(connection, "local_chapter_teaser_runs")
+                        and connection.execute(
+                            """select 1 from local_chapter_teaser_runs where book_id=?
+                            and state in ('queued','running','rendering')""",
+                            (normalized_id,),
+                        ).fetchone()
+                    ):
+                        raise UploadError(
+                            "Das Buch kann während der Kapitel-Reel-Produktion nicht gelöscht werden.", 409
+                        )
+                    if (
+                        self._table_exists(connection, "local_book_teaser_jobs")
+                        and connection.execute(
+                            """select 1 from local_book_teaser_jobs where book_id=?
+                            and state in ('queued','running')""", (normalized_id,),
+                        ).fetchone()
+                    ):
+                        raise UploadError(
+                            "Das Buch kann während des langen Teaser-Exports nicht gelöscht werden.", 409
+                        )
 
                     book = LocalBook.from_row(row)
                     expected_source = (
@@ -207,6 +228,7 @@ class LocalUploadStore:
                         ((self.root / "overlays" / f"{normalized_id}.png").resolve(), "overlay.png"),
                         ((self.root / "audio" / normalized_id).resolve(), "audio"),
                         ((self.root / "reels" / normalized_id).resolve(), "reels"),
+                        ((self.root / "book-teasers" / normalized_id).resolve(), "book-teasers"),
                         ((self.root / "characters" / normalized_id).resolve(), "characters"),
                     ]
                     if self._table_exists(connection, "local_book_characters"):
@@ -248,6 +270,22 @@ class LocalUploadStore:
                                 "(select id from local_reel_drafts where book_id=?)", (normalized_id,)
                             )
                         connection.execute("delete from local_reel_drafts where book_id=?", (normalized_id,))
+                    if self._table_exists(connection, "local_book_teasers"):
+                        if self._table_exists(connection, "local_book_teaser_jobs"):
+                            connection.execute(
+                                "delete from local_book_teaser_jobs where book_id=?", (normalized_id,)
+                            )
+                        connection.execute("delete from local_book_teasers where book_id=?", (normalized_id,))
+                    if self._table_exists(connection, "local_chapter_teaser_runs"):
+                        if self._table_exists(connection, "local_chapter_teaser_plans"):
+                            connection.execute(
+                                "delete from local_chapter_teaser_plans where run_id in "
+                                "(select id from local_chapter_teaser_runs where book_id=?)",
+                                (normalized_id,),
+                            )
+                        connection.execute(
+                            "delete from local_chapter_teaser_runs where book_id=?", (normalized_id,)
+                        )
                     if self._table_exists(connection, "local_audio_tracks"):
                         if self._table_exists(connection, "local_audio_cues"):
                             connection.execute(

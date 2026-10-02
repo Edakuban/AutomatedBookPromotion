@@ -13,8 +13,6 @@ from .characters import (
     stitch_character_references,
 )
 from .config import Settings, load_settings
-from .management import ManagementStore
-from .reel_content import compose_image_generation_prompt
 from .reel_generation import ReelGenerator, ffmpeg_binary, split_audio_segment
 from .reels import ReelJobStore, ReelStore
 from .uploads import LocalUploadStore
@@ -33,9 +31,12 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
         max_artifact_bytes=settings.reel_max_video_mb * 1024 * 1024,
     )
     jobs = ReelJobStore(reels)
+    from .chapter_teaser_worker import reconcile_chapter_teaser_media
+    reconciled = reconcile_chapter_teaser_media(uploads, reels, jobs)
     job = jobs.claim(kinds={"image", "video"})
     if job is None:
-        return False
+        from .book_teaser_worker import run_book_teaser_once
+        return run_book_teaser_once(uploads, settings, stop) or reconciled
     done, lost = threading.Event(), threading.Event()
 
     def heartbeat() -> None:
@@ -99,15 +100,15 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                 for character in selected
             ]
             operation = job.payload.get("operation", "scene")
+            effective_prompt = None
             if operation == "scene":
-                book_details = ManagementStore(uploads).get(draft.book_id)["details"]
-                effective_prompt = compose_image_generation_prompt(
-                    scene_prompt=draft.image_prompt,
-                    art_direction=book_details.image_prompt_base,
-                )
+                # Copy/chapter analysis already incorporates the book's rendering
+                # style. Never append the raw book basis here: legacy bases may
+                # describe a competing location/action that overrides this scene.
+                effective_prompt = character_scene_prompt(draft.image_prompt, selected)
                 generated = generator.generate_image(
                     reel_id=draft.id,
-                    image_prompt=character_scene_prompt(effective_prompt, selected),
+                    image_prompt=effective_prompt,
                 )
                 candidate = "scene"
             elif operation == "optimize":
@@ -135,7 +136,8 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
             with generated.open("rb") as source:
                 relative, digest = reels.save_artifact(draft.id, "image", source, generated.name)
             jobs.finish(job, result={"path": relative, "sha256": digest,
-                                     "candidate": candidate, "character_snapshot": snapshot})
+                                     "candidate": candidate, "character_snapshot": snapshot,
+                                     "effective_image_prompt": effective_prompt})
             return True
 
         track = next((item for item in reels.list_audio(draft.book_id) if item.id == draft.audio_track_id), None)

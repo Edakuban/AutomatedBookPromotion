@@ -370,7 +370,7 @@ def character_scene_prompt(base_prompt: str, characters: Iterable[BookCharacter]
         if description:
             details.append(f"book description: {description[:700]}")
         if visual:
-            details.append(f"human visual identity: {visual[:900]}")
+            details.append(f"visual identity: {visual[:900]}")
         if details:
             entries.append(f"{index + 1}. {character.name}: {'; '.join(details)}")
     if entries:
@@ -379,11 +379,15 @@ def character_scene_prompt(base_prompt: str, characters: Iterable[BookCharacter]
             for position, character in zip(_identity_positions(len(selected)), selected, strict=True)
         )
         prompt += (
-            "\n\nMANDATORY SCENE IDENTITY LAYOUT, fixed from left to right: " + layout + ". "
-            "Keep every named person in that exact position and never exchange faces, ages, hair, "
-            "or other identity features. Use the human visual identity for appearance. Book "
-            "descriptions are context only; do not introduce animal forms, transformations, magic, "
-            "or extra people unless the main scene prompt explicitly requests them.\n"
+            "\n\nCHARACTER IDENTITIES — appearance references only. "
+            "The main scene prompt is authoritative for location, action, pose, clothing and "
+            "composition, including people lying down, sitting or interacting. Never replace its "
+            "scene with a standing portrait or a location, pose or action from these references. "
+            "Only when the scene leaves horizontal placement unspecified, use this identity order: "
+            + layout + ". Never exchange faces, ages, hair or other identity features. "
+            "Use each character's visual identity for appearance, including explicitly described "
+            "non-human traits. Book descriptions are context only; do not introduce extra people, "
+            "objects, actions or locations.\n"
             "BOOK-SPECIFIC CHARACTER LOCKS:\n" + "\n".join(entries)
         )
     if len(prompt) > 20_000:

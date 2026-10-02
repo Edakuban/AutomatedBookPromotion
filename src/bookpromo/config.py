@@ -8,6 +8,7 @@ from pydantic import Field, HttpUrl, SecretStr, PrivateAttr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Service = Literal["supabase", "openwebui", "comfyui", "r2"]
+TextAIProvider = Literal["openwebui", "comfyui_qwen"]
 
 
 class Settings(BaseSettings):
@@ -35,12 +36,23 @@ class Settings(BaseSettings):
     # Local ComfyUI rendering for quote reels. Workflow paths are resolved
     # relative to the selected ENV file, just like APP_DATA_DIR.
     comfyui_url: HttpUrl = "http://127.0.0.1:8188"
+    comfyui_qwen_workflow: Path = Path("workflows/qwen-text.json")
+    comfyui_qwen_model: str = Field(
+        default="qwen3.5_4b_bf16.safetensors",
+        min_length=1,
+        max_length=300,
+        pattern=r"^[^\x00-\x1f\x7f]+$",
+    )
+    comfyui_qwen_timeout_seconds: float = Field(
+        default=900, ge=30, le=3600, allow_inf_nan=False,
+    )
     reel_image_workflow: Path = Path("workflows/reel-image.json")
     reel_reference_workflow: Path = Path("workflows/reel-reference.json")
     reel_video_workflow: Path = Path("workflows/reel-video.json")
     reel_default_duration_seconds: float = Field(default=10, ge=4, le=30, allow_inf_nan=False)
     reel_max_audio_mb: int = Field(default=250, ge=1, le=1000)
     reel_max_video_mb: int = Field(default=45, ge=1, le=49)
+    book_teaser_max_video_mb: int = Field(default=256, ge=1, le=300)
     reel_storage_provider: Literal["supabase", "cloudflare_r2"] = "supabase"
     r2_account_id: str | None = Field(default=None, repr=False, pattern=r"^[0-9a-f]{32}$")
     r2_access_key_id: SecretStr | None = None
@@ -126,7 +138,10 @@ def load_settings(env_file: Path | None = None) -> Settings:
     settings._env_path = selected
     if not settings.app_data_dir.is_absolute():
         settings.app_data_dir = (selected.parent / settings.app_data_dir).resolve()
-    for field in ("reel_image_workflow", "reel_reference_workflow", "reel_video_workflow"):
+    for field in (
+        "comfyui_qwen_workflow", "reel_image_workflow", "reel_reference_workflow",
+        "reel_video_workflow",
+    ):
         path = getattr(settings, field)
         if not path.is_absolute():
             setattr(settings, field, (selected.parent / path).resolve())

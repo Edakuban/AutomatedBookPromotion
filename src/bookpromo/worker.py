@@ -91,6 +91,7 @@ class StopSignal:
 
 def worker_main(data_dir: str, max_bytes: int, reader, env_path=None):
     from .analysis_worker import run_analysis_once
+    from .chapter_teaser_worker import run_chapter_teaser_once
     stop = StopSignal(reader)
     uploads = LocalUploadStore(Path(data_dir), max_bytes)
     while not stop.is_set() and parent_alive():
@@ -98,6 +99,8 @@ def worker_main(data_dir: str, max_bytes: int, reader, env_path=None):
             worked = run_once(uploads, stop)
             if not worked:
                 worked = run_analysis_once(uploads, env_path, stop)
+            if not worked:
+                worked = run_chapter_teaser_once(uploads, env_path, stop)
         except (OSError, sqlite3.Error):
             worked = False  # Lease expiry permits recovery after temporary I/O errors.
         if not worked: stop.wait(1)

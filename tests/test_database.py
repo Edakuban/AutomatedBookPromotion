@@ -108,6 +108,27 @@ def test_full_check_reads_all_objects_without_writes(settings):
     assert "reel_publications" in seen and "reel_assets" in seen
 
 
+def test_v8_remains_usable_but_chapter_queue_requires_v9(settings):
+    seen = []
+
+    def respond(request):
+        assert request.method == "GET"
+        seen.append(request)
+        if request.url.path.endswith("bookpromo_schema"):
+            return httpx.Response(200, json=[{"version": 8}])
+        assert "source_kind" not in request.url.params["select"]
+        assert "chapter_id" not in request.url.params["select"] or not request.url.path.endswith("reel_assets")
+        return httpx.Response(200, json=[])
+
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(respond))
+    assert asyncio.run(repo.check_schema(full=True)) == 8
+    assert len(seen) == 14
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(repo.check_schema(chapters=True))
+    assert error.value.code == "chapter_schema"
+    assert "v9" in str(error.value)
+
+
 def test_book_page_escapes_text_and_formats_berlin_time(settings):
     def respond(request):
         if request.url.path.endswith("bookpromo_schema"):

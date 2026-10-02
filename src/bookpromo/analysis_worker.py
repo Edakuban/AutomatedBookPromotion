@@ -9,10 +9,11 @@ from .analysis import AnalysisError, AnalysisOptions, PROMPT_VERSION, analyze_bo
 from .analysis_store import AnalysisStore, AnalysisLeaseLost, Checkpoints, endpoint_hash
 from .config import load_settings
 from .extraction_store import ExtractionStore
-from .openwebui import OpenWebUIClient, OpenWebUIError
+from .openwebui import OpenWebUIError
+from .text_ai import TextAIError, create_text_client, provider_endpoint_hash
 
 
-def run_analysis_once(uploads, env_path=None, stop=None, *, settings=None, api_factory=OpenWebUIClient):
+def run_analysis_once(uploads, env_path=None, stop=None, *, settings=None, api_factory=None):
     store = AnalysisStore(uploads)
     job = store.claim()
     if job is None: return False
@@ -38,11 +39,18 @@ def run_analysis_once(uploads, env_path=None, stop=None, *, settings=None, api_f
         if settings is None:
             if env_path is None: raise AnalysisError("Keine ENV-Datei für den KI-Worker zugeordnet. Bitte über start.bat starten.")
             settings = load_settings(env_path)
-        if job["prompt_version"] != PROMPT_VERSION or endpoint_hash(settings) != job["endpoint_hash"]:
+        provider = job.get("provider") or "openwebui"
+        expected_endpoints = {provider_endpoint_hash(settings, provider)}
+        if provider == "openwebui":
+            expected_endpoints.add(endpoint_hash(settings))
+        if job["prompt_version"] != PROMPT_VERSION or job["endpoint_hash"] not in expected_endpoints:
             raise AnalysisError("Die Analysekonfiguration wurde geändert. Bitte mit der aktuellen Konfiguration einen neuen Analyselauf starten.")
         options = AnalysisOptions.model_validate_json(job["options_json"])
         source = ExtractionStore._decode(job["source_json"])
-        api = api_factory(settings.model_copy(update={"openwebui_model": job["model_id"]}))
+        if api_factory is None:
+            api = create_text_client(settings, provider, model_id=job["model_id"])
+        else:
+            api = api_factory(settings.model_copy(update={"openwebui_model": job["model_id"]}))
         checkpoints = Checkpoints(store, job, options, cancelled)
 
         async def execute():
@@ -61,7 +69,7 @@ def run_analysis_once(uploads, env_path=None, stop=None, *, settings=None, api_f
         if not cancelled(): store.finish(job, result=result)
     except AnalysisLeaseLost:
         pass
-    except (AnalysisError, OpenWebUIError) as exc:
+    except (AnalysisError, OpenWebUIError, TextAIError) as exc:
         if not cancelled(): store.finish(job, error=str(exc))
     except Exception:
         if not cancelled(): store.finish(job, error="Die KI-Analyse konnte nicht abgeschlossen werden. Konfiguration und Datensicherung prüfen; fertige Zwischenstände bleiben erhalten.")

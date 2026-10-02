@@ -86,6 +86,138 @@ if (form) {
   });
 }
 
+// Native dialogs retain keyboard focus, support Escape and keep media URLs usable
+// as regular links when JavaScript is disabled.
+for (const dialog of document.querySelectorAll("dialog.teaser-dialog")) {
+  let opener = null;
+  dialog.addEventListener("teaser-open", event => { opener = event.detail; });
+  dialog.querySelectorAll("[data-teaser-dialog-close]").forEach(button => {
+    button.addEventListener("click", () => dialog.close());
+  });
+  dialog.addEventListener("click", event => {
+    if (event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right ||
+        event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+  });
+  dialog.addEventListener("close", () => {
+    const image = dialog.querySelector("[data-teaser-lightbox-image]");
+    if (image) { image.removeAttribute("src"); image.alt = ""; }
+    if (opener?.isConnected) opener.focus();
+    opener = null;
+  });
+}
+for (const button of document.querySelectorAll("[data-teaser-dialog-open]")) {
+  button.addEventListener("click", () => {
+    const dialog = document.getElementById(button.dataset.teaserDialogOpen);
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    dialog.dispatchEvent(new CustomEvent("teaser-open", {detail: button}));
+    dialog.showModal();
+  });
+}
+const chapterImageLightbox = document.getElementById("chapter-image-lightbox");
+if (chapterImageLightbox) {
+  for (const link of document.querySelectorAll("[data-teaser-image-open]")) {
+    link.addEventListener("click", event => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      const image = chapterImageLightbox.querySelector("[data-teaser-lightbox-image]");
+      const title = link.querySelector("img")?.alt || "Kapitelbild";
+      image.src = link.href;
+      image.alt = title;
+      chapterImageLightbox.querySelector("h2").textContent = title;
+      chapterImageLightbox.dispatchEvent(new CustomEvent("teaser-open", {detail: link}));
+      chapterImageLightbox.showModal();
+    });
+  }
+}
+
+// Chapter and final-teaser queue forms are outside the dynamically loaded reel
+// workshop, so their scheduled-date validation must be wired independently.
+for (const publication of document.querySelectorAll("[data-publication-form]")) {
+  const time = publication.querySelector("[data-publication-time]");
+  const modes = [...publication.querySelectorAll('[name="queue_mode"]')];
+  if (!time) continue;
+  const syncTime = () => {
+    const scheduled = modes.some(input => input.checked && input.value === "scheduled");
+    time.required = scheduled;
+    // Keep this field submitted: publication endpoints require an explicit empty
+    // scheduled_for for daily mode rather than an omitted disabled input.
+    time.readOnly = !scheduled;
+    if (!scheduled) time.value = "";
+  };
+  modes.forEach(input => input.addEventListener("change", syncTime));
+  syncTime();
+}
+
+const chapterProduction = document.querySelector("[data-chapter-production]");
+if (chapterProduction) {
+  const label = chapterProduction.querySelector("[data-chapter-production-label]");
+  const stage = chapterProduction.querySelector("[data-chapter-production-stage]");
+  const count = chapterProduction.querySelector("[data-chapter-production-count]");
+  const progress = chapterProduction.querySelector("[data-chapter-production-progress]");
+  let state = chapterProduction.dataset.initialState;
+
+  async function pollChapterProduction() {
+    try {
+      const response = await fetch(chapterProduction.dataset.statusUrl, {
+        headers: {Accept: "application/json"}, cache: "no-store",
+      });
+      if (!response.ok) throw new Error();
+      const result = await response.json();
+      if (label) label.textContent = result.label;
+      if (stage) stage.textContent = result.stage;
+      if (count) count.textContent = `${result.completed} von ${result.total}`;
+      if (progress) {
+        progress.max = Math.max(1, Number(result.total));
+        progress.value = Number(result.completed);
+      }
+      if (!result.active || result.state !== state) {
+        window.location.reload();
+        return;
+      }
+      state = result.state;
+    } catch {
+      if (stage) stage.textContent = "Fortschritt gerade nicht erreichbar – neuer Versuch läuft …";
+    }
+    window.setTimeout(pollChapterProduction, 2500);
+  }
+  window.setTimeout(pollChapterProduction, 1200);
+}
+
+const bookTeaserRender = document.querySelector("[data-book-teaser-render]");
+if (bookTeaserRender) {
+  const stage = bookTeaserRender.querySelector("[data-book-teaser-render-stage]");
+  const count = bookTeaserRender.querySelector("[data-book-teaser-render-count]");
+  const progress = bookTeaserRender.querySelector("[data-book-teaser-render-progress]");
+  let state = bookTeaserRender.dataset.initialState;
+
+  async function pollBookTeaserRender() {
+    try {
+      const response = await fetch(bookTeaserRender.dataset.statusUrl, {
+        headers: {Accept: "application/json"}, cache: "no-store",
+      });
+      if (!response.ok) throw new Error();
+      const result = await response.json();
+      if (stage) stage.textContent = result.stage;
+      if (count) count.textContent = `${(result.progress_ms / 1000).toLocaleString("de-DE", {maximumFractionDigits: 1})} / ${(result.total_ms / 1000).toLocaleString("de-DE", {maximumFractionDigits: 1})} s`;
+      if (progress) {
+        progress.max = Math.max(1, Number(result.total_ms));
+        progress.value = Number(result.progress_ms);
+      }
+      if (!result.active || result.state !== state) {
+        window.location.reload();
+        return;
+      }
+      state = result.state;
+    } catch {
+      if (stage) stage.textContent = "Exportstatus gerade nicht erreichbar – neuer Versuch läuft …";
+    }
+    window.setTimeout(pollBookTeaserRender, 2500);
+  }
+  window.setTimeout(pollBookTeaserRender, 1200);
+}
+
 const chapterForm = document.getElementById("chapter-form");
 let chapterEdits = false;
 if (chapterForm) {
@@ -111,6 +243,7 @@ if (profileGenerator) {
   const apply = profileGenerator.querySelector("[data-profile-apply]");
   const status = profileGenerator.querySelector("[data-profile-status]");
   const progress = profileGenerator.querySelector("[data-profile-progress]");
+  const provider = profileGenerator.querySelector("[data-profile-provider]");
   const form = document.querySelector(".book-settings-form");
   const fields = ["genre", "mood", "internal_summary", "world", "characters", "spoilers", "image_prompt_base", "caption_guidelines"];
   let timer;
@@ -124,6 +257,10 @@ if (profileGenerator) {
     window.clearTimeout(timer);
     try {
       const data = await request(profileGenerator.dataset.statusUrl);
+      if (data.provider && provider.querySelector(`option[value="${CSS.escape(data.provider)}"]`)) {
+        provider.value = data.provider;
+      }
+      provider.disabled = data.active;
       start.disabled = data.active;
       start.textContent = data.state === "failed" ? "Profilanalyse fortsetzen" : "Profilfelder mit KI erstellen";
       apply.hidden = data.state !== "done";
@@ -143,7 +280,9 @@ if (profileGenerator) {
     apply.hidden = true;
     status.textContent = "Profilanalyse wird vorgemerkt …";
     try {
-      await request(profileGenerator.dataset.startUrl, {method: "POST"});
+      await request(profileGenerator.dataset.startUrl, {
+        method: "POST", body: new URLSearchParams({ai_provider: provider.value}),
+      });
       await refresh();
     } catch (error) {
       start.disabled = false;
@@ -175,7 +314,8 @@ if (characterAnalysis) {
   const start = characterAnalysis.querySelector("[data-character-analysis-start]");
   const status = characterAnalysis.querySelector("[data-character-analysis-status]");
   const progress = characterAnalysis.querySelector("[data-character-analysis-progress]");
-  if (start && status && progress) {
+  const provider = characterAnalysis.querySelector("[data-character-analysis-provider]");
+  if (start && status && progress && provider) {
     let timer;
     let observedActive = false;
     async function request(url, options = {}) {
@@ -190,6 +330,10 @@ if (characterAnalysis) {
       window.clearTimeout(timer);
       try {
         const data = await request(characterAnalysis.dataset.statusUrl);
+        if (data.provider && provider.querySelector(`option[value="${CSS.escape(data.provider)}"]`)) {
+          provider.value = data.provider;
+        }
+        provider.disabled = data.active;
         if (observedActive && !data.active && data.state === "done") {
           window.location.reload();
           return;
@@ -214,7 +358,9 @@ if (characterAnalysis) {
       start.disabled = true;
       status.textContent = "Charakteranalyse wird vorgemerkt …";
       try {
-        await request(characterAnalysis.dataset.startUrl, {method: "POST"});
+        await request(characterAnalysis.dataset.startUrl, {
+          method: "POST", body: new URLSearchParams({ai_provider: provider.value}),
+        });
         await refresh();
       } catch (error) {
         start.disabled = false;

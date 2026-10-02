@@ -686,6 +686,15 @@ class ReelStore:
         return self.artifact_path(draft, "image", paths[source])
 
     def select_image(self, draft_id: str, revision: int, source: str) -> ReelDraft:
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            return self._select_image(connection, draft_id, revision, source)
+
+    def _select_image(
+        self, connection: sqlite3.Connection, draft_id: str, revision: int, source: str,
+    ) -> ReelDraft:
+        """Select an image inside an existing transaction (also used by chapter review)."""
         fields = {
             "scene": ("scene_image_path", "scene_image_sha256"),
             "optimized": ("optimized_image_path", "optimized_image_sha256"),
@@ -694,32 +703,29 @@ class ReelStore:
         if source not in fields:
             raise UploadError("Bitte eine vorhandene Bildvariante auswählen.")
         path_field, hash_field = fields[source]
-        with closing(self.connection()) as connection, connection:
-            self.schema(connection)
-            connection.execute("begin immediate")
-            draft = connection.execute(
-                "select * from local_reel_drafts where id=?", (draft_id,)
-            ).fetchone()
-            if draft is None:
-                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
-            if draft["revision"] != revision:
-                raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
-            relative, digest = draft[path_field], draft[hash_field]
-            if not relative or not digest:
-                raise UploadError("Die ausgewählte Bildvariante ist nicht mehr vorhanden.", 409)
-            self._validate_stored_image(draft, relative, digest)
-            if (draft["selected_image_source"] == source
-                    and draft["selected_image_path"] == relative and not draft["image_stale"]):
-                return ReelDraft.from_row(draft)
-            connection.execute(
-                """update local_reel_drafts set selected_image_source=?,selected_image_path=?,
-                selected_image_sha256=?,image_stale=0,video_stale=1,state='editing',error=null,
-                revision=revision+1,updated_at=? where id=? and revision=?""",
-                (source, relative, digest, time.time(), draft_id, revision),
-            )
-            saved = connection.execute(
-                "select * from local_reel_drafts where id=?", (draft_id,)
-            ).fetchone()
+        draft = connection.execute(
+            "select * from local_reel_drafts where id=?", (draft_id,)
+        ).fetchone()
+        if draft is None:
+            raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+        if draft["revision"] != revision:
+            raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+        relative, digest = draft[path_field], draft[hash_field]
+        if not relative or not digest:
+            raise UploadError("Die ausgewählte Bildvariante ist nicht mehr vorhanden.", 409)
+        self._validate_stored_image(draft, relative, digest)
+        if (draft["selected_image_source"] == source
+                and draft["selected_image_path"] == relative and not draft["image_stale"]):
+            return ReelDraft.from_row(draft)
+        connection.execute(
+            """update local_reel_drafts set selected_image_source=?,selected_image_path=?,
+            selected_image_sha256=?,image_stale=0,video_stale=1,state='editing',error=null,
+            revision=revision+1,updated_at=? where id=? and revision=?""",
+            (source, relative, digest, time.time(), draft_id, revision),
+        )
+        saved = connection.execute(
+            "select * from local_reel_drafts where id=?", (draft_id,)
+        ).fetchone()
         return ReelDraft.from_row(saved)
 
     def save_uploaded_image(
@@ -1022,6 +1028,16 @@ class ReelJobStore:
         return self.reels.connection()
 
     def enqueue(self, draft_id: str, kind: JobKind, payload: dict | None = None) -> ReelJob:
+        with closing(self.connection()) as connection, connection:
+            ReelStore.schema(connection)
+            connection.execute("begin immediate")
+            return self._enqueue(connection, draft_id, kind, payload)
+
+    def _enqueue(
+        self, connection: sqlite3.Connection, draft_id: str, kind: JobKind,
+        payload: dict | None = None,
+    ) -> ReelJob:
+        """Enqueue in a caller-owned transaction, without committing other state changes."""
         if kind not in {"prompt", "image", "video", "upload"}:
             raise ValueError("Unbekannter Reel-Job.")
         payload = payload or {}
@@ -1033,43 +1049,74 @@ class ReelJobStore:
             raise ValueError("Der Reel-Job enthält nicht serialisierbare Daten.") from None
         if len(encoded.encode()) > 64 * 1024:
             raise ValueError("Der Reel-Job ist zu groß.")
-        with closing(self.connection()) as connection, connection:
-            ReelStore.schema(connection)
-            connection.execute("begin immediate")
-            draft = connection.execute(
-                "select * from local_reel_drafts where id=?", (draft_id,)
-            ).fetchone()
-            if draft is None:
-                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
-            if kind == "image" and not draft["image_prompt"]:
-                raise UploadError("Bitte zuerst einen Bildprompt erzeugen oder eingeben.", 409)
-            if (kind == "image" and payload.get("operation") == "optimize"
-                    and (not draft["scene_image_path"] or draft["image_stale"])):
-                raise UploadError("Bitte zuerst ein aktuelles Szenenbild erzeugen.", 409)
-            if kind == "video" and (
-                not draft["selected_image_path"] or draft["image_stale"]
-                or not draft["video_prompt"] or not draft["audio_track_id"]
-                or draft["audio_start_ms"] is None
-            ):
-                raise UploadError(
-                    "Bitte zuerst Bild, Audiodatei, Audioausschnitt und Videoprompt festlegen.", 409
-                )
-            if kind == "upload" and draft["state"] != "ready":
-                raise UploadError("Bitte das Reel samt Posting-Text zuerst fertigstellen.", 409)
-            active = connection.execute(
-                """select * from local_reel_jobs where draft_id=? and kind=?
-                and state in ('queued','running')""", (draft_id, kind)
-            ).fetchone()
-            if active:
-                return self._job(active)
-            job_id, now = str(uuid4()), time.time()
-            connection.execute(
-                """insert into local_reel_jobs
-                (id,draft_id,kind,input_revision,state,payload_json,created_at,updated_at)
-                values (?,?,?,?,'queued',?,?,?)""",
-                (job_id, draft_id, kind, draft["revision"], encoded, now, now),
+        draft = connection.execute(
+            "select * from local_reel_drafts where id=?", (draft_id,)
+        ).fetchone()
+        if draft is None:
+            raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+        if kind == "image" and not draft["image_prompt"]:
+            raise UploadError("Bitte zuerst einen Bildprompt erzeugen oder eingeben.", 409)
+        if (kind == "image" and payload.get("operation") == "optimize"
+                and (not draft["scene_image_path"] or draft["image_stale"])):
+            raise UploadError("Bitte zuerst ein aktuelles Szenenbild erzeugen.", 409)
+        if kind == "video" and (
+            not draft["selected_image_path"] or draft["image_stale"]
+            or not draft["video_prompt"] or not draft["audio_track_id"]
+            or draft["audio_start_ms"] is None
+        ):
+            raise UploadError(
+                "Bitte zuerst Bild, Audiodatei, Audioausschnitt und Videoprompt festlegen.", 409
             )
-            row = connection.execute("select * from local_reel_jobs where id=?", (job_id,)).fetchone()
+        if kind == "upload" and draft["state"] != "ready":
+            raise UploadError("Bitte das Reel samt Posting-Text zuerst fertigstellen.", 409)
+        if kind == "image" and payload.get("operation") == "optimize" and "character_ids" in payload:
+            try:
+                selected = [str(UUID(str(value))) for value in payload["character_ids"]]
+            except (TypeError, ValueError):
+                raise UploadError("Bitte gültige Charakterreferenzen auswählen.") from None
+            if not 1 <= len(selected) <= 4 or len(set(selected)) != len(selected):
+                raise UploadError("Bitte ein bis vier unterschiedliche Charakterreferenzen auswählen.")
+            if not connection.execute(
+                "select 1 from sqlite_master where type='table' and name='local_book_characters'"
+            ).fetchone():
+                raise UploadError("Die ausgewählten Charakterreferenzen fehlen.")
+            placeholders = ",".join("?" for _ in selected)
+            count = connection.execute(
+                f"""select count(*) from local_book_characters where book_id=?
+                and id in ({placeholders}) and reference_image_path is not null
+                and reference_image_sha256 is not null""", (draft["book_id"], *selected),
+            ).fetchone()[0]
+            if count != len(selected):
+                raise UploadError("Bitte Referenzbilder aus diesem Buch auswählen.")
+            if tuple(selected) != tuple(json.loads(draft["character_ids_json"])):
+                if connection.execute(
+                    """select 1 from local_reel_jobs where draft_id=?
+                    and state in ('queued','running') limit 1""", (draft_id,),
+                ).fetchone():
+                    raise UploadError("Für dieses Kapitel läuft noch ein Verarbeitungsschritt.", 409)
+                # This is an explicit identity edit of the existing scene, not a new
+                # scene prompt. Keep that scene usable and fence the new job revision.
+                connection.execute(
+                    """update local_reel_drafts set character_ids_json=?,revision=revision+1,
+                    updated_at=? where id=?""", (json.dumps(selected), time.time(), draft_id),
+                )
+                draft = connection.execute(
+                    "select * from local_reel_drafts where id=?", (draft_id,),
+                ).fetchone()
+        active = connection.execute(
+            """select * from local_reel_jobs where draft_id=? and kind=?
+            and state in ('queued','running')""", (draft_id, kind)
+        ).fetchone()
+        if active:
+            return self._job(active)
+        job_id, now = str(uuid4()), time.time()
+        connection.execute(
+            """insert into local_reel_jobs
+            (id,draft_id,kind,input_revision,state,payload_json,created_at,updated_at)
+            values (?,?,?,?,'queued',?,?,?)""",
+            (job_id, draft_id, kind, draft["revision"], encoded, now, now),
+        )
+        row = connection.execute("select * from local_reel_jobs where id=?", (job_id,)).fetchone()
         return self._job(row)
 
     @staticmethod
@@ -1305,8 +1352,21 @@ class ReelJobStore:
             ).fetchone():
                 return []
             rows = connection.execute(
-                """select id,kind,state,attempts,error,created_at,updated_at
+                """select id,kind,state,attempts,error,created_at,updated_at,result_json
                 from local_reel_jobs where draft_id=? order by created_at desc,id desc""",
                 (draft_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        statuses = []
+        for row in rows:
+            item = dict(row)
+            result_json = item.pop("result_json")
+            if item["kind"] == "image" and result_json:
+                try:
+                    result = json.loads(result_json)
+                    prompt = result.get("effective_image_prompt") if isinstance(result, dict) else None
+                    if isinstance(prompt, str):
+                        item["effective_image_prompt"] = prompt
+                except (TypeError, ValueError):
+                    pass
+            statuses.append(item)
+        return statuses

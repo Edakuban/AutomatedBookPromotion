@@ -66,16 +66,37 @@ def test_audio_split_rejects_path_escape_and_source_overwrite(tmp_path):
                             output_path=source, runner=missing_ffmpeg)
 
 
-def test_video_prompt_contract_requires_visible_non_performance_motion():
+def test_video_prompt_contract_requires_visible_controlled_motion():
     request = build_video_prompt_request(image_prompt="A rainy alley", duration_seconds=10,
                                          genre="Thriller", mood="tense", motion_intensity="dynamic")
     assert "10.000 seconds" in request and "A rainy alley" in request
     assert "one continuous shot" in VIDEO_PROMPT_SYSTEM
-    assert "Never invent a singer" in VIDEO_PROMPT_SYSTEM
+    assert "Never invent a new singer" in VIDEO_PROMPT_SYSTEM
+    assert "may naturally lip-sync" in VIDEO_PROMPT_SYSTEM
     good = "Rain sweeps visibly across the alley. The camera tracks laterally while existing reflections pulse with the rhythm."
     assert validate_video_prompt(good) == good
     with pytest.raises(ValueError, match="unsupported motion"):
-        validate_video_prompt("The camera uses subtle movement and the singer starts singing in the rain.")
+        validate_video_prompt("The camera uses subtle movement while rain moves across the window.")
+
+    performance = (
+        "The existing woman naturally lip-syncs to the supplied vocals while colored light pulses "
+        "with the song. The camera tracks laterally through the continuous shot."
+    )
+    assert validate_video_prompt(performance) == performance
+
+
+@pytest.mark.parametrize("ending", [
+    "No dialogue, singing, singer, or lip-sync.",
+    "The shot continues without singing or lip sync.",
+    "Avoid subtle movement, singing, and lip-sync.",
+    "The subject must not perform lip-sync or singing.",
+])
+def test_video_prompt_contract_allows_explicit_negative_constraints(ending):
+    prompt = (
+        "The camera tracks laterally while rain crosses the window and the existing subject "
+        "turns toward the moving light. " + ending
+    )
+    assert validate_video_prompt(prompt) == prompt
 
 
 def test_video_workflow_inputs_replace_image_audio_duration_and_prompt():
@@ -112,6 +133,17 @@ def test_reference_workflow_receives_scene_sheet_and_unambiguous_identity_map():
     assert "Image 2 is authoritative" in updated["113"]["inputs"]["text"]
     assert "isolated edit" in updated["113"]["inputs"]["text"]
     assert workflow["76"]["inputs"]["image"] == "old-scene.png"
+
+
+def test_reference_edit_ignores_portrait_background_and_integrates_identity_into_scene():
+    prompt = build_reference_edit_prompt("The sole reference portrait shows Sam.")
+    assert "Image 1 is the sole source of truth for the scene and composition" in prompt
+    assert "Ignore every reference portrait's background" in prompt
+    assert "never for the scene, clothing, pose or lighting" in prompt
+    assert "Do not paste or overlay any reference portrait or rectangular image region" in prompt
+    assert "illumination, color grading, shadows and occlusion" in prompt
+    assert "one seamless, coherent scene" in prompt
+    assert "original visual style" in prompt
 
 
 def test_final_mux_maps_selected_audio_as_only_audio_track(tmp_path):

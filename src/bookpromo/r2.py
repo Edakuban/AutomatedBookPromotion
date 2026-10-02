@@ -92,9 +92,12 @@ class R2Client:
             raise R2Error("Cloudflare R2 hat die Speicheroperation abgelehnt.")
         return response
 
-    async def upload_reel(self, key: str, data: bytes, digest: str) -> str:
+    async def upload_reel(self, key: str, data: bytes, digest: str, *,
+                          max_bytes: int = 50 * 1024 * 1024) -> str:
+        if not 12 <= max_bytes <= 300 * 1024 * 1024:
+            raise ValueError("Ungültiges Video-Upload-Limit.")
         if (not re.fullmatch(r"[0-9a-f]{64}", digest) or hashlib.sha256(data).hexdigest() != digest
-                or len(data) < 12 or len(data) > 50 * 1024 * 1024 or data[4:8] != b"ftyp"):
+                or len(data) < 12 or len(data) > max_bytes or data[4:8] != b"ftyp"):
             raise ValueError("Ungültiges Reel-Video.")
         await self._request("PUT", key, body=data, content_type="video/mp4")
         return key

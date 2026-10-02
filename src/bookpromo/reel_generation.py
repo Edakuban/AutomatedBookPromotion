@@ -406,18 +406,27 @@ def build_reference_edit_prompt(identity_context: str) -> str:
         raise ValueError("Character identity context is empty or too long")
     return (
         "Edit Image 1 using Image 2 only as a character identity reference sheet. "
+        "Image 1 is the sole source of truth for the scene and composition. Ignore every "
+        "reference portrait's background, scenery, props, lighting, framing and rectangular "
+        "image boundaries in Image 2; they are not part of the character identity. "
         f"{context} Match each named person already visible in Image 1 with the corresponding "
         "portrait position in Image 2. Use each visual matching description only to locate the "
-        "correct target person in Image 1; Image 2 is authoritative for identity and appearance. "
+        "correct target person in Image 1; Image 2 is authoritative only for character identity "
+        "features, never for the scene, clothing, pose or lighting. "
         "Treat every stated scene-person/reference-portrait pair as an isolated edit: identity "
         "features from that portrait may modify only its named target person and no other face, "
         "hair, or body in Image 1. "
         "Transfer face, facial structure, skin tone, age impression, "
         "complete hair, hairline, hair color, hairstyle, facial hair, glasses and stable body shape. "
+        "Re-render these identity features naturally within the existing scene, adapting them "
+        "to Image 1's pose, perspective, scale, illumination, color grading, shadows and "
+        "occlusion. Do not paste or overlay any reference portrait or rectangular image region. "
         "Do not swap identities. Preserve Image 1's exact number of people, left-to-right placement, "
         "clothing, pose, expression, gaze, interaction, background, props, lighting, camera angle, "
-        "framing, atmosphere and photorealistic style. Do not add or remove people, do not copy the "
-        "reference-sheet background, and do not add text, labels, borders, panels or watermarks."
+        "framing, atmosphere and original visual style. Produce one seamless, coherent scene "
+        "with no collage, pasted cutout, inset image, visible rectangle or hard compositing edge. "
+        "Do not add or remove people, do not copy the reference-sheet background, and do not "
+        "add text, labels, borders, panels or watermarks."
     )
 
 

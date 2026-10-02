@@ -27,7 +27,9 @@ class UploadLimitMiddleware:
             )
         )
         is_audio_upload = (
-            scope["path"].startswith("/books/local/") and scope["path"].endswith("/reel/audio/upload")
+            scope["path"].startswith("/books/local/") and scope["path"].endswith(
+                ("/reel/audio/upload", "/teaser/audio/upload")
+            )
         )
         limit = self.max_bytes if scope["path"] == "/uploads" else (
             self.asset_max_bytes if is_asset_upload else self.audio_max_bytes if is_audio_upload else 256 * 1024

@@ -46,10 +46,10 @@ try {
     await db.exec(await readFile(`supabase/migrations/${file}`, 'utf8'));
   }
 
-  check(await scalar('select version from public.bookpromo_schema') === 8);
+  check(await scalar('select version from public.bookpromo_schema') === 10);
   check(await scalar("select not public and file_size_limit=8388608 and allowed_mime_types=array['image/jpeg']::text[] from storage.buckets where id='book-promotion-media'"));
   check(await scalar("select not public and file_size_limit=8388608 and allowed_mime_types=array['image/png','image/jpeg']::text[] from storage.buckets where id='book-promotion-assets'"));
-  check(await scalar("select not public and file_size_limit=52428800 and allowed_mime_types=array['video/mp4']::text[] from storage.buckets where id='book-promotion-reels'"));
+  check(await scalar("select not public and file_size_limit=314572800 and allowed_mime_types=array['video/mp4']::text[] from storage.buckets where id='book-promotion-reels'"));
   check(await scalar("select relrowsecurity from pg_class where oid='public.post_media'::regclass"));
   check(!await scalar("select has_table_privilege('anon','public.post_media','select')"));
   check(await scalar("select has_table_privilege('service_role','public.post_media','select,insert,update,delete')"));
@@ -287,6 +287,31 @@ try {
   );
   check(reelResult.outcome === 'complete' && reelResult.asset.media_status === 'deleted');
 
+  // v10 full trailers share delivery mechanics, without pretending to be quotes.
+  const trailerId = crypto.randomUUID();
+  const trailerAsset = {
+    id: trailerId, source_kind: 'book_teaser', quote_id: null, chapter_id: null, book_id: book,
+    quote_text: 'Whole book trailer', addition: '', title: 'Whole book trailer',
+    description: 'Book trailer without an invented quote.', book_profile: {},
+    image_prompt: 'Reviewed chapter scenes', video_prompt: 'Crossfade assembly',
+    storage_provider: 'supabase', storage_bucket: 'book-promotion-reels',
+    storage_path: `${trailerId}/${reelDigest}.mp4`, media_sha256: reelDigest,
+    size_bytes: 100000000, duration_ms: 235000, width: 1920, height: 1080,
+    audio_title: 'Song', audio_start_ms: 0,
+  };
+  const trailerDestinations = [{platform: 'youtube', account_id: 'trailer-channel', queue_mode: 'daily',
+    scheduled_for: null, title: trailerAsset.title, description: trailerAsset.description, options: {privacy_status:'private'}}];
+  const enqueueTrailer = (asset = trailerAsset) => scalar('select public.bookpromo_reel_enqueue($1::jsonb,$2::jsonb)',
+    [JSON.stringify(asset), JSON.stringify(trailerDestinations)]);
+  check((await enqueueTrailer()).outcome === 'enqueued');
+  check((await enqueueTrailer()).outcome === 'enqueued');
+  await rejects(() => enqueueTrailer({...trailerAsset, id: crypto.randomUUID(), source_kind:'chapter', chapter_id:chapter}));
+  await rejects(() => enqueueTrailer({...trailerAsset, id: crypto.randomUUID(), quote_id:quote}));
+  await rejects(() => enqueueTrailer({...trailerAsset, id: crypto.randomUUID(), duration_ms:601000}));
+  const claimedTrailer = await scalar("select public.bookpromo_reel_claim('youtube','daily','trailer-channel')");
+  check(claimedTrailer.outcome === 'claimed' && claimedTrailer.asset.source_kind === 'book_teaser');
+  check(claimedTrailer.asset.duration_ms === 235000 && claimedTrailer.asset.width === 1920);
+
   await db.exec('reset role; set role anon');
   await rejects(() => sync(payload, 3));
   await rejects(() => reserve('review'));
@@ -295,7 +320,7 @@ try {
   await rejects(() => query('select * from public.reel_publications'));
   await rejects(() => scalar("select public.bookpromo_reel_claim('instagram','daily','')"));
   await rejects(() => childContainer(draft, 0, 'forbidden'));
-  console.log(`Integration v8: ${checks} PostgreSQL-Prüfungen erfolgreich.`);
+  console.log(`Integration v10: ${checks} PostgreSQL-Prüfungen erfolgreich.`);
 } finally {
   await db.close();
 }

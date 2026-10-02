@@ -43,8 +43,15 @@ from .reel_content import (
 )
 from .reel_prompts import validate_video_prompt
 from .reel_generation import ReelGenerator, split_audio_segment, wav_waveform
+from .book_teasers import BookTeaserStore, TeaserSegment, complete_chapter_segments
+from .chapter_teasers import ChapterTeaserStore
+from .book_teaser_worker import BookTeaserJobStore
+from .teaser_publication import book_teaser_platforms
 from .comfy import ComfyClient
 from .characters import CharacterStore, character_mention_index, order_scene_characters
+from .text_ai import (
+    TextAIError, configured_providers, create_text_client, provider_missing,
+)
 from pydantic import ValidationError
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -115,6 +122,9 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         max_artifact_bytes=settings.reel_max_video_mb * 1024 * 1024,
     )
     reel_jobs = ReelJobStore(reel_store)
+    teaser_store = BookTeaserStore(local_store)
+    chapter_teaser_store = ChapterTeaserStore(local_store)
+    teaser_job_store = BookTeaserJobStore(local_store)
     character_store = CharacterStore(local_store)
     sync_lock = asyncio.Lock()
     webui_lock = asyncio.Lock()
@@ -251,6 +261,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                     for character in characters
                 ),
                 "job": latest, "message": None,
+                "text_ai_providers": configured_providers(settings),
                 "default_duration": settings.reel_default_duration_seconds,
                 "publication_defaults": publication_defaults,
                 "can_queue": draft.state in {"ready", "stocked"} and bool(publication_defaults.values.selected())
@@ -262,6 +273,316 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
 
     def action_response(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         return JSONResponse({"workshop_url": reel_workshop_url(request, book_id, chapter_id, quote_id)})
+
+    async def requested_text_provider(request: Request):
+        try:
+            async with request.form(max_files=0, max_fields=1) as form:
+                if not form:
+                    provider = "openwebui"
+                elif set(form) == {"ai_provider"} and len(form.getlist("ai_provider")) == 1:
+                    provider = str(form["ai_provider"])
+                else:
+                    raise ValueError()
+            if provider not in {"openwebui", "comfyui_qwen"}:
+                raise ValueError()
+        except (TypeError, ValueError):
+            raise UploadError("Bitte einen gültigen Text-KI-Provider auswählen.") from None
+        if provider_missing(settings, provider):
+            raise UploadError("Der ausgewählte Text-KI-Provider ist nicht eingerichtet.", 409)
+        return provider
+
+    async def teaser_context(book_id: UUID):
+        book = await run_in_threadpool(local_store.get_book, book_id)
+        if book is None:
+            raise HTTPException(404)
+        record = await run_in_threadpool(extraction_store.get, str(book_id))
+        if record is None or record.result is None:
+            raise UploadError("Bitte zuerst Text und Kapitel einlesen.", 409)
+        management = await run_in_threadpool(management_store.get, str(book_id))
+        drafts = await run_in_threadpool(reel_store.list_drafts, str(book_id))
+        tracks = await run_in_threadpool(reel_store.list_audio, str(book_id))
+        project = await run_in_threadpool(teaser_store.get, str(book_id))
+        render_job = await run_in_threadpool(teaser_job_store.latest, str(book_id))
+        characters = await run_in_threadpool(character_store.list, str(book_id))
+        chapter_run = await run_in_threadpool(
+            chapter_teaser_store.latest, str(book_id), include_plans=True,
+        )
+        publication_defaults = await run_in_threadpool(
+            reel_store.get_publication_defaults, settings.reel_storage_provider,
+        )
+        sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
+        chapter_queue_schema_ready = False
+        book_teaser_queue_schema_ready = False
+        if (settings.supabase_enabled or repository is not None) and sync_receipt is not None:
+            try:
+                await (repository or SupabaseRepository(settings)).check_schema(chapters=True)
+                chapter_queue_schema_ready = True
+            except DatabaseError:
+                pass  # Keep the independent local image/video pipeline available.
+            if project and project.state == "ready":
+                try:
+                    await (repository or SupabaseRepository(settings)).check_schema(book_teasers=True)
+                    book_teaser_queue_schema_ready = True
+                except DatabaseError:
+                    pass
+        quote_chapters = {
+            item["quote"].id: item["quote"].chapter_id for item in management["quotes"]
+        }
+        generated_chapters = {
+            item["draft_id"]: item["chapter_id"]
+            for item in (chapter_run or {}).get("plans", []) if item.get("draft_id")
+        }
+        drafts_by_id = {draft.id: draft for draft in drafts}
+        characters_by_id = {character.id: character for character in characters}
+        chapter_media_active = False
+        optimizable_count = 0
+        for plan in (chapter_run or {}).get("plans", []):
+            draft = drafts_by_id.get(plan.get("draft_id"))
+            plan["draft"] = draft
+            statuses = (
+                await run_in_threadpool(reel_jobs.status, draft.id) if draft else []
+            )
+            image_job = next((item for item in statuses if item["kind"] == "image"), None)
+            plan["image_job"] = image_job
+            plan["effective_image_prompt"] = next(
+                (item["effective_image_prompt"] for item in statuses
+                 if item.get("effective_image_prompt")), "",
+            )
+            plan["media_active"] = any(
+                item["state"] in {"queued", "running"} for item in statuses
+            )
+            plan["can_select_image"] = bool(
+                chapter_run["state"] in {"done", "partial"}
+                and plan["state"] in {"analyzed", "done", "failed"} and not plan["media_active"]
+            )
+            if plan["media_active"]:
+                chapter_media_active = True
+            selected_characters = [
+                characters_by_id[value] for value in (draft.character_ids if draft else ())
+                if value in characters_by_id
+            ]
+            plan["has_character_references"] = any(
+                character.has_reference for character in selected_characters
+            )
+            plan["character_options"] = [
+                {"id": character.id, "name": character.name,
+                 "selected": bool(draft and character.id in draft.character_ids)}
+                for character in characters if character.has_reference
+            ]
+            plan["image_sources"] = [
+                {"id": source, "label": label, "selected": (
+                    draft.selected_image_source == source and draft.selected_image_path == path
+                )}
+                for source, label, path in (draft.image_candidates if draft else ())
+                if source in {"scene", "optimized"}
+            ]
+            plan["can_optimize"] = bool(
+                draft and plan["can_select_image"] and draft.scene_image_path
+                and not draft.image_stale and plan["has_character_references"]
+                and settings.reel_reference_workflow.is_file()
+            )
+            plan["can_configure_characters"] = bool(
+                draft and plan["can_select_image"] and draft.scene_image_path
+                and not draft.image_stale and plan["character_options"]
+                and settings.reel_reference_workflow.is_file()
+            )
+            plan["can_regenerate_image"] = bool(
+                draft and plan["can_select_image"] and plan.get("suggestion")
+                and draft.image_prompt and settings.reel_image_workflow.is_file()
+            )
+            plan["can_edit_prompt"] = bool(draft and plan["can_select_image"] and plan.get("suggestion"))
+            plan["can_start_video"] = bool(
+                draft and plan["can_select_image"] and draft.selected_image_path
+                and not draft.image_stale and any(option["selected"] for option in plan["image_sources"])
+                and settings.reel_video_workflow.is_file()
+            )
+            plan["can_retry_video"] = bool(
+                draft and plan["can_select_image"] and plan["state"] == "failed"
+                and draft.selected_image_path and not draft.image_stale
+                and settings.reel_video_workflow.is_file()
+            )
+            plan["can_bulk_optimize"] = bool(
+                plan["can_optimize"] and not draft.optimized_image_path
+            )
+            if plan["can_bulk_optimize"]:
+                optimizable_count += 1
+        image_plans = [
+            plan for plan in (chapter_run or {}).get("plans", [])
+            if plan["state"] == "analyzed" or (plan["state"] == "failed" and plan["can_start_video"])
+        ]
+        chapter_video_configured = settings.reel_video_workflow.is_file()
+        can_start_chapter_videos = bool(
+            chapter_run and chapter_run["state"] in {"done", "partial"} and image_plans
+            and not chapter_media_active and chapter_video_configured
+            and all(
+                plan["draft"] and plan["draft"].selected_image_path
+                and not plan["draft"].image_stale
+                and any(option["selected"] for option in plan["image_sources"])
+                for plan in image_plans
+            )
+        )
+        candidates: dict[str, list] = {chapter.id: [] for chapter in record.result.chapters}
+        for draft in drafts:
+            chapter_id = quote_chapters.get(draft.quote_id) or generated_chapters.get(draft.id)
+            if (
+                chapter_id in candidates and draft.selected_video_path
+                and draft.selected_video_sha256 and not draft.video_stale
+                and draft.state in {"ready", "stocked", "published"}
+            ):
+                candidates[chapter_id].append(draft)
+        stored = {segment.chapter_id: segment for segment in project.segments} if project else {}
+        rows = []
+        for chapter in record.result.chapters:
+            choices = candidates[chapter.id]
+            segment = stored.get(chapter.id)
+            selected = next(
+                (draft for draft in choices if segment and draft.id == segment.draft_id),
+                choices[0] if choices else None,
+            )
+            if segment is None:
+                segment = TeaserSegment(
+                    chapter_id=chapter.id,
+                    draft_id=selected.id if selected else "",
+                    video_sha256=selected.selected_video_sha256 if selected else "",
+                    included=selected is not None,
+                    position=chapter.position,
+                    start_ms=0,
+                    duration_ms=selected.duration_ms if selected else 0,
+                )
+            source_stale = bool(
+                segment.draft_id and (
+                    selected is None or selected.id != segment.draft_id
+                    or selected.selected_video_sha256 != segment.video_sha256
+                )
+            )
+            rows.append({
+                "chapter": chapter,
+                "candidates": choices,
+                "segment": segment,
+                "selected": selected,
+                "source_stale": source_stale,
+            })
+        transition_ms = project.transition_ms if project else 500
+        included = [row["segment"] for row in rows if row["segment"].included]
+        estimated_duration_ms = max(
+            0,
+            sum(segment.duration_ms for segment in included)
+            - transition_ms * max(0, len(included) - 1),
+        )
+        chapter_teaser_providers = configured_providers(settings)
+        plans = (chapter_run or {}).get("plans", [])
+        complete_teaser_ready = bool(
+            chapter_run and chapter_run["state"] in {"done", "partial"}
+            and len(plans) == len(record.result.chapters)
+            and {plan["chapter_id"] for plan in plans} == {chapter.id for chapter in record.result.chapters}
+            and plans and all(
+                plan["state"] == "done" and plan["draft"] and not plan["media_active"]
+                and not plan["draft"].image_stale and not plan["draft"].video_stale
+                and plan["draft"].selected_video_path and plan["draft"].selected_video_sha256
+                and plan["draft"].state in {"ready", "stocked", "published"}
+                for plan in plans
+            )
+        )
+        final_platforms = book_teaser_platforms(
+            publication_defaults.values, project.aspect if project else "vertical",
+        )
+        return {
+            "active_page": "books", "book": book, "record": record,
+            "management": management, "tracks": tracks, "project": project,
+            "render_job": render_job,
+            "rows": rows, "estimated_duration_ms": estimated_duration_ms,
+            "chapter_run": chapter_run,
+            "chapter_production_active": bool(
+                (chapter_run or {}).get("active") or chapter_media_active
+            ),
+            "chapter_media_active": chapter_media_active,
+            "optimizable_count": optimizable_count,
+            "can_start_chapter_videos": can_start_chapter_videos,
+            "complete_teaser_ready": complete_teaser_ready,
+            "book_teaser_queue_platforms": final_platforms,
+            "book_teaser_queue_configured": bool(
+                project and project.state == "ready" and project.output_path and final_platforms
+                and book_teaser_queue_schema_ready and sync_receipt is not None
+                and not (render_job and render_job["active"])
+                and not any(row["source_stale"] for row in rows if row["segment"].included)
+            ),
+            "chapter_video_configured": chapter_video_configured,
+            "reference_workflow_configured": settings.reel_reference_workflow.is_file(),
+            "chapter_teaser_providers": chapter_teaser_providers,
+            "publication_defaults": publication_defaults,
+            "supabase_enabled": settings.supabase_enabled or repository is not None,
+            "book_synced": sync_receipt is not None,
+            "chapter_queue_schema_ready": chapter_queue_schema_ready,
+            "chapter_queue_configured": bool(publication_defaults.values.selected())
+                and (settings.supabase_enabled or repository is not None)
+                and sync_receipt is not None and chapter_queue_schema_ready,
+            "chapter_teaser_configured": bool(chapter_teaser_providers)
+                and settings.reel_image_workflow.is_file(),
+        }
+
+    def teaser_segments_from_form(form, rows, transition_ms: int) -> list[TeaserSegment]:
+        segments = []
+        for row in rows:
+            chapter = row["chapter"]
+            key = chapter.id
+            choices = {draft.id: draft for draft in row["candidates"]}
+            draft_id = str(form.get(f"draft_{key}", "")).strip()
+            included = f"include_{key}" in form
+            draft = choices.get(draft_id) if draft_id else None
+            try:
+                start_ms = round(float(str(form.get(f"start_{key}", "0"))) * 1000)
+                duration_ms = round(float(str(form.get(f"duration_{key}", "0"))) * 1000)
+                focus_x = int(str(form.get(f"focus_x_{key}", "50")))
+                focus_y = int(str(form.get(f"focus_y_{key}", "50")))
+            except (TypeError, ValueError):
+                raise UploadError(f"Bitte die Schnittwerte für Kapitel {chapter.position} prüfen.") from None
+            if included and draft is None:
+                raise UploadError(f"Für Kapitel {chapter.position} ist kein fertiges Reel ausgewählt.")
+            if draft and (
+                start_ms < 0 or duration_ms < 500
+                or start_ms + duration_ms > draft.duration_ms + 50
+            ):
+                raise UploadError(
+                    f"Der Ausschnitt für Kapitel {chapter.position} liegt außerhalb des Reels."
+                )
+            if not 0 <= focus_x <= 100 or not 0 <= focus_y <= 100:
+                raise UploadError(f"Der Fokus für Kapitel {chapter.position} muss zwischen 0 und 100 liegen.")
+            if included and duration_ms <= transition_ms:
+                raise UploadError(
+                    f"Kapitel {chapter.position} muss länger als die gewählte Überblendung sein."
+                )
+            segments.append(TeaserSegment(
+                chapter_id=chapter.id,
+                draft_id=draft.id if draft else "",
+                video_sha256=draft.selected_video_sha256 if draft else "",
+                included=included,
+                position=chapter.position,
+                start_ms=start_ms if draft else 0,
+                duration_ms=duration_ms if draft else 0,
+                focus_x=focus_x,
+                focus_y=focus_y,
+            ))
+        if not any(segment.included for segment in segments):
+            raise UploadError("Bitte mindestens ein fertiges Kapitel-Reel auswählen.")
+        return segments
+
+    async def save_teaser_request(request: Request, book_id: UUID):
+        context = await teaser_context(book_id)
+        try:
+            async with request.form(max_files=0, max_fields=4000) as form:
+                revision = int(str(form.get("revision", "0")))
+                transition_ms = round(float(str(form.get("transition_seconds", ".5"))) * 1000)
+                aspect = str(form.get("aspect", ""))
+                audio_track_id = str(form.get("audio_track_id", ""))
+                segments = teaser_segments_from_form(form, context["rows"], transition_ms)
+        except (TypeError, ValueError):
+            raise UploadError("Bitte Format, Song und Überblendung vollständig auswählen.") from None
+        saved = await run_in_threadpool(
+            teaser_store.save, str(book_id), revision,
+            aspect=aspect, audio_track_id=audio_track_id,
+            transition_ms=transition_ms, segments=segments,
+        )
+        return context, saved
 
     async def book_settings_context(book, management, details, *, saved=False, form_error=None,
                                     profile_run_id="", asset_saved="", promotion_pending=False):
@@ -278,6 +599,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 "overlay_preview": bool(getattr(details, "overlay_title_font", "")) and overlay_store.preview_exists(book.id),
                 "assets": assets, "asset_saved": asset_saved,
                 "characters": characters,
+                "text_ai_providers": configured_providers(settings),
                 "carousel_preview": carousel_preview,
                 "promotion_missing": missing if promotion_pending else []}
 
@@ -311,6 +633,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             analysis = await run_in_threadpool(analysis_store.latest, str(book_id), include_result=True)
             profile_analysis = await run_in_threadpool(analysis_store.latest, str(book_id), purpose="profile")
             character_analysis = await run_in_threadpool(analysis_store.latest, str(book_id), purpose="characters")
+            chapter_teasers = await run_in_threadpool(chapter_teaser_store.latest, str(book_id))
+            teaser_export = await run_in_threadpool(teaser_job_store.latest, str(book_id))
             management = await run_in_threadpool(management_store.get, str(book_id)) if book else None
             sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
         except (OSError, sqlite3.Error):
@@ -319,7 +643,9 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise HTTPException(404)
         return templates.TemplateResponse(request=request, name="local_book.html",
             context={"active_page": "books", "book": book, "record": record, "job": jobs.get(str(book_id)),
-                     "analysis": analysis, "analysis_configured": not settings.missing_for("openwebui"),
+                     "analysis": analysis,
+                     "text_ai_providers": configured_providers(settings),
+                     "analysis_configured": bool(configured_providers(settings)),
                      "management": management,
                      "sync_receipt": sync_receipt, "sync_enabled": settings.supabase_enabled,
                      "delete_available": True,
@@ -328,6 +654,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                          or (analysis or {}).get("active")
                          or (profile_analysis or {}).get("active")
                          or (character_analysis or {}).get("active")
+                         or (chapter_teasers or {}).get("active")
+                         or (teaser_export or {}).get("active")
                      ),
                      "chapter_blocked_counts": {c.id: sum(q["blocked"] and q["quote"].chapter_id == c.id for q in management["quotes"])
                          for c in record.result.chapters} if management and record and record.result else {},
@@ -335,11 +663,697 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                          for c in record.result.chapters} if analysis and analysis["result"] and record and record.result else {},
                      "result": record.result if record else None})
 
+    @app.get(
+        "/books/local/{book_id}/teaser", response_class=HTMLResponse, name="book_teaser",
+    )
+    async def book_teaser(
+        request: Request, book_id: UUID, saved: bool = False, rendered: bool = False,
+        queued: int = Query(default=0, ge=0, le=100000), teaser_queued: bool = False,
+    ):
+        try:
+            context = await teaser_context(book_id)
+        except (OSError, sqlite3.Error):
+            raise UploadError("Der lokale Book-Teaser konnte nicht gelesen werden.", 503) from None
+        context.update({"saved": saved, "rendered": rendered, "queued": queued,
+                        "teaser_queued": teaser_queued})
+        return templates.TemplateResponse(
+            request=request, name="book_teaser.html", context=context,
+        )
+
+    @app.post("/books/local/{book_id}/teaser/audio/upload", name="upload_teaser_audio")
+    async def upload_teaser_audio(request: Request, book_id: UUID):
+        require_local_origin(request)
+        if await run_in_threadpool(local_store.get_book, book_id) is None:
+            raise HTTPException(404)
+        if not request.headers.get("content-type", "").startswith("multipart/form-data"):
+            raise UploadError("Bitte genau eine WAV-Datei auswählen.", 415)
+        async with request.form(max_files=1, max_fields=1) as form:
+            file = form.get("file")
+            title = form.get("title")
+            if (
+                set(form) != {"file", "title"} or not isinstance(file, UploadFile)
+                or not isinstance(title, str) or len(title.strip()) > 200
+            ):
+                raise UploadError("Bitte eine WAV-Datei und optional einen gültigen Songtitel angeben.")
+            await run_in_threadpool(
+                reel_store.save_audio, str(book_id), file.file, file.filename,
+                title=title.strip() or None,
+            )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/start", name="start_chapter_teasers",
+    )
+    async def start_chapter_teasers(request: Request, book_id: UUID):
+        require_local_origin(request)
+        if not settings.reel_image_workflow.is_file():
+            raise UploadError("Bitte zuerst den ComfyUI-Szenenbild-Workflow einrichten.", 409)
+        context = await teaser_context(book_id)
+        try:
+            async with request.form(max_files=0, max_fields=3) as form:
+                if set(form) != {"audio_track_id", "transition_seconds", "ai_provider"}:
+                    raise ValueError()
+                audio_track_id = str(UUID(str(form["audio_track_id"])))
+                transition_ms = round(float(str(form["transition_seconds"])) * 1000)
+                provider = str(form["ai_provider"])
+                if provider not in {"openwebui", "comfyui_qwen"}:
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise UploadError(
+                "Bitte Text-KI, Song und Überblendung für die Kapitel-Reels auswählen."
+            ) from None
+        if provider_missing(settings, provider):
+            raise UploadError("Der ausgewählte Text-KI-Provider ist nicht eingerichtet.", 409)
+        details = context["management"]["details"]
+        await run_in_threadpool(
+            chapter_teaser_store.enqueue, str(book_id), settings,
+            audio_track_id=audio_track_id, transition_ms=transition_ms,
+            provider=provider,
+            book_context={
+                "title": details.title, "author": details.author,
+                "target_url": details.target_url, "genre": details.genre,
+                "mood": details.mood, "internal_summary": details.internal_summary,
+                "world": details.world, "characters": details.characters,
+                "spoilers": details.spoilers,
+                "image_prompt_base": details.image_prompt_base,
+                "caption_guidelines": details.caption_guidelines,
+            },
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.get(
+        "/books/local/{book_id}/teaser/chapters/status", name="chapter_teaser_status",
+    )
+    async def chapter_teaser_status(book_id: UUID):
+        context = await teaser_context(book_id)
+        run = context["chapter_run"]
+        if run is None:
+            return JSONResponse({
+                "state": "not_started", "active": False,
+                "label": "Noch keine automatische Kapitel-Reel-Produktion",
+                "stage": "", "completed": 0, "total": 0, "calls_started": 0,
+                "error": None,
+            })
+        payload = {key: run.get(key) for key in (
+            "state", "active", "label", "stage", "completed", "total",
+            "calls_started", "error",
+        )}
+        payload["active"] = context["chapter_production_active"]
+        if context["chapter_media_active"] and not run.get("active"):
+            payload["stage"] = "Charakterbilder werden optimiert"
+        return JSONResponse(payload)
+
+    @app.get(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/image.bin",
+        name="chapter_teaser_image",
+    )
+    async def chapter_teaser_image(
+        book_id: UUID, chapter_id: UUID, source: Literal["scene", "optimized"] = "scene",
+    ):
+        context = await teaser_context(book_id)
+        plan = next(
+            (item for item in (context["chapter_run"] or {}).get("plans", [])
+             if item["chapter_id"] == str(chapter_id)), None,
+        )
+        draft = plan.get("draft") if plan else None
+        if draft is None:
+            raise HTTPException(404)
+        path = await run_in_threadpool(reel_store.candidate_image_path, draft, source)
+        if path is None:
+            raise HTTPException(404)
+        return FileResponse(path)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/prompt",
+        name="save_chapter_teaser_prompt",
+    )
+    async def save_chapter_teaser_prompt(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next((item for item in (context["chapter_run"] or {}).get("plans", [])
+                     if item["chapter_id"] == str(chapter_id)), None)
+        if plan is None or not plan.get("can_edit_prompt"):
+            raise UploadError("Der Kapitelprompt kann jetzt nicht bearbeitet werden.", 409)
+        try:
+            async with request.form(max_files=0, max_fields=4) as form:
+                if (set(form) - {"revision", "image_prompt", "teaser_text", "video_prompt"}
+                        or not {"revision", "image_prompt", "teaser_text"} <= set(form)):
+                    raise ValueError()
+                revision = int(str(form["revision"]))
+                image_prompt, teaser_text = str(form["image_prompt"]), str(form["teaser_text"])
+                video_prompt = str(form["video_prompt"]) if "video_prompt" in form else None
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte einen gültigen Bildprompt und Teasertext eingeben.") from None
+        await run_in_threadpool(
+            chapter_teaser_store.save_prompt, str(book_id), context["chapter_run"]["id"],
+            plan["draft"].id, revision, image_prompt=image_prompt, teaser_text=teaser_text,
+            video_prompt=video_prompt,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/video/start",
+        name="start_chapter_teaser_video",
+    )
+    async def start_chapter_teaser_video(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next((item for item in (context["chapter_run"] or {}).get("plans", [])
+                     if item["chapter_id"] == str(chapter_id)), None)
+        if plan is None or not plan.get("can_start_video"):
+            raise UploadError("Bitte zuerst ein aktuelles Kapitelbild erzeugen und auswählen.", 409)
+        try:
+            async with request.form(max_files=0, max_fields=1) as form:
+                if set(form) - {"revision"}:
+                    raise ValueError()
+                revision = int(str(form["revision"])) if "revision" in form else None
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte die Kapitel-Seite neu laden.", 409) from None
+        await run_in_threadpool(
+            chapter_teaser_store.start_video, str(book_id), context["chapter_run"]["id"],
+            plan["draft"].id, revision=revision,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/image/regenerate",
+        name="regenerate_chapter_teaser_image",
+    )
+    async def regenerate_chapter_teaser_image(
+        request: Request, book_id: UUID, chapter_id: UUID,
+    ):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next(
+            (item for item in (context["chapter_run"] or {}).get("plans", [])
+             if item["chapter_id"] == str(chapter_id)), None,
+        )
+        if plan is None or not plan.get("can_regenerate_image"):
+            raise UploadError("Das Kapitelbild kann jetzt nicht neu erzeugt werden.", 409)
+        await run_in_threadpool(
+            chapter_teaser_store.reopen_image_review, str(book_id),
+            context["chapter_run"]["id"], [plan["draft"].id], regenerate=True,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/video/retry",
+        name="retry_chapter_teaser_video",
+    )
+    async def retry_chapter_teaser_video(
+        request: Request, book_id: UUID, chapter_id: UUID,
+    ):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next(
+            (item for item in (context["chapter_run"] or {}).get("plans", [])
+             if item["chapter_id"] == str(chapter_id)), None,
+        )
+        if plan is None or not plan.get("can_retry_video"):
+            raise UploadError("Bitte zuerst ein aktuelles Kapitelbild erzeugen und auswählen.", 409)
+        await run_in_threadpool(
+            chapter_teaser_store.retry_video, str(book_id),
+            context["chapter_run"]["id"], plan["draft"].id,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/image/optimize",
+        name="optimize_chapter_teaser_image",
+    )
+    async def optimize_chapter_teaser_image(
+        request: Request, book_id: UUID, chapter_id: UUID,
+    ):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next(
+            (item for item in (context["chapter_run"] or {}).get("plans", [])
+             if item["chapter_id"] == str(chapter_id)), None,
+        )
+        if plan is None or not plan.get("can_configure_characters"):
+            raise UploadError(
+                "Für dieses Kapitel sind Szenenbild und Charakterreferenzen nicht bereit.", 409,
+            )
+        revision, selected = None, None
+        try:
+            async with request.form(max_files=0, max_fields=6) as form:
+                if form:
+                    if set(form) - {"revision", "character_id"} or "revision" not in form:
+                        raise ValueError()
+                    revision = int(str(form["revision"]))
+                    selected = [str(UUID(str(value))) for value in form.getlist("character_id")]
+                    if not 1 <= len(selected) <= 4 or len(selected) != len(set(selected)):
+                        raise ValueError()
+                elif not plan.get("can_optimize"):
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte ein bis vier Charakterreferenzen für dieses Bild auswählen.") from None
+        await run_in_threadpool(
+            chapter_teaser_store.reopen_image_review, str(book_id),
+            context["chapter_run"]["id"], [plan["draft"].id], optimize=True,
+            character_ids=selected, revision=revision,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/images/optimize",
+        name="optimize_all_chapter_teaser_images",
+    )
+    async def optimize_all_chapter_teaser_images(request: Request, book_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plans = [
+            plan for plan in (context["chapter_run"] or {}).get("plans", [])
+            if plan.get("can_bulk_optimize")
+        ]
+        if not plans:
+            raise UploadError(
+                "Es gibt derzeit keine Kapitelbilder mit nutzbaren Charakterreferenzen.", 409,
+            )
+        await run_in_threadpool(
+            chapter_teaser_store.reopen_image_review, str(book_id),
+            context["chapter_run"]["id"], [plan["draft"].id for plan in plans], optimize=True,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/image/select",
+        name="select_chapter_teaser_image",
+    )
+    async def select_chapter_teaser_image(
+        request: Request, book_id: UUID, chapter_id: UUID,
+    ):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next(
+            (item for item in (context["chapter_run"] or {}).get("plans", [])
+             if item["chapter_id"] == str(chapter_id)
+             and item["state"] in {"analyzed", "done", "failed"}),
+            None,
+        )
+        if plan is None or plan.get("draft") is None:
+            raise UploadError("Das Kapitelbild kann jetzt nicht mehr geändert werden.", 409)
+        try:
+            async with request.form(max_files=0, max_fields=2) as form:
+                if set(form) != {"revision", "source"}:
+                    raise ValueError()
+                revision = int(str(form["revision"]))
+                source = str(form["source"])
+                if source not in {"scene", "optimized"}:
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte eine gültige Kapitelbild-Variante auswählen.") from None
+        await run_in_threadpool(
+            chapter_teaser_store.select_image, str(book_id), context["chapter_run"]["id"],
+            plan["draft"].id, revision, source,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/videos/start",
+        name="start_chapter_teaser_videos",
+    )
+    async def start_chapter_teaser_videos(request: Request, book_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        run = context["chapter_run"]
+        if run is None or not context["can_start_chapter_videos"]:
+            raise UploadError(
+                "Bitte zuerst alle verfügbaren Kapitelbilder prüfen und auswählen.", 409,
+            )
+        plans = [plan for plan in run["plans"] if plan["state"] == "analyzed" or (
+            plan["state"] == "failed" and plan["can_start_video"]
+        )]
+        await run_in_threadpool(
+            chapter_teaser_store.begin_videos, str(book_id), run["id"],
+            [plan["draft"].id for plan in plans],
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.get(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/video.mp4",
+        name="chapter_teaser_video",
+    )
+    async def chapter_teaser_video(
+        book_id: UUID, chapter_id: UUID,
+        variant: Literal["clean", "text"] = "clean", download: bool = False,
+    ):
+        if await run_in_threadpool(local_store.get_book, book_id) is None:
+            raise HTTPException(404)
+        run = await run_in_threadpool(
+            chapter_teaser_store.latest, str(book_id), include_plans=True,
+        )
+        plan = next(
+            (item for item in (run or {}).get("plans", [])
+             if item["chapter_id"] == str(chapter_id) and item["state"] == "done"),
+            None,
+        )
+        if plan is None or not plan.get("draft_id"):
+            raise HTTPException(404)
+        draft = await run_in_threadpool(reel_store.get_draft, plan["draft_id"])
+        if draft is None or draft.book_id != str(book_id) or draft.video_stale:
+            raise HTTPException(404)
+        path = (
+            await run_in_threadpool(
+                chapter_teaser_store.text_video_path, plan,
+                book_id=str(book_id), draft_id=draft.id,
+            )
+            if variant == "text"
+            else await run_in_threadpool(reel_store.artifact_path, draft, "video")
+        )
+        if path is None:
+            raise HTTPException(404)
+        suffix = "-mit-text" if variant == "text" else "-ohne-text"
+        filename = f"kapitel-{plan['position']:02d}-reel{suffix}.mp4" if download else None
+        return FileResponse(path, media_type="video/mp4", filename=filename)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/queue",
+        name="queue_chapter_teaser_route",
+    )
+    async def queue_chapter_teaser_route(
+        request: Request, book_id: UUID, chapter_id: UUID,
+    ):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        chapter = next(
+            (item for item in context["record"].result.chapters if item.id == str(chapter_id)),
+            None,
+        )
+        plan = next(
+            (item for item in (context["chapter_run"] or {}).get("plans", [])
+             if item["chapter_id"] == str(chapter_id) and item["state"] == "done"),
+            None,
+        )
+        draft = plan.get("draft") if plan else None
+        suggestion = plan.get("suggestion") if plan else None
+        if chapter is None or plan is None or draft is None or suggestion is None:
+            raise HTTPException(404)
+        if draft.state not in {"ready", "stocked"} or draft.video_stale:
+            raise UploadError("Das Kapitel-Reel ist nicht mehr veröffentlichungsbereit.", 409)
+        if not context["book_synced"]:
+            raise UploadError(
+                "Bitte das aktuelle Buch zuerst auf der Buchseite nach Supabase übertragen.", 409,
+            )
+
+        form_values: dict[str, object] = {}
+        try:
+            async with request.form(max_files=0, max_fields=11) as form:
+                allowed = {
+                    "variant", "title", "description", "queue_mode", "scheduled_for",
+                    "platform", "requeue",
+                }
+                if set(form) - allowed:
+                    raise ValueError("Das Kapitel-Reel-Formular enthält unbekannte Felder.")
+                for name in allowed - {"platform"}:
+                    values = form.getlist(name)
+                    if len(values) != 1 or not isinstance(values[0], str):
+                        raise ValueError("Bitte das vollständige Kapitel-Reel-Formular verwenden.")
+                    form_values[name] = values[0]
+                platforms = form.getlist("platform")
+                if not platforms or len(platforms) != len(set(platforms)) or any(
+                    not isinstance(value, str) or value not in PLATFORMS for value in platforms
+                ):
+                    raise ValueError("Mindestens eine gültige Plattform auswählen.")
+                form_values["platforms"] = platforms
+
+            variant = str(form_values["variant"])
+            if variant not in {"clean", "text"}:
+                raise ValueError("Bitte eine gültige Video-Variante auswählen.")
+            title = str(form_values["title"]).strip()
+            description = str(form_values["description"]).strip()
+            if str(form_values["requeue"]) not in {"0", "1"}:
+                raise ValueError("Der Übertragungsmodus ist ungültig.")
+            requeue = str(form_values["requeue"]) == "1"
+            if not 1 <= len(title) <= 300 or not 1 <= len(description) <= 5000:
+                raise ValueError("Titel oder Beschreibung haben eine ungültige Länge.")
+            queue_mode = str(form_values["queue_mode"])
+            if queue_mode not in {"daily", "scheduled"}:
+                raise ValueError("Bitte tägliche Warteschlange oder festen Termin auswählen.")
+            scheduled_raw = str(form_values["scheduled_for"]).strip()
+            if queue_mode == "daily":
+                if scheduled_raw:
+                    raise ValueError("Die tägliche Warteschlange hat keinen festen Termin.")
+                scheduled_for = None
+            else:
+                scheduled = datetime.fromisoformat(scheduled_raw)
+                if scheduled.tzinfo is None:
+                    scheduled = scheduled.replace(tzinfo=ZoneInfo("Europe/Berlin"))
+                if scheduled <= datetime.now(ZoneInfo("Europe/Berlin")):
+                    raise ValueError("Der Veröffentlichungszeitpunkt muss in der Zukunft liegen.")
+                scheduled_for = scheduled.isoformat()
+        except ValueError as exc:
+            raise UploadError(str(exc), 400) from None
+
+        if variant == "text":
+            path = await run_in_threadpool(
+                chapter_teaser_store.text_video_path, plan,
+                book_id=str(book_id), draft_id=draft.id,
+            )
+            media_sha256 = plan.get("text_video_sha256")
+        else:
+            path = await run_in_threadpool(reel_store.artifact_path, draft, "video")
+            media_sha256 = draft.selected_video_sha256
+        if path is None or not media_sha256:
+            raise UploadError("Die gewählte Kapitel-Reel-Variante fehlt.", 409)
+        data = await run_in_threadpool(path.read_bytes)
+        if len(data) > settings.reel_max_video_mb * 1024 * 1024:
+            raise UploadError("Das fertige Reel ist größer als das eingestellte Upload-Limit.", 413)
+
+        db = repository or SupabaseRepository(settings)
+        await db.check_schema(chapters=True)
+        defaults = await run_in_threadpool(
+            reel_store.get_publication_defaults, settings.reel_storage_provider,
+        )
+        selected = tuple(form_values["platforms"])
+        if any(platform not in defaults.values.selected() for platform in selected):
+            raise UploadError(
+                "Die Plattformeinstellungen wurden geändert. Bitte die Teaser-Seite neu laden.", 409,
+            )
+        asset_id = _reel_delivery_asset_id(draft, requeue=requeue)
+        object_path = f"{asset_id}/{media_sha256}.mp4"
+        if defaults.values.storage_provider == "cloudflare_r2":
+            try:
+                r2 = R2Client(settings)
+                await r2.upload_reel(object_path, data, media_sha256)
+            except R2Error as exc:
+                raise UploadError(str(exc), 503) from None
+            storage_bucket = settings.r2_bucket
+            public_url = r2.public_url(object_path)
+        else:
+            await db.upload_reel(object_path, data)
+            storage_bucket = "book-promotion-reels"
+            public_url = None
+
+        track = next(
+            (value for value in context["tracks"] if value.id == draft.audio_track_id), None,
+        )
+        details = context["management"]["details"]
+        asset = {
+            "id": asset_id,
+            "source_kind": "chapter",
+            "quote_id": None,
+            "chapter_id": chapter.id,
+            "book_id": str(context["book"].id),
+            "quote_text": suggestion.source_excerpt,
+            "addition": suggestion.teaser_text,
+            "title": title,
+            "description": description,
+            "book_profile": details.model_dump(mode="json"),
+            "image_prompt": draft.image_prompt,
+            "video_prompt": draft.video_prompt,
+            "storage_provider": defaults.values.storage_provider,
+            "storage_bucket": storage_bucket,
+            "storage_path": object_path,
+            "public_url": public_url,
+            "media_sha256": media_sha256,
+            "size_bytes": len(data),
+            "duration_ms": draft.duration_ms,
+            "width": 512,
+            "height": 896,
+            "audio_title": track.title if track else None,
+            "audio_start_ms": draft.audio_start_ms,
+        }
+        publications = [
+            {
+                "platform": platform,
+                "account_id": defaults.values.platform(platform).account_id,
+                "queue_mode": queue_mode,
+                "scheduled_for": scheduled_for,
+                "priority": 0,
+                "title": title,
+                "description": description,
+                "options": defaults.values.platform(platform).options,
+            }
+            for platform in selected
+        ]
+        await db.enqueue_reel(asset, publications)
+        try:
+            await run_in_threadpool(
+                reel_store.mark_stocked, draft.id, draft.revision, object_path,
+            )
+        except UploadError as exc:
+            current = await run_in_threadpool(reel_store.get_draft, draft.id)
+            if not (
+                exc.status == 409 and current and current.state == "stocked"
+                and current.remote_video_path == object_path
+            ):
+                raise
+        destination = str(request.url_for("book_teaser", book_id=book_id))
+        return RedirectResponse(f"{destination}?queued={chapter.position}", status_code=303)
+
+    @app.post("/books/local/{book_id}/teaser/save", name="save_book_teaser")
+    async def save_book_teaser(request: Request, book_id: UUID):
+        require_local_origin(request)
+        try:
+            await save_teaser_request(request, book_id)
+        except (OSError, sqlite3.Error):
+            raise UploadError("Der Book-Teaser-Schnitt konnte nicht gespeichert werden.", 503) from None
+        destination = str(request.url_for("book_teaser", book_id=book_id)) + "?saved=true"
+        return RedirectResponse(destination, status_code=303)
+
+    @app.post("/books/local/{book_id}/teaser/render", name="render_book_teaser_route")
+    async def render_book_teaser_route(request: Request, book_id: UUID):
+        require_local_origin(request)
+        try:
+            _, project = await save_teaser_request(request, book_id)
+            await run_in_threadpool(teaser_job_store.enqueue, project)
+        except (OSError, sqlite3.Error):
+            raise UploadError("Der Book-Teaser-Export konnte nicht vorgemerkt werden.", 503) from None
+        destination = str(request.url_for("book_teaser", book_id=book_id))
+        return RedirectResponse(destination, status_code=303)
+
+    @app.post("/books/local/{book_id}/teaser/render/complete", name="render_complete_book_teaser")
+    async def render_complete_book_teaser(request: Request, book_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plans = (context["chapter_run"] or {}).get("plans", [])
+        segments = await run_in_threadpool(
+            complete_chapter_segments, str(book_id), context["record"].result.chapters,
+            plans, reel_store,
+        )
+        try:
+            async with request.form(max_files=0, max_fields=4) as form:
+                required = {"revision", "audio_track_id", "aspect", "transition_seconds"}
+                if set(form) != required or any(
+                    len(form.getlist(key)) != 1 or not isinstance(form[key], str)
+                    for key in required
+                ):
+                    raise ValueError()
+                revision = int(form["revision"])
+                transition_ms = round(float(form["transition_seconds"]) * 1000)
+                aspect, audio_track_id = form["aspect"], form["audio_track_id"]
+        except (TypeError, ValueError, OverflowError):
+            raise UploadError("Bitte Format, Song und Überblendung vollständig auswählen.") from None
+        project = await run_in_threadpool(
+            teaser_store.save, str(book_id), revision, aspect=aspect,
+            audio_track_id=audio_track_id, transition_ms=transition_ms, segments=segments,
+        )
+        await run_in_threadpool(teaser_job_store.enqueue, project)
+        return RedirectResponse(
+            str(request.url_for("book_teaser", book_id=book_id)) + "?rendered=true",
+            status_code=303,
+        )
+
+    @app.post("/books/local/{book_id}/teaser/queue", name="queue_book_teaser_route")
+    async def queue_book_teaser_route(request: Request, book_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        project = context["project"]
+        if project is None or project.state != "ready":
+            raise UploadError("Bitte zuerst den fertigen Book-Teaser rendern.", 409)
+        if not context["book_synced"]:
+            raise UploadError("Bitte das aktuelle Buch zuerst nach Supabase übertragen.", 409)
+        if (context["render_job"] and context["render_job"]["active"]) or any(
+            row["source_stale"] for row in context["rows"] if row["segment"].included
+        ):
+            raise UploadError("Die Teaser-Quellen wurden geändert. Bitte den Teaser neu rendern.", 409)
+        try:
+            async with request.form(max_files=0, max_fields=11) as form:
+                fields = {"project_revision", "title", "description", "queue_mode",
+                          "scheduled_for", "requeue"}
+                if set(form) != fields | {"platform"} or any(
+                    len(form.getlist(key)) != 1 or not isinstance(form[key], str) for key in fields
+                ):
+                    raise ValueError("Bitte das vollständige Teaser-Queue-Formular verwenden.")
+                revision = int(form["project_revision"])
+                title, description = form["title"].strip(), form["description"].strip()
+                platforms = tuple(form.getlist("platform"))
+                if not platforms or len(set(platforms)) != len(platforms) or any(
+                    not isinstance(platform, str) or platform not in PLATFORMS for platform in platforms
+                ):
+                    raise ValueError("Mindestens eine gültige Plattform auswählen.")
+                if form["requeue"] not in {"0", "1"}:
+                    raise ValueError("Der Veröffentlichungsmodus ist ungültig.")
+                requeue = form["requeue"] == "1"
+                queue_mode = form["queue_mode"]
+                scheduled_raw = form["scheduled_for"].strip()
+                if queue_mode == "daily":
+                    if scheduled_raw:
+                        raise ValueError("Die tägliche Queue hat keinen festen Termin.")
+                    scheduled_for = None
+                elif queue_mode == "scheduled":
+                    scheduled = datetime.fromisoformat(scheduled_raw)
+                    if scheduled.tzinfo is None:
+                        scheduled = scheduled.replace(tzinfo=ZoneInfo("Europe/Berlin"))
+                    if scheduled <= datetime.now(ZoneInfo("Europe/Berlin")):
+                        raise ValueError("Der Veröffentlichungszeitpunkt muss in der Zukunft liegen.")
+                    scheduled_for = scheduled.isoformat()
+                else:
+                    raise ValueError("Bitte tägliche Queue oder festen Termin auswählen.")
+        except (TypeError, ValueError):
+            raise UploadError("Bitte Titel, Plattformen und Veröffentlichungszeitpunkt prüfen.") from None
+        if revision != project.revision:
+            raise UploadError("Der Book-Teaser wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+        path = await run_in_threadpool(teaser_store.output_path, project)
+        if path is None:
+            raise UploadError("Der fertige Book-Teaser fehlt oder wurde geändert.", 409)
+        track = next((track for track in context["tracks"] if track.id == project.audio_track_id), None)
+        from .teaser_publication import enqueue_book_teaser
+        await enqueue_book_teaser(
+            repository or SupabaseRepository(settings), settings, project=project, path=path,
+            book_profile=context["management"]["details"].model_dump(mode="json"),
+            audio_title=track.title if track else None,
+            defaults=context["publication_defaults"].values, platforms=platforms,
+            title=title, description=description, queue_mode=queue_mode,
+            scheduled_for=scheduled_for, requeue=requeue,
+        )
+        return RedirectResponse(
+            str(request.url_for("book_teaser", book_id=book_id)) + "?teaser_queued=true",
+            status_code=303,
+        )
+
+    @app.get("/books/local/{book_id}/teaser/render/status", name="book_teaser_render_status")
+    async def book_teaser_render_status(book_id: UUID):
+        if await run_in_threadpool(local_store.get_book, book_id) is None:
+            raise HTTPException(404)
+        job = await run_in_threadpool(teaser_job_store.latest, str(book_id))
+        if job is None:
+            return JSONResponse({
+                "state": "not_started", "active": False, "stage": "",
+                "progress_ms": 0, "total_ms": 0, "error": None,
+            })
+        return JSONResponse({key: job.get(key) for key in (
+            "state", "active", "stage", "progress_ms", "total_ms", "error",
+        )})
+
+    @app.get("/books/local/{book_id}/teaser/video.mp4", name="book_teaser_video")
+    async def book_teaser_video(book_id: UUID, download: bool = False):
+        project = await run_in_threadpool(teaser_store.get, str(book_id))
+        if project is None or project.state != "ready":
+            raise HTTPException(404)
+        path = await run_in_threadpool(teaser_store.output_path, project)
+        if path is None:
+            raise HTTPException(404)
+        return FileResponse(
+            path, media_type="video/mp4", filename="book-teaser.mp4" if download else None,
+        )
+
     @app.post("/books/local/{book_id}/delete", name="delete_book")
     async def delete_book(request: Request, book_id: UUID):
         require_local_origin(request)
         if sync_lock.locked():
-            raise UploadError("Während einer Supabase-Übertragung kann kein Buch gelöscht werden.", 409)
+            raise UploadError("Während einer Übertragung kann kein Buch gelöscht werden.", 409)
         try:
             await run_in_threadpool(local_store.delete_book, book_id)
         except (OSError, sqlite3.Error):
@@ -410,10 +1424,13 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if settings._env_path is None:
             raise UploadError("Bitte die Anwendung mit zugeordneter ENV-Datei über start.bat starten.", 409)
         try:
+            provider = await requested_text_provider(request)
             if await run_in_threadpool(local_store.get_book, book_id) is None: raise HTTPException(404)
             options = AnalysisOptions(chunk_chars=settings.analysis_chunk_chars, min_score=settings.analysis_min_score,
                 max_quotes_per_chapter=settings.analysis_max_quotes_per_chapter, max_calls=settings.analysis_max_calls)
-            await run_in_threadpool(analysis_store.enqueue, str(book_id), settings, options)
+            await run_in_threadpool(
+                analysis_store.enqueue, str(book_id), settings, options, provider,
+            )
         except (OSError, sqlite3.Error):
             raise UploadError("Die KI-Analyse konnte nicht vorgemerkt werden. Bitte die lokale Ablage prüfen.", 503) from None
         return RedirectResponse(request.url_for("local_book", book_id=book_id), status_code=303)
@@ -494,13 +1511,14 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     )
     async def generate_reel_copy_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         require_local_origin(request)
+        provider = await requested_text_provider(request)
         _, _, quote, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
         characters = await run_in_threadpool(character_store.list, str(book_id))
         if reel_ai_lock.locked():
             raise UploadError("Eine Reel-KI-Anfrage läuft bereits. Bitte kurz warten.", 409)
         async with reel_ai_lock:
             result = await generate_reel_copy(
-                OpenWebUIClient(settings), quote=quote.text,
+                create_text_client(settings, provider), quote=quote.text,
                 book_profile=management["details"].model_dump(),
             )
         selected_ids = _detected_character_ids(
@@ -672,6 +1690,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     )
     async def generate_reel_motion_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         require_local_origin(request)
+        provider = await requested_text_provider(request)
         _, _, quote, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
         if not draft.selected_image_path or draft.image_stale or not draft.audio_track_id:
             raise UploadError("Bitte zuerst Bild und Audioausschnitt festlegen.", 409)
@@ -680,7 +1699,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         details = management["details"]
         async with reel_ai_lock:
             prompt = await generate_motion_prompt(
-                OpenWebUIClient(settings), image_prompt=draft.image_prompt, quote=quote.text,
+                create_text_client(settings, provider), image_prompt=draft.image_prompt,
+                quote=quote.text,
                 genre=details.genre, mood=details.mood,
                 duration_seconds=draft.duration_ms / 1000,
             )
@@ -1235,10 +2255,13 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if settings._env_path is None:
             raise UploadError("Bitte die Anwendung über start.bat mit zugeordneter ENV-Datei starten.", 409)
         try:
+            provider = await requested_text_provider(request)
             if await run_in_threadpool(local_store.get_book, book_id) is None: raise HTTPException(404)
             options = AnalysisOptions(purpose="profile", chunk_chars=settings.analysis_chunk_chars,
                                       max_calls=settings.analysis_max_calls)
-            run_id = await run_in_threadpool(analysis_store.enqueue, str(book_id), settings, options)
+            run_id = await run_in_threadpool(
+                analysis_store.enqueue, str(book_id), settings, options, provider,
+            )
         except (OSError, sqlite3.Error):
             raise UploadError("Die Profilanalyse konnte nicht vorgemerkt werden. Bitte die lokale Ablage prüfen.", 503) from None
         return {"id": run_id}
@@ -1271,13 +2294,16 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if settings._env_path is None:
             raise UploadError("Bitte die Anwendung über start.bat mit zugeordneter ENV-Datei starten.", 409)
         try:
+            provider = await requested_text_provider(request)
             if await run_in_threadpool(local_store.get_book, book_id) is None:
                 raise HTTPException(404)
             options = AnalysisOptions(
                 purpose="characters", chunk_chars=settings.analysis_chunk_chars,
                 max_calls=settings.analysis_max_calls,
             )
-            run_id = await run_in_threadpool(analysis_store.enqueue, str(book_id), settings, options)
+            run_id = await run_in_threadpool(
+                analysis_store.enqueue, str(book_id), settings, options, provider,
+            )
         except (OSError, sqlite3.Error):
             raise UploadError(
                 "Die Charakteranalyse konnte nicht vorgemerkt werden. Bitte die lokale Ablage prüfen.", 503,
@@ -1327,6 +2353,17 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             context={"active_page": "books", "error_title": "Upload oder Buchablage nicht verfügbar",
                      "error_message": str(exc)}, status_code=exc.status)
 
+    @app.exception_handler(DatabaseError)
+    async def database_error(request: Request, exc: DatabaseError):
+        status = 409 if exc.code == "conflict" else 503
+        if "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"error": str(exc)}, status_code=status)
+        return templates.TemplateResponse(
+            request=request, name="error.html",
+            context={"active_page": "books", "error_title": "Veröffentlichungsdatenbank nicht verfügbar",
+                     "error_message": str(exc)}, status_code=status,
+        )
+
     async def settings_context(*, promotion_saved=False, promotion_form=None, promotion_form_error=None,
                                reel_saved=False, reel_form_error=None):
         # Only safe presence flags cross the template boundary. Never pass Settings.
@@ -1349,6 +2386,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 )),
                 ("comfyui", "ComfyUI", (
                     ("comfyui_url", "Server-URL"),
+                    ("comfyui_qwen_model", "Lokales Qwen-Modell (optional)"),
+                    ("comfyui_qwen_workflow", "Qwen-Textworkflow (optional)"),
                     ("reel_image_workflow", "Bild-Workflow"),
                     ("reel_video_workflow", "Video-Workflow"),
                 )),
@@ -1357,8 +2396,9 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         services[-1]["complete"] = services[-1]["complete"] and all(
             path.is_file() for path in (settings.reel_image_workflow, settings.reel_video_workflow)
         )
-        services[-1]["fields"][1]["present"] = settings.reel_image_workflow.is_file()
-        services[-1]["fields"][2]["present"] = settings.reel_video_workflow.is_file()
+        services[-1]["fields"][2]["present"] = settings.comfyui_qwen_workflow.is_file()
+        services[-1]["fields"][3]["present"] = settings.reel_image_workflow.is_file()
+        services[-1]["fields"][4]["present"] = settings.reel_video_workflow.is_file()
         reel_defaults = await run_in_threadpool(
             reel_store.get_publication_defaults, settings.reel_storage_provider,
         )
@@ -1533,7 +2573,12 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 await run_in_threadpool(ComfyClient(str(settings.comfyui_url)).check)
         except Exception:
             raise UploadError("ComfyUI ist nicht erreichbar oder lieferte keine gültige Antwort.", 503) from None
-        return {"message": "ComfyUI und beide Reel-Workflows sind erreichbar."}
+        qwen = (
+            " Der lokale Qwen-Textworkflow ist ebenfalls vorhanden."
+            if settings.comfyui_qwen_workflow.is_file()
+            else " Der optionale Qwen-Textworkflow fehlt."
+        )
+        return {"message": "ComfyUI und beide Reel-Workflows sind erreichbar." + qwen}
 
     @app.post("/settings/openwebui/model", name="select_openwebui_model")
     async def select_openwebui_model(request: Request):
@@ -1562,6 +2607,10 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
 
     @app.exception_handler(OpenWebUIError)
     async def openwebui_error(request: Request, exc: OpenWebUIError):
+        return JSONResponse({"error": str(exc), "code": exc.code}, status_code=503)
+
+    @app.exception_handler(TextAIError)
+    async def text_ai_error(request: Request, exc: TextAIError):
         return JSONResponse({"error": str(exc), "code": exc.code}, status_code=503)
 
     @app.exception_handler(HTTPException)

@@ -230,7 +230,8 @@ return enabled_platforms.map(platform=>({json:{...config,platform}}));""")
     w.code("Nothing for platform", "return {json:{outcome:$json.outcome||'empty'}};", each_item=True)
     w.link("Delivery claimed?", "Nothing for platform", 1)
     w.code("Claimed delivery context", """const r=$json,p=r.publication,a=r.asset;
-if(!p||!a||p.status!=='publishing'||a.media_status!=='uploaded'||p.platform!==$('Config').item.json.platform||!a.storage_path||!a.media_sha256||!p.description.includes(a.quote_text))throw new Error('Claimed Reel contract invalid');
+if(!p||!a||p.status!=='publishing'||a.media_status!=='uploaded'||p.platform!==$('Config').item.json.platform||!a.storage_path||!a.media_sha256||(a.source_kind!=='book_teaser'&&!p.description.includes(a.quote_text)))throw new Error('Claimed Reel contract invalid');
+if(a.source_kind==='book_teaser'&&!(p.platform==='youtube'||(p.platform==='instagram'&&a.height>a.width)))throw new Error('Whole-book teaser destination is not supported');
 return {json:{publication:p,asset:a}};""", each_item=True, onError="continueErrorOutput")
     w.link("Delivery claimed?", "Claimed delivery context")
     w.condition("Stored in Supabase?", "$json.asset.storage_provider === 'supabase'")
@@ -250,7 +251,8 @@ if(typeof u!=='string'||!u)throw new Error('Supabase signed URL missing');return
     w.link("R2 URL context", "Download and verify Reel")
     w.code("Validate Reel MP4", sha256_js + r"""
 const c=$('Supabase URL context').isExecuted?$('Supabase URL context').item.json:$('R2 URL context').item.json,a=c.asset,item=$input.item,bytes=await this.helpers.getBinaryDataBuffer(0,'data');
-if(bytes.length!==Number(a.size_bytes)||bytes.length>52428800||bytes.length<12||bytes.toString('ascii',4,8)!=='ftyp'||sha256(bytes)!==a.media_sha256)throw new Error('Stored Reel validation failed');
+const maxBytes=a.source_kind==='book_teaser'?314572800:52428800,maxDuration=a.source_kind==='book_teaser'?600000:60000;
+if(bytes.length!==Number(a.size_bytes)||bytes.length>maxBytes||bytes.length<12||Number(a.duration_ms)<4000||Number(a.duration_ms)>maxDuration||bytes.toString('ascii',4,8)!=='ftyp'||sha256(bytes)!==a.media_sha256)throw new Error('Stored Reel validation failed');
 return {json:c,binary:item.binary};""", each_item=True, onError="continueErrorOutput")
     w.link("Download and verify Reel", "Validate Reel MP4")
     w.condition("Public R2 URL failed?", "$('R2 URL context').isExecuted && $('R2 URL context').item.json.url_kind === 'r2_public'")
@@ -494,7 +496,7 @@ return [{json:{p_id:p.id,p_revision:p.revision,p_token:p.action_token,p_action:'
             node["disabled"] = True
 
     w.node("Setup notes", "n8n-nodes-base.stickyNote", {
-        "content": "## Multi-platform Reel publisher (schema v8)\nInstagram and YouTube are currently enabled. Facebook and TikTok remain visible but disabled and are not claimed from the queue. Two schedules: daily FIFO and hourly fixed dates. Replace the Instagram token placeholder in `Refresh token for insta`, fill the four R2 values in `Config`, and configure Supabase and YouTube OAuth2 credentials. R2 GET and DELETE requests use short-lived signed URLs; no AWS credential is attached to either HTTP node. No server environment access is required. Keep publish_enabled=false until credentials and manual dry-runs are complete. Media is deleted only after every selected destination is published or cancelled.",
+        "content": "## Reel / whole-book teaser publisher (schema v8–v10)\nInstagram and YouTube are currently enabled. Whole-book teasers require v10: YouTube supports landscape/portrait, Instagram is offered for portrait. Facebook and TikTok remain disabled and cannot publish full teasers. YouTube uses the normal Videos API without adding #Shorts; YouTube classifies portrait videos up to 180s as Shorts automatically. Two schedules: daily FIFO and hourly fixed dates. Replace the Instagram token placeholder in `Refresh token for insta`, fill the four R2 values in `Config`, and configure Supabase and YouTube OAuth2 credentials. R2 GET and DELETE use signed URLs. Keep publish_enabled=false until credentials and manual dry-runs are complete. Media is deleted only after all destinations are published or cancelled.",
         "height": 330, "width": 560,
     })
     return w.export()

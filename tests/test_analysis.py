@@ -328,6 +328,24 @@ def test_web_analysis_start_status_quotes_and_invalidation(setup):
         assert 'Wortgetreu geprüft' not in client.get(url+'/chapters/'+record.result.chapters[0].id).text
 
 
+def test_web_analysis_can_queue_local_qwen_provider(setup):
+    settings, uploads, book, _, store = setup
+    settings.comfyui_qwen_workflow.parent.mkdir(parents=True, exist_ok=True)
+    settings.comfyui_qwen_workflow.write_text("{}", encoding="utf-8")
+    url = f"/books/local/{book.id}"
+    with TestClient(
+        create_app(settings, start_worker=False), base_url="http://127.0.0.1:8000",
+    ) as client:
+        page = client.get(url)
+        assert "ComfyUI · Qwen lokal" in page.text
+        response = client.post(url + "/analyze", data={"ai_provider": "comfyui_qwen"})
+        assert response.status_code == 200
+
+    run = store.latest(book.id)
+    assert run["provider"] == "comfyui_qwen"
+    assert run["model_id"] == settings.comfyui_qwen_model
+
+
 def test_hierarchical_context_includes_late_chapters_and_bounds_requests(setup):
     settings,uploads,_,_,store=setup
     body=''.join(p(f'Kapitel {i}')+''.join(p(f'Absatz {j}: '+TEXT) for j in range(35)) for i in range(1,8))

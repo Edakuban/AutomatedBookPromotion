@@ -62,9 +62,12 @@ particle or atmosphere behavior. Motion must be visibly developed within the sta
 Never use or imply: subtle movement, barely perceptible motion, microscopic motion, extremely slow
 motion, very slow motion, a default slow push-in, cuts, a second angle, time jumps, morphing,
 new people or props, walking into or out of frame, aggressive orbiting, whip pans, unstable framing,
-identity changes, wardrobe changes, location changes, singing or lip-sync. Do not describe audio.
-Use active concrete verbs and one continuous cinematic shot. The final prompt must contain 2-4
-sentences and clearly cover subject/environment motion and camera motion."""
+identity changes, wardrobe changes or location changes. An already visible person may naturally
+lip-sync or give a restrained performance when their face and the scene support it; never invent a
+new singer or performer. Existing lights, reflections, particles, atmosphere and subject motion may
+react clearly to the supplied song's rhythm, dynamics and vocals. Describe only the visible response,
+not new audio. Use active concrete verbs and one continuous cinematic shot. The final prompt must
+contain 2-4 sentences and clearly cover subject/environment motion and camera motion."""
 
 
 def compose_caption(*, quote: str, addition: str, title: str, author: str = "", target_url: str = "") -> str:

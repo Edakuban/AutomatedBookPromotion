@@ -56,7 +56,7 @@ def test_global_art_direction_is_bound_to_scene_without_becoming_scene_content()
     assert compose_image_generation_prompt(scene_prompt="A forest", art_direction="") == "A forest"
 
 
-def test_motion_prompt_request_forbids_invisible_motion_and_lipsync():
+def test_motion_prompt_request_forbids_invisible_motion_and_allows_audio_response():
     client = FakeClient([{"video_prompt": "The camera tracks laterally while rain crosses the lit street."}])
     prompt = asyncio.run(generate_motion_prompt(
         client, image_prompt="A person in rain", quote="Zitat", genre="Thriller", mood="düster",
@@ -64,5 +64,7 @@ def test_motion_prompt_request_forbids_invisible_motion_and_lipsync():
     ))
     assert prompt.startswith("The camera tracks")
     system, user, _, _ = client.calls[0]
-    assert "subtle movement" in system and "lip-sync" in system
+    assert "subtle movement" in system
+    assert "may naturally" in system and "lip-sync" in system
+    assert "react clearly to the supplied song" in system
     assert '"motion_intensity": "dynamic"' in user
