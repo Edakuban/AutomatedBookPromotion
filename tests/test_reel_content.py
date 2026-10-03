@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -33,15 +34,36 @@ def test_caption_limit_is_enforced_after_deterministic_assembly():
 def test_copy_generation_only_allows_model_to_supply_addition_and_image_prompt():
     client = FakeClient([{"addition": "Neugierig?", "image_prompt": "Vertical cinematic scene"}])
     result = asyncio.run(generate_reel_copy(
-        client, quote="Wortgetreues Zitat", book_profile={"title": "Buch", "author": "A", "target_url": "https://example.org"},
+        client, quote="Wortgetreues Zitat", context_before="Im alten Schlafzimmer.",
+        context_after="Danach verlässt sie den Raum.",
+        book_profile={
+            "title": "Buch", "author": "A", "target_url": "https://example.org",
+            "genre": "Dark Fantasy", "mood": "Düster",
+            "internal_summary": "Geheimes Ende", "world": "Eine fremde Stadt",
+            "characters": "Eine weitere Person", "spoilers": "Der Täter",
+            "image_prompt_base": "Cinematic chiaroscuro. A witch stands in a server room.",
+        },
     ))
     assert result.caption.startswith("Wortgetreues Zitat\n\nNeugierig?")
     assert result.image_prompt == "Vertical cinematic scene"
     system = " ".join(client.calls[0][0].split())
     assert "9:16" in system
-    assert "konkrete Szene des Zitats" in system
-    assert "image_prompt_base ist die verbindliche globale Art Direction" in system
-    assert "Medium und Rendering-Stil der image_prompt_base" in system
+    assert "scene_source ist die einzige Quelle" in system
+    assert "global_art_direction.style_source" in system
+    payload = json.loads(client.calls[0][1])
+    assert payload["scene_source"] == {
+        "kind": "quote", "context_before": "Im alten Schlafzimmer.",
+        "focus_text": "Wortgetreues Zitat",
+        "context_after": "Danach verlässt sie den Raum.",
+    }
+    assert payload["supporting_book_context"] == {
+        "genre": "Dark Fantasy", "mood": "Düster",
+    }
+    assert payload["global_art_direction"]["style_source"].startswith("Cinematic chiaroscuro")
+    serialized = client.calls[0][1]
+    for excluded in ("Geheimes Ende", "Eine fremde Stadt", "Eine weitere Person", "Der Täter",
+                     "https://example.org"):
+        assert excluded not in serialized
 
 
 def test_global_art_direction_is_bound_to_scene_without_becoming_scene_content():

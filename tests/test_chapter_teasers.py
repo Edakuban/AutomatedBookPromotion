@@ -55,7 +55,7 @@ class ChapterAPI:
         self.calls.append((system, payload, result_type, kwargs))
         chapter = next(
             item for item in self.chapters
-            if item.position == payload["chapter"]["position"]
+            if item.position == payload["chapter_metadata"]["position"]
         )
         return suggestion(chapter)
 
@@ -76,13 +76,25 @@ def test_whole_chapter_is_sent_unchunked_and_excerpt_must_be_verbatim(setup):
     chapter = setup[3].result.chapters[0]
     api = ChapterAPI([chapter])
     result = asyncio.run(analyze_whole_chapter(
-        api, chapter=chapter, book_context={"genre": "Roman"}, duration_seconds=12,
+        api, chapter=chapter, book_context={
+            "genre": "Roman", "mood": "Düster",
+            "image_prompt_base": "Cinematic chiaroscuro. A stranger waits at a station.",
+            "internal_summary": "Geheimes Ende", "world": "Eine andere Stadt",
+            "characters": "Eine unbeteiligte Person", "spoilers": "Die Auflösung",
+        }, duration_seconds=12,
     ))
 
     assert result.source_excerpt == chapter.source_text
-    assert api.calls[0][1]["chapter"]["chapter_text"] == chapter.source_text
+    assert api.calls[0][1]["scene_source"]["focus_text"] == chapter.source_text
+    assert api.calls[0][1]["scene_source"]["kind"] == "chapter"
+    assert api.calls[0][1]["supporting_book_context"] == {
+        "genre": "Roman", "mood": "Düster",
+    }
+    serialized = json.dumps(api.calls[0][1], ensure_ascii=False)
+    for excluded in ("Geheimes Ende", "Eine andere Stadt", "Eine unbeteiligte Person", "Die Auflösung"):
+        assert excluded not in serialized
     assert api.calls[0][3]["max_tokens"] == 3200
-    assert "vollständige Kapiteltext" in api.calls[0][0]
+    assert "vollständigen Kapiteltext" in api.calls[0][0]
 
     class FabricatingAPI(ChapterAPI):
         async def complete_json(self, *args, **kwargs):
@@ -106,7 +118,7 @@ def test_worker_creates_one_planned_image_job_per_full_chapter(setup):
 
     run = store.latest(book.id, include_plans=True)
     assert run["id"] == run_id and run["state"] == "rendering"
-    assert [call[1]["chapter"]["chapter_text"] for call in api.calls] == [
+    assert [call[1]["scene_source"]["focus_text"] for call in api.calls] == [
         chapter.source_text for chapter in record.result.chapters
     ]
     assert all(plan["state"] == "image_queued" for plan in run["plans"])
@@ -126,7 +138,7 @@ def test_unverifiable_scene_fails_only_its_chapter_and_analysis_continues(setup)
     class OneBadSceneAPI(ChapterAPI):
         async def complete_json(self, system, user, result_type, **kwargs):
             value = await super().complete_json(system, user, result_type, **kwargs)
-            if json.loads(user)["chapter"]["position"] == 2:
+            if json.loads(user)["chapter_metadata"]["position"] == 2:
                 return value.model_copy(update={
                     "source_excerpt": "Diese erfundene Szene steht nicht im zweiten Kapitel."
                 })
@@ -152,7 +164,7 @@ def test_structured_provider_error_fails_only_its_chapter(setup):
     class OneBadSchemaAPI(ChapterAPI):
         async def complete_json(self, system, user, result_type, **kwargs):
             payload = json.loads(user)
-            if payload["chapter"]["position"] == 1:
+            if payload["chapter_metadata"]["position"] == 1:
                 raise OpenWebUIError("structured")
             return await super().complete_json(system, user, result_type, **kwargs)
 

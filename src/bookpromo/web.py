@@ -1569,6 +1569,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             result = await generate_reel_copy(
                 create_text_client(settings, provider), quote=quote.text,
                 book_profile=management["details"].model_dump(),
+                context_before=quote.context_before,
+                context_after=quote.context_after,
             )
         selected_ids = _detected_character_ids(
             characters, quote, generated_prompt=result.image_prompt,
