@@ -31,19 +31,20 @@ from .model_settings import save_model
 from .analysis import AnalysisOptions
 from .analysis_store import AnalysisStore
 from .management import BookDetails, FILTERS, ManagementStore, quote_key
-from .overlay import OverlayError, OverlayStore, font_names
+from .overlay import OVERLAY_BUCKET, OverlayError, OverlayStore, font_names
 from .book_assets import BookAssetStore, MAX_ASSET_BYTES
 from .carousel_end_slide import render_book_carousel_end_slide
 from .sync import SyncStore
 from .reels import ReelJobStore, ReelStore
 from .publication import PLATFORMS, PlatformDefault, PublicationDefaults, platform_options
 from .r2 import R2Client, R2Error
+from .carousel_sources import carousel_source_path, prepare_carousel_source
 from .reel_content import (
     compose_caption, compose_image_generation_prompt, generate_motion_prompt, generate_reel_copy,
 )
 from .reel_prompts import validate_video_prompt
 from .reel_generation import ReelGenerator, split_audio_segment, wav_waveform
-from .book_teasers import BookTeaserStore, TeaserSegment, complete_chapter_segments
+from .book_teasers import BookTeaserStore, TeaserSegment, chapter_video_ready, complete_chapter_segments
 from .chapter_teasers import ChapterTeaserStore
 from .book_teaser_worker import BookTeaserJobStore
 from .teaser_publication import book_teaser_platforms
@@ -191,6 +192,86 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             or (origin is not None and origin != f"{request.url.scheme}://{request.url.netloc}")):
             raise UploadError("Bitte diese Aktion direkt in der lokalen Book-Promotion-Oberfläche ausführen.", 403)
 
+    async def carousel_sources(book_id: UUID):
+        """Return v11 sources without making the independent local workflow unavailable."""
+        if not (settings.supabase_enabled or repository is not None):
+            return {}, False, None
+        if await run_in_threadpool(sync_store.receipt, str(book_id)) is None:
+            return {}, False, None
+        db = repository or SupabaseRepository(settings)
+        if not hasattr(db, "list_carousel_sources"):
+            return {}, False, None
+        try:
+            await db.check_schema(carousel_images=True)
+            rows = await db.list_carousel_sources(book_id)
+        except DatabaseError as exc:
+            return {}, False, str(exc)
+        return {(row.scope, str(row.owner_id)): row for row in rows}, True, None
+
+    async def require_carousel_repository(book_id: UUID):
+        if await run_in_threadpool(sync_store.receipt, str(book_id)) is None:
+            raise UploadError("Bitte das Buch zuerst mit Supabase synchronisieren.", 409)
+        db = repository or SupabaseRepository(settings)
+        if not hasattr(db, "set_carousel_source"):
+            raise UploadError("Das Backend unterstützt vorbereitete Carousel-Bilder noch nicht.", 409)
+        await db.check_schema(carousel_images=True)
+        return db
+
+    async def store_carousel_source(scope: Literal["quote", "chapter"], book_id: UUID,
+                                    owner_id: UUID, path: Path):
+        prepared = await run_in_threadpool(prepare_carousel_source, path)
+        key = carousel_source_path(scope, str(book_id), str(owner_id), prepared.sha256)
+        db = await require_carousel_repository(book_id)
+        defaults = await run_in_threadpool(
+            reel_store.get_publication_defaults, settings.reel_storage_provider,
+        )
+        provider = defaults.values.storage_provider
+        if provider == "cloudflare_r2":
+            try:
+                r2 = R2Client(settings)
+                await r2.upload_carousel_image(key, prepared.data, prepared.sha256)
+                bucket, public_url = r2.bucket, r2.public_url(key)
+            except R2Error as exc:
+                raise UploadError(str(exc), 503) from None
+        else:
+            await db.upload_carousel_source(key, prepared.data)
+            bucket, public_url = OVERLAY_BUCKET, None
+        media = {
+            "provider": provider, "bucket": bucket, "path": key,
+            "public_url": public_url, "sha256": prepared.sha256,
+            "size_bytes": prepared.size_bytes, "width": prepared.width,
+            "height": prepared.height, "mime_type": prepared.mime_type,
+        }
+        # Never delete this digest path when the linking RPC fails: the same
+        # immutable object may already be frozen into an open post. A rare
+        # orphan is safer and can be reconciled later.
+        result = await db.set_carousel_source(scope, owner_id, media)
+        old = result.get("old_media")
+        if isinstance(old, dict) and old.get("path") and old.get("path") != key:
+            try:
+                if old.get("provider") == "cloudflare_r2" and old.get("bucket") == settings.r2_bucket:
+                    await R2Client(settings).delete(old["path"])
+                elif old.get("provider") == "supabase" and old.get("bucket") == OVERLAY_BUCKET:
+                    await db.delete_carousel_source(old["path"])
+            except (DatabaseError, R2Error, ValueError):
+                pass  # DB identity is authoritative; an old immutable object may be cleaned later.
+        return result
+
+    async def remove_carousel_source(scope: Literal["quote", "chapter"], book_id: UUID,
+                                     owner_id: UUID):
+        db = await require_carousel_repository(book_id)
+        result = await db.set_carousel_source(scope, owner_id, None)
+        old = result.get("old_media")
+        if isinstance(old, dict) and old.get("path"):
+            try:
+                if old.get("provider") == "cloudflare_r2" and old.get("bucket") == settings.r2_bucket:
+                    await R2Client(settings).delete(old["path"])
+                elif old.get("provider") == "supabase" and old.get("bucket") == OVERLAY_BUCKET:
+                    await db.delete_carousel_source(old["path"])
+            except (DatabaseError, R2Error, ValueError):
+                pass
+        return result
+
     async def reel_context(book_id: UUID, chapter_id: UUID, quote_id: UUID, *, create: bool = False):
         """Resolve a usable quote from the current analysis; stale URLs never mutate a different quote."""
         book = await run_in_threadpool(local_store.get_book, book_id)
@@ -239,6 +320,9 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             reel_store.get_publication_defaults, settings.reel_storage_provider,
         )
         sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
+        source_rows, carousel_schema_ready, carousel_source_error = await carousel_sources(book_id)
+        quote_carousel_source = source_rows.get(("quote", str(quote_id)))
+        chapter_carousel_source = source_rows.get(("chapter", str(chapter_id)))
         statuses = await run_in_threadpool(reel_jobs.status, draft.id)
         latest = statuses[0] if statuses else None
         if latest:
@@ -268,6 +352,11 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                     and (settings.supabase_enabled or repository is not None) and sync_receipt is not None,
                 "supabase_enabled": settings.supabase_enabled or repository is not None,
                 "book_synced": sync_receipt is not None,
+                "carousel_schema_ready": carousel_schema_ready,
+                "carousel_source_error": carousel_source_error,
+                "quote_carousel_source": quote_carousel_source,
+                "chapter_carousel_source": chapter_carousel_source,
+                "effective_carousel_source": quote_carousel_source or chapter_carousel_source,
             },
         )
 
@@ -311,6 +400,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             reel_store.get_publication_defaults, settings.reel_storage_provider,
         )
         sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
+        source_rows, carousel_schema_ready, carousel_source_error = await carousel_sources(book_id)
         chapter_queue_schema_ready = False
         book_teaser_queue_schema_ready = False
         if (settings.supabase_enabled or repository is not None) and sync_receipt is not None:
@@ -339,6 +429,11 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         for plan in (chapter_run or {}).get("plans", []):
             draft = drafts_by_id.get(plan.get("draft_id"))
             plan["draft"] = draft
+            plan["carousel_source"] = source_rows.get(("chapter", plan["chapter_id"]))
+            plan["can_set_carousel_source"] = bool(
+                draft and draft.selected_image_path and not draft.image_stale
+                and sync_receipt is not None and carousel_schema_ready
+            )
             statuses = (
                 await run_in_threadpool(reel_jobs.status, draft.id) if draft else []
             )
@@ -449,12 +544,17 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             )
         )
         candidates: dict[str, list] = {chapter.id: [] for chapter in record.result.chapters}
+        chapter_plans_by_draft = {
+            plan["draft_id"]: plan for plan in (chapter_run or {}).get("plans", [])
+            if plan.get("draft_id")
+        }
         for draft in drafts:
             chapter_id = quote_chapters.get(draft.quote_id) or generated_chapters.get(draft.id)
             if (
                 chapter_id in candidates and draft.selected_video_path
                 and draft.selected_video_sha256 and not draft.video_stale
-                and draft.state in {"ready", "stocked", "published"}
+                and (draft.state in {"ready", "stocked", "published"}
+                     or chapter_video_ready(str(book_id), chapter_plans_by_draft.get(draft.id, {})))
             ):
                 candidates[chapter_id].append(draft)
         stored = {segment.chapter_id: segment for segment in project.segments} if project else {}
@@ -513,13 +613,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             chapter_run and chapter_run["state"] in {"done", "partial"}
             and len(plans) == len(record.result.chapters)
             and {plan["chapter_id"] for plan in plans} == {chapter.id for chapter in record.result.chapters}
-            and plans and all(
-                plan["state"] == "done" and plan["draft"] and not plan["media_active"]
-                and not plan["draft"].image_stale and not plan["draft"].video_stale
-                and plan["draft"].selected_video_path and plan["draft"].selected_video_sha256
-                and plan["draft"].state in {"ready", "stocked", "published"}
-                for plan in plans
-            )
+            and plans and all(chapter_video_ready(str(book_id), plan) for plan in plans)
         )
         final_platforms = book_teaser_platforms(
             publication_defaults.values, project.aspect if project else "vertical",
@@ -556,6 +650,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 and sync_receipt is not None and chapter_queue_schema_ready,
             "chapter_teaser_configured": bool(chapter_teaser_providers)
                 and settings.reel_image_workflow.is_file(),
+            "carousel_schema_ready": carousel_schema_ready,
+            "carousel_source_error": carousel_source_error,
         }
 
     def teaser_segments_from_form(form, rows, transition_ms: int) -> list[TeaserSegment]:
@@ -820,6 +916,46 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if path is None:
             raise HTTPException(404)
         return FileResponse(path)
+
+    @app.get(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/carousel-source.jpg",
+        name="chapter_carousel_source_preview",
+    )
+    async def chapter_carousel_source_preview(book_id: UUID, chapter_id: UUID):
+        context = await teaser_context(book_id)
+        plan = next((item for item in (context["chapter_run"] or {}).get("plans", [])
+                     if item["chapter_id"] == str(chapter_id)), None)
+        draft = plan.get("draft") if plan else None
+        if draft is None or not draft.selected_image_path or draft.image_stale:
+            raise HTTPException(404)
+        path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
+        prepared = await run_in_threadpool(prepare_carousel_source, path)
+        return Response(prepared.data, media_type="image/jpeg")
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/carousel-source",
+        name="set_chapter_carousel_source",
+    )
+    async def set_chapter_carousel_source(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        plan = next((item for item in (context["chapter_run"] or {}).get("plans", [])
+                     if item["chapter_id"] == str(chapter_id)), None)
+        draft = plan.get("draft") if plan else None
+        if draft is None or not draft.selected_image_path or draft.image_stale:
+            raise UploadError("Bitte zuerst ein aktuelles Kapitelbild auswählen.", 409)
+        path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
+        await store_carousel_source("chapter", book_id, chapter_id, path)
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post(
+        "/books/local/{book_id}/teaser/chapters/{chapter_id}/carousel-source/remove",
+        name="remove_chapter_carousel_source",
+    )
+    async def remove_chapter_carousel_source_route(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        await remove_carousel_source("chapter", book_id, chapter_id)
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
 
     @app.post(
         "/books/local/{book_id}/teaser/chapters/{chapter_id}/analysis/retry",
@@ -1831,6 +1967,43 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise HTTPException(404)
         media = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(path.suffix.lower())
         return FileResponse(path, media_type=media)
+
+    @app.get(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/carousel-source.jpg",
+        name="quote_carousel_source_preview",
+    )
+    async def quote_carousel_source_preview(book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id)
+        if draft is None or not draft.selected_image_path or draft.image_stale:
+            raise HTTPException(404)
+        path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
+        prepared = await run_in_threadpool(prepare_carousel_source, path)
+        return Response(prepared.data, media_type="image/jpeg")
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/carousel-source",
+        name="set_quote_carousel_source",
+    )
+    async def set_quote_carousel_source(request: Request, book_id: UUID, chapter_id: UUID,
+                                        quote_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        if not draft.selected_image_path or draft.image_stale:
+            raise UploadError("Bitte zuerst ein aktuelles Zitatbild auswählen.", 409)
+        path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
+        await store_carousel_source("quote", book_id, quote_id, path)
+        return action_response(request, book_id, chapter_id, quote_id)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/carousel-source/remove",
+        name="remove_quote_carousel_source",
+    )
+    async def remove_quote_carousel_source_route(request: Request, book_id: UUID, chapter_id: UUID,
+                                                 quote_id: UUID):
+        require_local_origin(request)
+        await reel_context(book_id, chapter_id, quote_id)
+        await remove_carousel_source("quote", book_id, quote_id)
+        return action_response(request, book_id, chapter_id, quote_id)
 
     @app.get(
         "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/audio/source/{track_id}.wav",

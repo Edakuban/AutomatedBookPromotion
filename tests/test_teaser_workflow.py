@@ -58,9 +58,45 @@ def test_top_complete_render_refuses_incomplete_chapters(setup):
     assert BookTeaserStore(uploads).get(book.id) is None
 
 
+def fail_optional_character_job(reels, jobs, draft_id):
+    jobs.enqueue(draft_id, "image", {"operation": "optimize"})
+    job = jobs.claim(kinds={"image"})
+    assert job.draft_id == draft_id
+    assert jobs.finish(job, error="Die automatischen Masken überlappen zu stark.")
+    return reels.get_draft(draft_id)
+
+
+def test_top_complete_render_accepts_valid_video_after_optional_character_job_fails(setup):
+    settings, uploads, book, _, reels, _, jobs, run = ready_videos(setup)
+    first = run["plans"][0]
+    before = reels.get_draft(first["draft_id"])
+    failed = fail_optional_character_job(reels, jobs, before.id)
+    assert failed.state == "failed" and not failed.video_stale
+    route = f"/books/local/{book.id}/teaser/render/complete"
+    base = f"/books/local/{book.id}/teaser"
+    data = {"revision": "0", "audio_track_id": run["audio_track_id"],
+            "aspect": "vertical", "transition_seconds": "0.5"}
+    with TestClient(create_app(settings, start_worker=False), base_url="http://127.0.0.1:8000") as client:
+        assert "Alle aktuellen Kapitelvideos sind bereit." in client.get(base).text
+        assert client.post(route, data=data, follow_redirects=False).status_code == 303
+        # The chapter must remain a selectable source, including after project creation.
+        assert "Quelle geändert" not in client.get(base).text
+    project = BookTeaserStore(uploads).get(book.id)
+    assert project.segments[0].draft_id == before.id
+    assert project.segments[0].video_sha256 == before.selected_video_sha256
+    unchanged = reels.get_draft(before.id)
+    assert unchanged.state == "failed" and unchanged.error == failed.error
+    assert unchanged.revision == before.revision and unchanged.selected_video_path == before.selected_video_path
+    assert jobs.claim(kinds={"image", "video"}) is None
+
+
 @pytest.mark.parametrize("queue_mode", ["daily", "scheduled"])
-def test_final_queue_route_checks_revision_schema_and_keeps_chapter_states(setup, monkeypatch, queue_mode):
-    settings, uploads, book, record, reels, _, _, run = ready_videos(setup)
+@pytest.mark.parametrize("optional_image_failed", [False, True])
+def test_final_queue_route_checks_revision_schema_and_keeps_chapter_states(setup, monkeypatch, queue_mode, optional_image_failed):
+    settings, uploads, book, record, reels, _, jobs, run = ready_videos(setup)
+    if optional_image_failed:
+        first = run["plans"][0]
+        first["draft"] = fail_optional_character_job(reels, jobs, first["draft_id"])
     store = BookTeaserStore(uploads)
     project = store.save(
         book.id, 0, aspect="horizontal_fit", audio_track_id=run["audio_track_id"],

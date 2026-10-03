@@ -65,7 +65,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const config={\n workflow_mode:'review',supabase_url:'https://aqfemzwrkzimzakqiwls.supabase.co',\n account_id:'35706486682300403',graph_version:'v26.0',telegram_chat_id:'1182925320',\n text_model:'gpt-5.6-sol',image_model:'gpt-image-2',\n cloudflare_account_id:'96d3571d9a215411bd11934aa57265c3',\n cloudflare_text_model:'@cf/meta/llama-3.3-70b-instruct-fp8-fast',\n cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',\n media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',\n signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,\n max_image_quote_attempts:5,\n publish_enabled:false,resume_post_id:'',resume_generation:false\n};\nreturn $input.all().map(item=>({json:{...item.json,...config}}));"
+        "jsCode": "const config={\n workflow_mode:'review',supabase_url:'https://aqfemzwrkzimzakqiwls.supabase.co',\n account_id:'35706486682300403',graph_version:'v26.0',telegram_chat_id:'1182925320',\n text_model:'gpt-5.6-sol',image_model:'gpt-image-2',\n cloudflare_account_id:'96d3571d9a215411bd11934aa57265c3',\n cloudflare_text_model:'@cf/meta/llama-3.3-70b-instruct-fp8-fast',\n cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',\n media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',\n r2_endpoint:'R2_ENDPOINT_HIER_EINTRAGEN',r2_access_key_id:'R2_ACCESS_KEY_ID_HIER_EINTRAGEN',\n r2_secret_access_key:'R2_SECRET_ACCESS_KEY_HIER_EINTRAGEN',r2_signed_url_ttl_seconds:86400,\n signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,\n max_image_quote_attempts:5,\n publish_enabled:false,resume_post_id:'',resume_generation:false\n};\nreturn $input.all().map(item=>({json:{...item.json,...config}}));"
       }
     },
     {
@@ -913,13 +913,251 @@
       "onError": "continueErrorOutput"
     },
     {
+      "id": "63a8ef3a-cada-58a4-ab1e-bfde6060a3ac",
+      "name": "Prepared source?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        920
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Prepared source?",
+              "leftValue": "={{ !!$json.source_image_path }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "56b78a29-3fb3-50db-b508-50cef6a74712",
+      "name": "Prepared source context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        920
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$input.first().json;\nconst required=['source_image_provider','source_image_bucket','source_image_path','source_image_sha256','source_image_size_bytes','source_image_width','source_image_height','source_image_mime_type'];\nif(required.some(k=>d[k]===null||d[k]===undefined)||!['quote','chapter'].includes(d.source_image_scope))throw new Error('Prepared source snapshot incomplete');\nreturn [{json:{post:d,asset:{storage_provider:d.source_image_provider,storage_bucket:d.source_image_bucket,storage_path:d.source_image_path,public_url:d.source_image_public_url,media_sha256:d.source_image_sha256,size_bytes:d.source_image_size_bytes,width:d.source_image_width,height:d.source_image_height,mime_type:d.source_image_mime_type}}}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "0b4f93f3-30ad-5e55-ad7e-7eb1b87664b8",
+      "name": "Prepared source in Supabase?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        920
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Prepared source in Supabase?",
+              "leftValue": "={{ $json.asset.storage_provider === 'supabase' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2d36ce1d-9b5e-5c44-a7f1-5e89f36753af",
+      "name": "Sign prepared Supabase source",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        920
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/sign/'+$json.asset.storage_bucket+'/'+$json.asset.storage_path }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {expiresIn:$('Config').first().json.signed_url_seconds} }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "onError": "continueErrorOutput"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "7550912c-cbbb-5e1b-a357-a44d684a8684",
+      "name": "Prepared Supabase URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const c=$('Prepared source context').item.json,r=$input.first().json,u=r.signedURL||r.signedUrl;\nif(typeof u!=='string'||!u)throw new Error('Prepared Supabase URL missing');return [{json:{...c,signed_url:u.startsWith('http')?u:$('Config').first().json.supabase_url+'/storage/v1'+u,url_kind:'supabase_signed'}}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "dda23216-81df-59b9-af47-9db2e7ef482e",
+      "name": "Prepared R2 URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$json,asset=c.asset,method=String(c.signing_method||'GET').toUpperCase();\nif(asset.storage_provider!=='cloudflare_r2')throw new Error('Not an R2 asset');\nif(!['GET','DELETE'].includes(method))throw new Error('Unsupported R2 signing method');\nif(method==='GET'&&asset.public_url&&!c.force_signed)return {json:{...c,signed_url:asset.public_url,url_kind:'r2_public'}};\nconst config=$('Config').first().json;\nconst endpoint=String(config.r2_endpoint||'').replace(/\\/$/,''),access=String(config.r2_access_key_id||''),secret=String(config.r2_secret_access_key||'');\nif(!endpoint||!access||!secret||[endpoint,access,secret].some(value=>value.includes('_HIER_EINTRAGEN')))throw new Error('R2 signing config is incomplete');\nconst enc=new TextEncoder(),hex=b=>[...b].map(x=>x.toString(16).padStart(2,'0')).join('');\nconst sha256=value=>{const bytes=typeof value==='string'?[...enc.encode(value)]:[...value],r=(x,n)=>(x>>>n)|(x<<(32-n)),k=[];let p=2;\nwhile(k.length<64){let prime=true;for(let d=2;d*d<=p;d++)if(p%d===0){prime=false;break;}if(prime)k.push(Math.floor((p**(1/3)%1)*4294967296)>>>0);p++;}\nconst h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19],data=[...bytes,0x80];while(data.length%64!==56)data.push(0);\nconst bits=bytes.length*8;for(let i=7;i>=0;i--)data.push(Math.floor(bits/2**(i*8))&255);for(let o=0;o<data.length;o+=64){const w=new Array(64);for(let i=0;i<16;i++)w[i]=((data[o+i*4]<<24)|(data[o+i*4+1]<<16)|(data[o+i*4+2]<<8)|data[o+i*4+3])>>>0;\nfor(let i=16;i<64;i++){const a=w[i-15],b=w[i-2],s0=(r(a,7)^r(a,18)^(a>>>3))>>>0,s1=(r(b,17)^r(b,19)^(b>>>10))>>>0;w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;}let [a,b,c,d,e,f,g,z]=h;\nfor(let i=0;i<64;i++){const s1=(r(e,6)^r(e,11)^r(e,25))>>>0,ch=((e&f)^((~e)&g))>>>0,t1=(z+s1+ch+k[i]+w[i])>>>0,s0=(r(a,2)^r(a,13)^r(a,22))>>>0,maj=((a&b)^(a&c)^(b&c))>>>0,t2=(s0+maj)>>>0;z=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}for(const [i,v] of [a,b,c,d,e,f,g,z].entries())h[i]=(h[i]+v)>>>0;}\nconst out=[];for(const v of h)out.push(v>>>24,(v>>>16)&255,(v>>>8)&255,v&255);return new Uint8Array(out);};\nconst hmac=(key,value)=>{let kb=typeof key==='string'?[...enc.encode(key)]:[...key];const vb=typeof value==='string'?[...enc.encode(value)]:[...value];if(kb.length>64)kb=[...sha256(kb)];while(kb.length<64)kb.push(0);return sha256([...kb.map(x=>x^0x5c),...sha256([...kb.map(x=>x^0x36),...vb])]);};\nconst now=new Date(),amz=now.toISOString().replace(/[:-]|\\.\\d{3}/g,''),day=amz.slice(0,8),scope=`${day}/auto/s3/aws4_request`;\nconst host=endpoint.replace(/^https:\\/\\//,'').split('/')[0];\nif(!host||host.includes('?')||host.includes('#'))throw new Error('R2 endpoint is invalid');\nconst esc=value=>encodeURIComponent(value).replace(/[!'()*]/g,ch=>'%'+ch.charCodeAt(0).toString(16).toUpperCase());\nconst uri='/'+esc(asset.storage_bucket)+'/'+asset.storage_path.split('/').map(esc).join('/');\nconst query=[['X-Amz-Algorithm','AWS4-HMAC-SHA256'],['X-Amz-Credential',`${access}/${scope}`],['X-Amz-Date',amz],['X-Amz-Expires',String(Math.min(604800,Math.max(900,Number(config.r2_signed_url_ttl_seconds||86400))))],['X-Amz-SignedHeaders','host']].map(([k,v])=>`${esc(k)}=${esc(v)}`).sort().join('&');\nconst canonical=`${method}\\n${uri}\\n${query}\\nhost:${host}\\n\\nhost\\nUNSIGNED-PAYLOAD`,stringToSign=`AWS4-HMAC-SHA256\\n${amz}\\n${scope}\\n${hex(sha256(canonical))}`;\nconst kd=hmac('AWS4'+secret,day),kr=hmac(kd,'auto'),ks=hmac(kr,'s3'),key=hmac(ks,'aws4_request'),signature=hex(hmac(key,stringToSign));\nreturn {json:{...c,signed_url:`${endpoint}${uri}?${query}&X-Amz-Signature=${signature}`,url_kind:method==='DELETE'?'r2_signed_delete':'r2_signed'}};"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "5241e036-a098-5b50-a608-b94b2eb8a74c",
+      "name": "Download prepared source",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        1150
+      ],
+      "parameters": {
+        "url": "={{ $json.signed_url }}",
+        "options": {
+          "timeout": 120000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        },
+        "method": "GET",
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "76001351-9675-5489-9f82-b3345f982e99",
+      "name": "Validate prepared source",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "function jpegSize(data){if(data.length<3||data[0]!==255||data[1]!==216||data[2]!==255)return null;const sof=new Set([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf]);let o=2;while(o+8<data.length){if(data[o]!==255){o++;continue;}while(o<data.length&&data[o]===255)o++;const m=data[o++];if(m===0xd9||m===0xda)break;if(m===0x01||(m>=0xd0&&m<=0xd7))continue;if(o+2>data.length)break;const n=data.readUInt16BE(o);if(n<2||o+n>data.length)break;if(sof.has(m))return {height:data.readUInt16BE(o+3),width:data.readUInt16BE(o+5)};o+=n;}return null;}\nfunction sha256(bytes){const r=(x,n)=>(x>>>n)|(x<<(32-n)),k=[];let p=2;while(k.length<64){let prime=true;for(let d=2;d*d<=p;d++)if(p%d===0){prime=false;break;}if(prime)k.push(Math.floor((p**(1/3)%1)*4294967296)>>>0);p++;}const h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];const data=[...bytes,0x80];while(data.length%64!==56)data.push(0);const bits=bytes.length*8;for(let i=7;i>=0;i--)data.push(Math.floor(bits/2**(i*8))&255);for(let o=0;o<data.length;o+=64){const w=new Array(64);for(let i=0;i<16;i++)w[i]=((data[o+i*4]<<24)|(data[o+i*4+1]<<16)|(data[o+i*4+2]<<8)|data[o+i*4+3])>>>0;for(let i=16;i<64;i++){const a=w[i-15],b=w[i-2],s0=(r(a,7)^r(a,18)^(a>>>3))>>>0,s1=(r(b,17)^r(b,19)^(b>>>10))>>>0;w[i]=(w[i-16]+s0+w[i-7]+s1)>>>0;}let [a,b,c,d,e,f,g,z]=h;for(let i=0;i<64;i++){const s1=(r(e,6)^r(e,11)^r(e,25))>>>0,ch=((e&f)^((~e)&g))>>>0,t1=(z+s1+ch+k[i]+w[i])>>>0,s0=(r(a,2)^r(a,13)^r(a,22))>>>0,maj=((a&b)^(a&c)^(b&c))>>>0,t2=(s0+maj)>>>0;z=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b;b=a;a=(t1+t2)>>>0;}for(const [i,v] of [a,b,c,d,e,f,g,z].entries())h[i]=(h[i]+v)>>>0;}return h.map(x=>x.toString(16).padStart(8,'0')).join('');}\nconst c=$('Prepared Supabase URL').isExecuted?$('Prepared Supabase URL').item.json:$('Prepared R2 URL').item.json,b=$input.first().binary?.data;\nif(!b)throw new Error('Prepared source download missing');const bytes=await this.helpers.getBinaryDataBuffer(0,'data'),size=jpegSize(bytes),a=c.asset;\nif(bytes.length!==Number(a.size_bytes)||bytes.length>8388608||!size||size.width!==1080||size.height!==1350||a.mime_type!=='image/jpeg'||sha256(bytes)!==a.media_sha256)throw new Error('Prepared source validation failed');\nreturn [{json:c.post,binary:{data:{...b,mimeType:'image/jpeg',fileExtension:'jpg',fileName:'base.jpg'}}}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "526242f7-1058-597a-8547-54c9fac8a1fe",
+      "name": "Public prepared R2 URL failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        1150
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Public prepared R2 URL failed?",
+              "leftValue": "={{ $('Prepared R2 URL').isExecuted && $('Prepared R2 URL').item.json.url_kind === 'r2_public' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9bec9617-8cbf-5694-a3e9-f41ec0368dbf",
+      "name": "Force signed prepared R2 URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        1150
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c=$('Prepared R2 URL').item.json;return {json:{...c,force_signed:true}};"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
       "id": "73430c63-b487-5e0e-9610-4fe67b247a31",
       "name": "Cloudflare FLUX image",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1120,
-        920
+        1680,
+        1150
       ],
       "parameters": {
         "method": "POST",
@@ -947,8 +1185,8 @@
       "type": "n8n-nodes-base.convertToFile",
       "typeVersion": 1.1,
       "position": [
-        1400,
-        920
+        1960,
+        1150
       ],
       "parameters": {
         "operation": "toBinary",
@@ -963,8 +1201,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        1680,
-        920
+        0,
+        1380
       ],
       "parameters": {
         "operation": "rotate",
@@ -985,8 +1223,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        1960,
-        920
+        280,
+        1380
       ],
       "parameters": {
         "operation": "crop",
@@ -1009,8 +1247,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        0,
-        1150
+        560,
+        1380
       ],
       "parameters": {
         "operation": "resize",
@@ -1032,8 +1270,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        1150
+        840,
+        1380
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1047,8 +1285,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        560,
-        1150
+        1120,
+        1380
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/authenticated/'+$('Config').first().json.asset_bucket+'/'+$json.book_profile.overlay_path }}",
@@ -1085,8 +1323,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        1150
+        1400,
+        1380
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1100,8 +1338,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        1120,
-        1150
+        1680,
+        1380
       ],
       "parameters": {
         "operation": "composite",
@@ -1124,8 +1362,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        1400,
-        1150
+        1960,
+        1380
       ],
       "parameters": {
         "operation": "draw",
@@ -1151,8 +1389,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        1680,
-        1150
+        0,
+        1610
       ],
       "parameters": {
         "operation": "text",
@@ -1178,8 +1416,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        1150
+        280,
+        1610
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1193,8 +1431,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        1380
+        560,
+        1610
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1208,8 +1446,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        280,
-        1380
+        840,
+        1610
       ],
       "parameters": {
         "operation": "draw",
@@ -1235,8 +1473,8 @@
       "type": "n8n-nodes-base.editImage",
       "typeVersion": 1,
       "position": [
-        560,
-        1380
+        1120,
+        1610
       ],
       "parameters": {
         "operation": "text",
@@ -1262,8 +1500,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        1380
+        1400,
+        1610
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1277,8 +1515,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        1380
+        1680,
+        1610
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1291,8 +1529,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        1380
+        1960,
+        1610
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/authenticated/'+$('Config').first().json.asset_bucket+'/'+$json.book_profile.carousel_end_slide_path }}",
@@ -1329,8 +1567,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        1380
+        0,
+        1840
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1344,8 +1582,8 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        1960,
-        1380
+        280,
+        1840
       ],
       "parameters": {
         "mode": "append",
@@ -1358,8 +1596,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        1610
+        560,
+        1840
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1373,8 +1611,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        1610
+        840,
+        1840
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket+'/'+$json.storage_path }}",
@@ -1421,8 +1659,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        1610
+        1120,
+        1840
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1436,8 +1674,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        1610
+        1400,
+        1840
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1450,8 +1688,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1120,
-        1610
+        1680,
+        1840
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -1483,8 +1721,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        1610
+        1960,
+        1840
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1497,8 +1735,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1680,
-        1610
+        0,
+        2070
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/rest/v1/post_media?post_id=eq.'+$('Review media context').first().json.post.id+'&status=eq.uploaded&select=id,post_id,manifest_revision,position,kind,text_fragment,alt_text,storage_path,sha256,status,instagram_container_id&order=position.asc' }}",
@@ -1527,8 +1765,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        1610
+        280,
+        2070
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1541,8 +1779,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        0,
-        1840
+        560,
+        2070
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/sign/'+$('Config').first().json.media_bucket+'/'+$json.storage_path }}",
@@ -1574,8 +1812,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        1840
+        840,
+        2070
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1588,8 +1826,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        560,
-        1840
+        1120,
+        2070
       ],
       "parameters": {
         "resource": "message",
@@ -1611,8 +1849,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        1840
+        1400,
+        2070
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1625,8 +1863,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1120,
-        1840
+        1680,
+        2070
       ],
       "parameters": {
         "resource": "message",
@@ -1686,8 +1924,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1400,
-        1840
+        1960,
+        2070
       ],
       "parameters": {
         "conditions": {
@@ -1719,8 +1957,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1680,
-        1840
+        0,
+        2300
       ],
       "parameters": {
         "resource": "message",
@@ -1745,8 +1983,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        1840
+        280,
+        2300
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1759,8 +1997,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        2070
+        560,
+        2300
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1773,8 +2011,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        2070
+        840,
+        2300
       ],
       "parameters": {
         "url": "https://graph.instagram.com/refresh_access_token",
@@ -1808,8 +2046,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        2070
+        1120,
+        2300
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1822,8 +2060,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        840,
-        2070
+        1400,
+        2300
       ],
       "parameters": {
         "conditions": {
@@ -1855,8 +2093,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        2070
+        1680,
+        2300
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1869,8 +2107,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        2070
+        1960,
+        2300
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -1902,8 +2140,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        2070
+        0,
+        2530
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1916,8 +2154,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        2070
+        280,
+        2530
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1930,8 +2168,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        0,
-        2300
+        560,
+        2530
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/rest/v1/post_media?post_id=eq.'+$('Active publishing context').first().json.post.id+'&select=id,post_id,manifest_revision,position,kind,text_fragment,alt_text,storage_path,sha256,status,instagram_container_id&order=position.asc' }}",
@@ -1960,8 +2198,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        2300
+        840,
+        2530
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1975,8 +2213,8 @@
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
       "position": [
-        560,
-        2300
+        1120,
+        2530
       ],
       "parameters": {
         "batchSize": 1,
@@ -1989,8 +2227,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        840,
-        2300
+        1400,
+        2530
       ],
       "parameters": {
         "conditions": {
@@ -2022,8 +2260,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1120,
-        2300
+        1680,
+        2530
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/sign/'+$('Config').first().json.media_bucket+'/'+$json.storage_path }}",
@@ -2056,8 +2294,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        2300
+        1960,
+        2530
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2071,8 +2309,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1680,
-        2300
+        0,
+        2760
       ],
       "parameters": {
         "url": "={{ $json.signed_url }}",
@@ -2101,8 +2339,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        2300
+        280,
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2116,8 +2354,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        0,
-        2530
+        560,
+        2760
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.account_id+'/media' }}",
@@ -2167,8 +2405,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        2530
+        840,
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2182,8 +2420,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        560,
-        2530
+        1120,
+        2760
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_media_container' }}",
@@ -2217,8 +2455,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        2530
+        1400,
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2232,8 +2470,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        2530
+        1680,
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2246,8 +2484,8 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        1400,
-        2530
+        1960,
+        2760
       ],
       "parameters": {
         "amount": "={{ $('Config').first().json.poll_seconds }}",
@@ -2260,8 +2498,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1680,
-        2530
+        0,
+        2990
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.instagram_container_id }}",
@@ -2297,8 +2535,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        2530
+        280,
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2311,8 +2549,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        0,
-        2760
+        560,
+        2990
       ],
       "parameters": {
         "conditions": {
@@ -2344,8 +2582,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        2760
+        840,
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2358,8 +2596,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        560,
-        2760
+        1120,
+        2990
       ],
       "parameters": {
         "conditions": {
@@ -2391,8 +2629,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        2760
+        1400,
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2405,8 +2643,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        2760
+        1680,
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2419,8 +2657,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        2760
+        1960,
+        2990
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/rest/v1/post_media?post_id=eq.'+$('Ready children context').first().json.post.id+'&status=eq.container_ready&select=id,post_id,manifest_revision,position,kind,text_fragment,alt_text,storage_path,sha256,status,instagram_container_id&order=position.asc' }}",
@@ -2449,8 +2687,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        2760
+        0,
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2464,8 +2702,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1960,
-        2760
+        280,
+        3220
       ],
       "parameters": {
         "conditions": {
@@ -2497,8 +2735,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        0,
-        2990
+        560,
+        3220
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.account_id+'/media' }}",
@@ -2552,8 +2790,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        2990
+        840,
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2567,8 +2805,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        560,
-        2990
+        1120,
+        3220
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -2602,8 +2840,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        2990
+        1400,
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2617,8 +2855,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        2990
+        1680,
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2631,8 +2869,8 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        1400,
-        2990
+        1960,
+        3220
       ],
       "parameters": {
         "amount": "={{ $('Config').first().json.poll_seconds }}",
@@ -2645,8 +2883,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1680,
-        2990
+        0,
+        3450
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.instagram_container_id }}",
@@ -2682,8 +2920,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        2990
+        280,
+        3450
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2696,8 +2934,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        0,
-        3220
+        560,
+        3450
       ],
       "parameters": {
         "conditions": {
@@ -2729,8 +2967,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        280,
-        3220
+        840,
+        3450
       ],
       "parameters": {
         "conditions": {
@@ -2762,8 +3000,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        3220
+        1120,
+        3450
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2776,8 +3014,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        3220
+        1400,
+        3450
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.account_id+'/media_publish' }}",
@@ -2819,8 +3057,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        3220
+        1680,
+        3450
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2834,8 +3072,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        3220
+        1960,
+        3450
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.media_id }}",
@@ -2870,8 +3108,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        3220
+        0,
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2884,8 +3122,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        3220
+        280,
+        3680
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -2919,8 +3157,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        3450
+        560,
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2933,8 +3171,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        3450
+        840,
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2947,8 +3185,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        560,
-        3450
+        1120,
+        3680
       ],
       "parameters": {
         "url": "={{ (()=>{const c=$('Decision cleanup context').isExecuted?$('Decision cleanup context').first().json:$('Published cleanup context').isExecuted?$('Published cleanup context').first().json:$('Terminal cleanup context').first().json;return $('Config').first().json.supabase_url+'/rest/v1/post_media?post_id=eq.'+c.post.id+'&status=eq.cleanup_pending&select=storage_path&order=position.asc';})() }}",
@@ -2983,8 +3221,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        3450
+        1400,
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2997,8 +3235,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1120,
-        3450
+        1680,
+        3680
       ],
       "parameters": {
         "conditions": {
@@ -3030,8 +3268,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        3450
+        1960,
+        3680
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket }}",
@@ -3064,8 +3302,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        3450
+        0,
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3078,8 +3316,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        3450
+        280,
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3092,8 +3330,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        3680
+        560,
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3106,8 +3344,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        3680
+        840,
+        3910
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_media_cleanup' }}",
@@ -3140,8 +3378,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        3680
+        1120,
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3154,8 +3392,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        840,
-        3680
+        1400,
+        3910
       ],
       "parameters": {
         "conditions": {
@@ -3187,8 +3425,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        3680
+        1680,
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3201,8 +3439,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1400,
-        3680
+        1960,
+        3910
       ],
       "parameters": {
         "resource": "message",
@@ -3222,13 +3460,622 @@
       }
     },
     {
+      "id": "0d25ff10-a676-590f-a7d8-d720c547ae4a",
+      "name": "Prepared source context unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        4140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json;\nconst message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);\nreturn [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];"
+      }
+    },
+    {
+      "id": "09a57970-fcff-535b-afbd-0961fcb76b73",
+      "name": "Prepared source context failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        4140
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "454351c0-a4a7-55a8-b318-1e595832a15b",
+      "name": "Prepared source context notice context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        4140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];"
+      }
+    },
+    {
+      "id": "c98ff886-c542-53f3-bbc7-fd21df13ac24",
+      "name": "Prepared source context Telegram notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        840,
+        4140
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.telegram_chat_id || $('Config').first().json.telegram_chat_id }}",
+        "text": "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "c83191e4-9c32-589d-860f-19d11f26a195",
+      "name": "Sign prepared Supabase source unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        4140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json;\nconst message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);\nreturn [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];"
+      }
+    },
+    {
+      "id": "4e085d07-5657-5b0a-9295-957511daced9",
+      "name": "Sign prepared Supabase source failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        4140
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "d72cfa09-486c-5c06-af5b-977a6de2114b",
+      "name": "Sign prepared Supabase source notice context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        4140
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];"
+      }
+    },
+    {
+      "id": "1d4935b8-171f-5007-a25c-fd15b4b3887a",
+      "name": "Sign prepared Supabase source Telegram notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1960,
+        4140
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.telegram_chat_id || $('Config').first().json.telegram_chat_id }}",
+        "text": "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "0e5a4bff-2e18-5e9d-9a86-caa5fffbba7d",
+      "name": "Prepared Supabase URL unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        4370
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json;\nconst message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);\nreturn [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];"
+      }
+    },
+    {
+      "id": "c69dfb94-68e2-536a-b4c6-0228ad1f0fa8",
+      "name": "Prepared Supabase URL failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        4370
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "09cc8f9c-aa34-5c18-837b-7fddfcd5f3a4",
+      "name": "Prepared Supabase URL notice context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        4370
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];"
+      }
+    },
+    {
+      "id": "bb58a313-75d0-53e5-a349-ed7afadc0ce6",
+      "name": "Prepared Supabase URL Telegram notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        840,
+        4370
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.telegram_chat_id || $('Config').first().json.telegram_chat_id }}",
+        "text": "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "4f468500-c066-54a4-a2eb-4b80517b54cb",
+      "name": "Prepared R2 URL unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        4370
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json;\nconst message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);\nreturn [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];"
+      }
+    },
+    {
+      "id": "3236d04f-fb25-5236-8db8-d435c059c8b1",
+      "name": "Prepared R2 URL failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        4370
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "1a6abf74-844f-5b89-bd40-9e37c876f4e5",
+      "name": "Prepared R2 URL notice context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        4370
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];"
+      }
+    },
+    {
+      "id": "28a54fef-0829-5011-9eb4-b5d545e2390a",
+      "name": "Prepared R2 URL Telegram notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1960,
+        4370
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.telegram_chat_id || $('Config').first().json.telegram_chat_id }}",
+        "text": "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "51d3d3f1-1e40-5c34-ae30-59d2d362b1d8",
+      "name": "Force signed prepared R2 URL unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        4600
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json;\nconst message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);\nreturn [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];"
+      }
+    },
+    {
+      "id": "57202100-40d2-553b-bd6d-0c38fc633100",
+      "name": "Force signed prepared R2 URL failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        4600
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "b943e9d5-1b06-5682-ba82-83dbfcf7cf07",
+      "name": "Force signed prepared R2 URL notice context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        4600
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];"
+      }
+    },
+    {
+      "id": "0020ac68-8ac5-5af8-ac70-ed4741f52223",
+      "name": "Force signed prepared R2 URL Telegram notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        840,
+        4600
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.telegram_chat_id || $('Config').first().json.telegram_chat_id }}",
+        "text": "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "43a8a5ca-96da-542e-80da-654cc15b41da",
+      "name": "Validate prepared source unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        4600
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json;\nconst message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);\nreturn [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];"
+      }
+    },
+    {
+      "id": "81db53e5-a431-55fb-ac4c-28528777f983",
+      "name": "Validate prepared source failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1400,
+        4600
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "17370c37-51fb-5d1b-bd0c-b41be59808b1",
+      "name": "Validate prepared source notice context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        4600
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];"
+      }
+    },
+    {
+      "id": "64799627-4ea6-58c1-8a33-8af69d4c56a8",
+      "name": "Validate prepared source Telegram notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1960,
+        4600
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.telegram_chat_id || $('Config').first().json.telegram_chat_id }}",
+        "text": "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "c6fb2c1d-cd57-54ed-bd83-b46093ff7cbc",
+      "name": "Prepared download unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        4830
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$('Image request').item.json,input=$input.first().json;\nconst message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);\nreturn [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];"
+      }
+    },
+    {
+      "id": "59d03a12-c1e5-5841-a5c1-32c841bb880f",
+      "name": "Prepared download failure saved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        4830
+      ],
+      "parameters": {
+        "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          }
+        },
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "REPLACE_supabaseApi",
+          "name": "BookPromotion supabaseApi"
+        }
+      }
+    },
+    {
+      "id": "710d2281-a493-5b03-bfc5-1bd86061d9ab",
+      "name": "Prepared download notice context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        4830
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];"
+      }
+    },
+    {
+      "id": "c9c005cd-c2e7-5f15-b8f8-d03ce86ead9c",
+      "name": "Prepared download Telegram notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        840,
+        4830
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.telegram_chat_id || $('Config').first().json.telegram_chat_id }}",
+        "text": "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
       "id": "b1e50bfc-0fc8-5129-9cfb-5cdaa22746d7",
       "name": "Generate caption failed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        3680
+        1120,
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3241,8 +4088,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        3680
+        1400,
+        4830
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3274,8 +4121,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        3910
+        1680,
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3288,8 +4135,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        3910
+        1960,
+        4830
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3321,8 +4168,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        3910
+        0,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3335,8 +4182,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        3910
+        280,
+        5060
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3368,8 +4215,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        3910
+        560,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3382,8 +4229,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        3910
+        840,
+        5060
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3415,8 +4262,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        3910
+        1120,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3429,8 +4276,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        3910
+        1400,
+        5060
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3462,8 +4309,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        4140
+        1680,
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3476,8 +4323,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        4140
+        1960,
+        5060
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3509,8 +4356,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        4140
+        0,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3523,8 +4370,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        4140
+        280,
+        5290
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3556,8 +4403,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4140
+        560,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3570,8 +4417,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        4140
+        840,
+        5290
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3603,8 +4450,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4140
+        1120,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3617,8 +4464,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        4140
+        1400,
+        5290
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3650,8 +4497,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        4370
+        1680,
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3664,8 +4511,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        4370
+        1960,
+        5290
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3697,8 +4544,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        4370
+        0,
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3711,8 +4558,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        4370
+        280,
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3744,8 +4591,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4370
+        560,
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3758,8 +4605,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        4370
+        840,
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3791,8 +4638,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4370
+        1120,
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3805,8 +4652,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        4370
+        1400,
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3838,8 +4685,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        4600
+        1680,
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3852,8 +4699,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        4600
+        1960,
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3885,8 +4732,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        4600
+        0,
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3899,8 +4746,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        4600
+        280,
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3932,8 +4779,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4600
+        560,
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3946,8 +4793,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        4600
+        840,
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3979,8 +4826,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4600
+        1120,
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3993,8 +4840,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        4600
+        1400,
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4026,8 +4873,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        4830
+        1680,
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4040,8 +4887,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        4830
+        1960,
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4073,8 +4920,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        4830
+        0,
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4087,8 +4934,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        4830
+        280,
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4120,8 +4967,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        4830
+        560,
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4134,8 +4981,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        4830
+        840,
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4167,8 +5014,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        4830
+        1120,
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4181,8 +5028,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        4830
+        1400,
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4214,8 +5061,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        5060
+        1680,
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4228,8 +5075,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        5060
+        1960,
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4261,8 +5108,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        5060
+        0,
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4275,8 +5122,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        5060
+        280,
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket }}",
@@ -4309,8 +5156,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        5060
+        560,
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4323,8 +5170,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1400,
-        5060
+        840,
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4356,8 +5203,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        5060
+        1120,
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4370,8 +5217,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1960,
-        5060
+        1400,
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket }}",
@@ -4404,8 +5251,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        5290
+        1680,
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4418,8 +5265,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        280,
-        5290
+        1960,
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4451,8 +5298,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        5290
+        0,
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4465,8 +5312,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        840,
-        5290
+        280,
+        6440
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4499,8 +5346,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        5290
+        560,
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4513,8 +5360,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        5290
+        840,
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4527,8 +5374,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        5290
+        1120,
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4541,8 +5388,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        5290
+        1400,
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4555,8 +5402,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        5520
+        1680,
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4569,8 +5416,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        5520
+        1960,
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4583,8 +5430,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        5520
+        0,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4597,8 +5444,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        5520
+        280,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4611,8 +5458,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        5520
+        560,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4625,8 +5472,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        5520
+        840,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4639,8 +5486,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        5520
+        1120,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4653,8 +5500,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        5520
+        1400,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4667,8 +5514,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
-        5750
+        1680,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4681,8 +5528,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        280,
-        5750
+        1960,
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4695,8 +5542,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        5750
+        0,
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4709,8 +5556,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        840,
-        5750
+        280,
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4723,8 +5570,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1120,
-        5750
+        560,
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4737,8 +5584,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1400,
-        5750
+        840,
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4751,8 +5598,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        5750
+        1120,
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4765,8 +5612,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1960,
-        5750
+        1400,
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4779,11 +5626,11 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        0,
-        5980
+        1680,
+        6900
       ],
       "parameters": {
-        "content": "## Book Promotion Carousel · review\nInactive import for n8n 2.35.4. Assign credentials before testing.\nAll generated slides use private Supabase Storage; signed URLs are ephemeral.\npublish_enabled=false is the default dry-run gate. See n8n/README.md.",
+        "content": "## Book Promotion Carousel · review\nInactive import for n8n 2.35.4. Assign credentials before testing.\nPrepared sources use their frozen Supabase/R2 object identity; R2 public URLs fall back to fresh signatures. Generated slides remain private in Supabase Storage.\npublish_enabled=false is the default dry-run gate. See n8n/README.md.",
         "width": 640,
         "height": 260
       }
@@ -5237,7 +6084,7 @@
       "main": [
         [
           {
-            "node": "Cloudflare FLUX image",
+            "node": "Prepared source?",
             "type": "main",
             "index": 0
           }
@@ -5245,6 +6092,168 @@
         [
           {
             "node": "Image request failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared source?": {
+      "main": [
+        [
+          {
+            "node": "Prepared source context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cloudflare FLUX image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared source context": {
+      "main": [
+        [
+          {
+            "node": "Prepared source in Supabase?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepared source context unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared source in Supabase?": {
+      "main": [
+        [
+          {
+            "node": "Sign prepared Supabase source",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepared R2 URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign prepared Supabase source": {
+      "main": [
+        [
+          {
+            "node": "Prepared Supabase URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sign prepared Supabase source unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared Supabase URL": {
+      "main": [
+        [
+          {
+            "node": "Download prepared source",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepared Supabase URL unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared R2 URL": {
+      "main": [
+        [
+          {
+            "node": "Download prepared source",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepared R2 URL unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download prepared source": {
+      "main": [
+        [
+          {
+            "node": "Validate prepared source",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Public prepared R2 URL failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Public prepared R2 URL failed?": {
+      "main": [
+        [
+          {
+            "node": "Force signed prepared R2 URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepared download unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force signed prepared R2 URL": {
+      "main": [
+        [
+          {
+            "node": "Prepared R2 URL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Force signed prepared R2 URL unavailable",
             "type": "main",
             "index": 0
           }
@@ -5353,6 +6362,24 @@
         [
           {
             "node": "Validate normalized base failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate prepared source": {
+      "main": [
+        [
+          {
+            "node": "Download title overlay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate prepared source unavailable",
             "type": "main",
             "index": 0
           }
@@ -6664,6 +7691,237 @@
         [
           {
             "node": "Current draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared source context unavailable": {
+      "main": [
+        [
+          {
+            "node": "Prepared source context failure saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared source context failure saved": {
+      "main": [
+        [
+          {
+            "node": "Prepared source context notice context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared source context notice context": {
+      "main": [
+        [
+          {
+            "node": "Prepared source context Telegram notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign prepared Supabase source unavailable": {
+      "main": [
+        [
+          {
+            "node": "Sign prepared Supabase source failure saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign prepared Supabase source failure saved": {
+      "main": [
+        [
+          {
+            "node": "Sign prepared Supabase source notice context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign prepared Supabase source notice context": {
+      "main": [
+        [
+          {
+            "node": "Sign prepared Supabase source Telegram notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared Supabase URL unavailable": {
+      "main": [
+        [
+          {
+            "node": "Prepared Supabase URL failure saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared Supabase URL failure saved": {
+      "main": [
+        [
+          {
+            "node": "Prepared Supabase URL notice context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared Supabase URL notice context": {
+      "main": [
+        [
+          {
+            "node": "Prepared Supabase URL Telegram notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared R2 URL unavailable": {
+      "main": [
+        [
+          {
+            "node": "Prepared R2 URL failure saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared R2 URL failure saved": {
+      "main": [
+        [
+          {
+            "node": "Prepared R2 URL notice context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared R2 URL notice context": {
+      "main": [
+        [
+          {
+            "node": "Prepared R2 URL Telegram notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force signed prepared R2 URL unavailable": {
+      "main": [
+        [
+          {
+            "node": "Force signed prepared R2 URL failure saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force signed prepared R2 URL failure saved": {
+      "main": [
+        [
+          {
+            "node": "Force signed prepared R2 URL notice context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force signed prepared R2 URL notice context": {
+      "main": [
+        [
+          {
+            "node": "Force signed prepared R2 URL Telegram notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate prepared source unavailable": {
+      "main": [
+        [
+          {
+            "node": "Validate prepared source failure saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate prepared source failure saved": {
+      "main": [
+        [
+          {
+            "node": "Validate prepared source notice context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate prepared source notice context": {
+      "main": [
+        [
+          {
+            "node": "Validate prepared source Telegram notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared download unavailable": {
+      "main": [
+        [
+          {
+            "node": "Prepared download failure saved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared download failure saved": {
+      "main": [
+        [
+          {
+            "node": "Prepared download notice context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepared download notice context": {
+      "main": [
+        [
+          {
+            "node": "Prepared download Telegram notice",
             "type": "main",
             "index": 0
           }

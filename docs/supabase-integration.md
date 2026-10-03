@@ -1,6 +1,6 @@
 # Supabase-Übertragung und Promotion-Vertrag
 
-Stand: 02.10.2026. Der lokale Code unterstützt die Verträge v8–v10. Das produktive Projekt `AutomatedBookPromotion` (`aqfemzwrkzimzakqiwls`, PostgreSQL 17) wurde nach ausdrücklicher Freigabe auf v10 migriert. Migrationen in Namensreihenfolge:
+Stand: 03.10.2026. Der lokale Code und das produktive Projekt `AutomatedBookPromotion` (`aqfemzwrkzimzakqiwls`, PostgreSQL 17) unterstützen die Verträge v8–v11. v11 wurde nach ausdrücklicher Freigabe remote angewendet. Migrationen in Namensreihenfolge:
 
 1. `20260908065204_bookpromo_initial.sql`
 2. `20260908065212_bookpromo_sync_and_approvals.sql`
@@ -16,8 +16,26 @@ Stand: 02.10.2026. Der lokale Code unterstützt die Verträge v8–v10. Das prod
 12. `20260927130000_reel_claim_all_accounts.sql`
 13. `20260930090000_chapter_reel_sources.sql`
 14. `20261002080336_book_teaser_sources.sql`
+15. `20261003081501_prepared_carousel_images.sql`
 
-Die Dateien liegen in `supabase/migrations`. Die höchste Python-Schemaversion ist **10**. v8 bleibt für vorhandene Zitat-/Carousel-Abläufe nutzbar; die Kapitel-Queue verlangt v9, die Gesamt-Teaser-Queue v10. Beide neuen Migrationen wurden am 02.10.2026 remote angewendet. Verifiziert: Schemaversion 10 über SQL und den vollständigen Python-Data-API-Schemacheck, unveränderter Buchbestand (11 Bücher, 185 Kapitel, 1646 Zitate), RLS, ausschließlich Service-Role-Zugriff auf den Enqueue-RPC und privater 300-MiB-MP4-Bucket. Es wurden keine Veröffentlichungen oder Uploads ausgelöst. Nicht manuell das historische Bootstrap-Script ausführen.
+Die Dateien liegen in `supabase/migrations`. Die höchste Python-Schemaversion ist **11**. v8 bleibt für vorhandene Zitat-/Carousel-Abläufe nutzbar; die Kapitel-Queue verlangt v9, die Gesamt-Teaser-Queue v10 und vorbereitete Carousel-Bilder v11. Remote verifiziert wurden Schema v11 und der unveränderte Bestand von 11 Büchern, 185 Kapiteln, 1646 Zitaten, 27 Posts, 2 Reel-Assets und 6 Zielveröffentlichungen. Die neue Quelltabelle war nach der Migration leer. Ein vollständig zurückgerollter Service-Role-Smoke-Test bestätigte Setzen, Listen und Entfernen; der Python-Data-API-Vollcheck bestätigte anschließend Schema v11. Es wurden weder Medien hochgeladen noch Posts angelegt oder Veröffentlichungen ausgelöst. Die n8n-Workflows wurden nicht importiert. Nicht manuell das historische Bootstrap-Script ausführen.
+
+## Vorbereitete Carousel-Bilder
+
+`carousel_source_media` enthält ausschließlich ausdrücklich gewählte Bilder:
+entweder eines pro Zitat oder eines pro Kapitel. Die Galerie und andere lokale
+Kandidaten werden nicht übertragen. Python normalisiert die Auswahl vor dem
+Upload deterministisch auf ein 1080×1350-JPEG und speichert Provider, Bucket,
+inhaltsadressierten Pfad, SHA-256 und Manifestdaten. Bei R2 ist `public_url`
+optional; ohne Custom Domain signiert n8n den gespeicherten Objektpfad frisch.
+
+`bookpromo_reserve` friert die Auswahl mit der Priorität Zitat → Kapitel → kein
+Snapshot in `posts` ein. Ein fehlender Snapshot aktiviert die bisherige
+Live-Bilderzeugung. Ein vorhandener, aber später nicht erreichbarer oder
+beschädigter Snapshot wird dagegen atomar über
+`bookpromo_prepared_image_fail` als `prepared_image_unavailable` beendet und
+per Telegram gemeldet. Die Verwaltung läuft über service-only Invoker-RPCs;
+die Tabelle besitzt keine Policies für `anon` oder `authenticated`.
 
 ## Fertige Reel-Warteschlange
 
@@ -37,7 +55,7 @@ Daily-/Terminmodus und Plattformoptionen werden wie bei Kapitel-Reels eingefrore
 
 **Buchstand nach Supabase übertragen** sendet einen fertig analysierten, prüffreien Buchstand: Buchdaten und manuelles Profil, Buchversion und Dateihash, Kapiteltexte und Fundstellen, Originalzitate, Bewertungen sowie Sperren. Vor dem Netzwerkzugriff friert das Tool den lokalen Einstellungs- und Assetstand in einer revisionsgeschützten SQLite-Transaktion ein und rendert daraus Titel-Overlay und CTA-Schlussseite erneut. Das PNG-Overlay wird unter `<book_id>/<sha256>.png`, das CTA-JPEG unter `<book_id>/carousel/<sha256>.jpg` im privaten Bucket `book-promotion-assets` gespeichert. `profile` enthält anschließend `overlay_path`, `publication_mode`, `carousel_end_text` und `carousel_end_slide_path`. Beim Reservieren ergänzt die Datenbank `chapter_position` und `chapter_name` in die unveränderliche Draft-Kopie des Buchprofils. Frontcover, Logo, DOCX, Zugangsdaten und lokale Schriftdateien werden nicht übertragen. Auch ein inaktiver, noch unvollständiger Buchstand oder ein Stand ohne geeignete Zitate ist übertragbar; daraus kann kein Entwurf reserviert werden.
 
-Vor dem Storage-Upload prüft Python den kompatiblen Schema-Vertrag (v8–v10); gegen inkompatible Stände wird mit einer verständlichen Migrationsmeldung abgebrochen. Ein SHA-256-Hash identifiziert den gesamten Payload einschließlich der endgültigen privaten Objektpfade. Die serverseitige Funktion `bookpromo_sync` übernimmt alles in einer Postgres-Transaktion. Sie prüft Quellzuordnung, bestehende IDs und wortgetreue Ausschnitte erneut. Erst nach bestätigtem Erfolg wird eine lokale Quittung in `local_sync_receipts` gespeichert. Ein identischer erneuter Aufruf erzeugt keine doppelten Kapitel oder Zitate, auch wenn die vorherige Antwort verloren ging. Digestpfade machen wiederholte Asset-Uploads inhaltlich identisch.
+Vor dem Storage-Upload prüft Python den kompatiblen Schema-Vertrag (v8–v11); gegen inkompatible Stände wird mit einer verständlichen Migrationsmeldung abgebrochen. Ein SHA-256-Hash identifiziert den gesamten Payload einschließlich der endgültigen privaten Objektpfade. Die serverseitige Funktion `bookpromo_sync` übernimmt alles in einer Postgres-Transaktion. Sie prüft Quellzuordnung, bestehende IDs und wortgetreue Ausschnitte erneut. Erst nach bestätigtem Erfolg wird eine lokale Quittung in `local_sync_receipts` gespeichert. Ein identischer erneuter Aufruf erzeugt keine doppelten Kapitel oder Zitate, auch wenn die vorherige Antwort verloren ging. Digestpfade machen wiederholte Asset-Uploads inhaltlich identisch.
 
 Eine abweichende entfernte Revision wird als Konflikt abgelehnt. Ein offener Entwurf behält sein eingefrorenes `quote_text` und `book_profile`; spätere Buch-Synchronisationen verändern diesen Snapshot nicht. Alte Zitate/Kapitel werden bei verändertem aktuellem Snapshot ausgeblendet, nicht gelöscht; bestehende Post-Referenzen bleiben erhalten. Hat eine Quellversion bereits Posts, verlangt eine geänderte Extraktionsrevision den Import eines neuen Dokuments. Historischer Text wird nicht umgeschrieben.
 

@@ -165,6 +165,16 @@ Die Verwaltung nutzt zusätzlich `local_book_settings`, `local_book_assets` und 
 
 Bei jedem nutzbaren Zitat öffnet **Reel erzeugen** eine lokale Werkstatt. Für Begleittext/Bildprompt und später für den Videoprompt lässt sich jeweils Open WebUI oder lokales ComfyUI/Qwen auswählen. Das Originalzitat wird nicht von der KI umgeschrieben, sondern vom Code unverändert mit Begleittext, Buchtitel, Autor und Zieladresse zur fertigen Caption zusammengesetzt. Das erzeugte Szenenbild ist direkt sichtbar und bleibt als eigener Kandidat erhalten. Optional überträgt **Charaktere optimieren** anschließend die hinterlegten Referenzen in dieses Bild. Zusätzlich lässt sich ein eigenes PNG-, JPEG- oder WebP-Bild hochladen. Aus allen vorhandenen Kandidaten wird ausdrücklich das Bild gewählt, das in den Video-Workflow geht.
 
+Das ausgewählte Zitatbild kann zusätzlich ausdrücklich als vorbereitetes
+Carousel-Bild gespeichert werden. In der Kapitel-Produktion lässt sich dieselbe
+Aktion pro Kapitel als Fallback für dessen Zitate setzen. Übertragen wird dabei
+nur die gewählte, lokal vorab sichtbare 1080×1350-JPEG-Fassung – nicht die
+gesamte Bildergalerie. Beim späteren Carousel gilt Zitatbild vor Kapitelbild;
+fehlen beide, erzeugt n8n das Motiv weiterhin live. Diese Funktion benötigt die
+remote angewendete Supabase-Migration v11 und den neu importierten Carousel-Workflow.
+Ein nicht erreichbares vorbereitetes Objekt stoppt den Post und löst eine
+Telegram-Meldung aus, statt überraschend ein anderes Bild zu erzeugen.
+
 Pro Buch lassen sich PCM-WAV-Songs lokal hinterlegen. Startpunkt und Reel-Länge (standardmäßig 10 Sekunden) bestimmen einen exakt geschnittenen, abspielbaren Ausschnitt. Aus Bild, Stimmung und Dauer entsteht ein editierbarer Videoprompt mit klar sichtbarer, kontrollierter Bewegung. Vorhandene Figuren dürfen natürlich lip-syncen oder performen; Licht und Atmosphäre dürfen auf den Song reagieren. Der separate Reel-Worker rendert Bild und Video über ComfyUI. Das finale MP4 erhält immer den gewählten Original-Audioausschnitt und kann im Dialog angesehen oder neu erzeugt werden. Es gibt kein Zitat-Overlay im Video.
 
 Unter den Bucheinstellungen verwaltet jedes Buch eigene lokale Charakterprofile und Referenzbilder. Die Analyse ergänzt Namen und belegte Erscheinungsmerkmale, überschreibt jedoch keine manuell bearbeiteten oder freigegebenen Profile. In der Reel-Werkstatt werden anhand von Name und Alias erkannte Figuren vorausgewählt. Bei der optionalen Charakteroptimierung werden mehrere Referenzen links nach rechts zu einem Blatt kombiniert und per Flux-Bildbearbeitung in das Szenenbild übernommen. Charaktertabellen und Referenzbilder bleiben in SQLite beziehungsweise `data/characters/`; sie werden nicht als eigene Daten nach Supabase synchronisiert.

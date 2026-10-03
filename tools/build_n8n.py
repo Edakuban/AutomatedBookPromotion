@@ -172,6 +172,8 @@ def add_config(workflow):
  cloudflare_text_model:'@cf/meta/llama-3.3-70b-instruct-fp8-fast',
  cloudflare_image_model:'@cf/black-forest-labs/flux-1-schnell',
  media_bucket:'book-promotion-media',asset_bucket:'book-promotion-assets',
+ r2_endpoint:'R2_ENDPOINT_HIER_EINTRAGEN',r2_access_key_id:'R2_ACCESS_KEY_ID_HIER_EINTRAGEN',
+ r2_secret_access_key:'R2_SECRET_ACCESS_KEY_HIER_EINTRAGEN',r2_signed_url_ttl_seconds:86400,
  signed_url_seconds:3600,preview_url_seconds:900,max_poll_attempts:5,poll_seconds:60,
  max_image_quote_attempts:5,
  publish_enabled:false,resume_post_id:'',resume_generation:false
@@ -322,10 +324,49 @@ return slides.map((text,index)=>{const rendered=wrap(text),wrapped=rendered.leng
 
 
 def add_carousel_render_stage(workflow):
+    try:
+        from tools.build_n8n_reels import R2_PRESIGN_JS
+    except ModuleNotFoundError:
+        from build_n8n_reels import R2_PRESIGN_JS
+
     workflow.code("Image request", """const d=$input.first().json;
 if(d.text_approved_revision!==d.text_revision||!d.text_approved_at)throw new Error('Missing text approval');
 if(!d.book_profile?.overlay_path||!d.book_profile?.carousel_end_slide_path)throw new Error('Carousel assets missing');return [{json:d}];""", onError="continueErrorOutput")
     workflow.link("Generate carousel?", "Image request")
+    workflow.condition("Prepared source?", "!!$json.source_image_path")
+    workflow.link("Image request", "Prepared source?")
+    workflow.code("Prepared source context", """const d=$input.first().json;
+const required=['source_image_provider','source_image_bucket','source_image_path','source_image_sha256','source_image_size_bytes','source_image_width','source_image_height','source_image_mime_type'];
+if(required.some(k=>d[k]===null||d[k]===undefined)||!['quote','chapter'].includes(d.source_image_scope))throw new Error('Prepared source snapshot incomplete');
+return [{json:{post:d,asset:{storage_provider:d.source_image_provider,storage_bucket:d.source_image_bucket,storage_path:d.source_image_path,public_url:d.source_image_public_url,media_sha256:d.source_image_sha256,size_bytes:d.source_image_size_bytes,width:d.source_image_width,height:d.source_image_height,mime_type:d.source_image_mime_type}}}];""", onError="continueErrorOutput")
+    workflow.link("Prepared source?", "Prepared source context")
+    workflow.condition("Prepared source in Supabase?", "$json.asset.storage_provider === 'supabase'")
+    workflow.link("Prepared source context", "Prepared source in Supabase?")
+    workflow.http("Sign prepared Supabase source",
+        "={{ $('Config').first().json.supabase_url+'/storage/v1/object/sign/'+$json.asset.storage_bucket+'/'+$json.asset.storage_path }}",
+        "={{ {expiresIn:$('Config').first().json.signed_url_seconds} }}", onError="continueErrorOutput")
+    workflow.link("Prepared source in Supabase?", "Sign prepared Supabase source")
+    workflow.code("Prepared Supabase URL", """const c=$('Prepared source context').item.json,r=$input.first().json,u=r.signedURL||r.signedUrl;
+if(typeof u!=='string'||!u)throw new Error('Prepared Supabase URL missing');return [{json:{...c,signed_url:u.startsWith('http')?u:$('Config').first().json.supabase_url+'/storage/v1'+u,url_kind:'supabase_signed'}}];""", onError="continueErrorOutput")
+    workflow.link("Sign prepared Supabase source", "Prepared Supabase URL")
+    workflow.code("Prepared R2 URL", R2_PRESIGN_JS, each_item=True, onError="continueErrorOutput")
+    workflow.link("Prepared source in Supabase?", "Prepared R2 URL", 1)
+    workflow.http("Download prepared source", "={{ $json.signed_url }}", None, auth=None,
+        method="GET", responseFormat="file", outputPropertyName="data", timeout=120_000,
+        onError="continueErrorOutput")
+    workflow.link("Prepared Supabase URL", "Download prepared source")
+    workflow.link("Prepared R2 URL", "Download prepared source")
+    workflow.code("Validate prepared source", JPEG_VALIDATOR + "\n" + SHA256_JS + f"""
+const c=$('Prepared Supabase URL').isExecuted?$('Prepared Supabase URL').item.json:$('Prepared R2 URL').item.json,b=$input.first().binary?.data;
+if(!b)throw new Error('Prepared source download missing');const bytes=await this.helpers.getBinaryDataBuffer(0,'data'),size=jpegSize(bytes),a=c.asset;
+if(bytes.length!==Number(a.size_bytes)||bytes.length>{MAX_IMAGE_BYTES}||!size||size.width!=={CANVAS_WIDTH}||size.height!=={CANVAS_HEIGHT}||a.mime_type!=='image/jpeg'||sha256(bytes)!==a.media_sha256)throw new Error('Prepared source validation failed');
+return [{{json:c.post,binary:{{data:{{...b,mimeType:'image/jpeg',fileExtension:'jpg',fileName:'base.jpg'}}}}}}];""", onError="continueErrorOutput")
+    workflow.link("Download prepared source", "Validate prepared source")
+    workflow.condition("Public prepared R2 URL failed?", "$('Prepared R2 URL').isExecuted && $('Prepared R2 URL').item.json.url_kind === 'r2_public'")
+    workflow.link("Download prepared source", "Public prepared R2 URL failed?", 1)
+    workflow.code("Force signed prepared R2 URL", "const c=$('Prepared R2 URL').item.json;return {json:{...c,force_signed:true}};", each_item=True)
+    workflow.link("Public prepared R2 URL failed?", "Force signed prepared R2 URL")
+    workflow.link("Force signed prepared R2 URL", "Prepared R2 URL")
     workflow.node("Cloudflare FLUX image", "n8n-nodes-base.httpRequest", {
         "method": "POST",
         "url": "={{ 'https://api.cloudflare.com/client/v4/accounts/'+$('Config').first().json.cloudflare_account_id+'/ai/run/'+$('Config').first().json.cloudflare_image_model }}",
@@ -337,7 +378,7 @@ if(!d.book_profile?.overlay_path||!d.book_profile?.carousel_end_slide_path)throw
     workflow.node("Convert generated image to file", "n8n-nodes-base.convertToFile",
         {"operation": "toBinary", "sourceProperty": "result.image", "options": {}},
         1.1, onError="continueErrorOutput")
-    workflow.link("Image request", "Cloudflare FLUX image")
+    workflow.link("Prepared source?", "Cloudflare FLUX image", 1)
     workflow.link("Cloudflare FLUX image", "Convert generated image to file")
     workflow.node("Convert base to JPEG", "n8n-nodes-base.editImage", {
         "operation": "rotate", "dataPropertyName": "data", "rotate": 0,
@@ -366,6 +407,7 @@ return [{{json:$('Image request').item.json,binary:{{data:{{...binary,mimeType:'
         None, method="GET", responseFormat="file", outputPropertyName="overlay",
         onError="continueErrorOutput")
     workflow.link("Validate normalized base", "Download title overlay")
+    workflow.link("Validate prepared source", "Download title overlay")
     workflow.code("Assemble title layers", """const d=$('Validate normalized base').item.json;const base=$('Validate normalized base').item.binary?.data;const overlay=$input.first().binary?.overlay;
 if(!base||!overlay)throw new Error('Missing title layer');const bytes=await this.helpers.getBinaryDataBuffer(0,'overlay');
 if(bytes.length>1048576||bytes.length<24||bytes[0]!==137||bytes[1]!==80||bytes.readUInt32BE(16)!==1080||bytes.readUInt32BE(20)!==1350)throw new Error('Title overlay must be 1080x1350 PNG below 1 MiB');
@@ -738,6 +780,36 @@ def add_cleanup_stage(workflow):
 
 
 def add_failure_and_uncertain_routes(workflow):
+    prepared_sources = [
+        "Prepared source context", "Sign prepared Supabase source", "Prepared Supabase URL",
+        "Prepared R2 URL", "Force signed prepared R2 URL", "Validate prepared source",
+    ]
+    for source in prepared_sources:
+        next(n for n in workflow.nodes if n["name"] == source)["onError"] = "continueErrorOutput"
+        workflow.code(source + " unavailable", """const d=$('Image request').item.json,input=$input.first().json;
+const message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);
+return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];""")
+        workflow.link(source, source + " unavailable", 1)
+        workflow.rpc(source + " failure saved", "bookpromo_prepared_image_fail", "={{ $json }}")
+        workflow.link(source + " unavailable", source + " failure saved")
+        workflow.code(source + " notice context", "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];")
+        workflow.link(source + " failure saved", source + " notice context")
+        workflow.telegram(source + " Telegram notice",
+            "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.")
+        workflow.link(source + " notice context", source + " Telegram notice")
+
+    workflow.code("Prepared download unavailable", """const d=$('Image request').item.json,input=$input.first().json;
+const message=String(input.error?.message||input.message||input.error||'Prepared carousel image unavailable').slice(0,4000);
+return [{json:{p_id:d.id,p_revision:d.revision,p_token:d.action_token,p_error:message}}];""")
+    workflow.link("Public prepared R2 URL failed?", "Prepared download unavailable", 1)
+    workflow.rpc("Prepared download failure saved", "bookpromo_prepared_image_fail", "={{ $json }}")
+    workflow.link("Prepared download unavailable", "Prepared download failure saved")
+    workflow.code("Prepared download notice context", "const r=$input.first().json;return [{json:r.post||{telegram_chat_id:$('Config').first().json.telegram_chat_id}}];")
+    workflow.link("Prepared download failure saved", "Prepared download notice context")
+    workflow.telegram("Prepared download Telegram notice",
+        "Vorbereitetes Carousel-Bild ist nicht erreichbar oder beschädigt. Der Post wurde gestoppt; es wurde bewusst kein neues KI-Bild erzeugt.")
+    workflow.link("Prepared download notice context", "Prepared download Telegram notice")
+
     generation_sources = [
         "Generate caption", "Validate caption", "Image request", "Cloudflare FLUX image",
         "Convert generated image to file", "Convert base to JPEG", "Crop base to 4:5",
@@ -832,7 +904,7 @@ def add_failure_and_uncertain_routes(workflow):
 
 def add_setup_note(workflow):
     workflow.node("Setup notes", "n8n-nodes-base.stickyNote", {
-        "content": f"## Book Promotion Carousel · {workflow.mode}\nInactive import for n8n 2.35.4. Assign credentials before testing.\nAll generated slides use private Supabase Storage; signed URLs are ephemeral.\npublish_enabled=false is the default dry-run gate. See n8n/README.md.",
+        "content": f"## Book Promotion Carousel · {workflow.mode}\nInactive import for n8n 2.35.4. Assign credentials before testing.\nPrepared sources use their frozen Supabase/R2 object identity; R2 public URLs fall back to fresh signatures. Generated slides remain private in Supabase Storage.\npublish_enabled=false is the default dry-run gate. See n8n/README.md.",
         "width": 640, "height": 260,
     })
 

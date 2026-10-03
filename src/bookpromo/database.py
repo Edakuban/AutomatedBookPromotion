@@ -11,16 +11,17 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 from .config import Settings
 from .overlay import OVERLAY_BUCKET
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 MIN_SCHEMA_VERSION = 8
 REEL_BUCKET = "book-promotion-reels"
 MESSAGES = {
     "disabled": "Supabase ist bis Schritt 3.2 deaktiviert.",
     "configuration": "Supabase-URL und Server-Schlüssel fehlen oder sind ungeeignet.",
     "credentials": "Supabase hat den Zugriff abgelehnt. Server-Schlüssel und Berechtigungen prüfen.",
-    "schema": "Das Supabase-Schema ist nicht kompatibel (unterstützt: v8–v10). Bitte die vorbereiteten Migrationen prüfen.",
+    "schema": "Das Supabase-Schema ist nicht kompatibel (unterstützt: v8–v11). Bitte die vorbereiteten Migrationen prüfen.",
     "chapter_schema": "Die Veröffentlichungsqueue für Kapitel-Reels benötigt die noch ausstehende Supabase-Migration auf v9. Lokale Bilder und Videos sind davon unabhängig.",
     "book_teaser_schema": "Die Veröffentlichungsqueue für das Gesamt-Teaservideo benötigt die noch ausstehende Supabase-Migration auf v10 (nach v9). Lokale Bilder und Videos sind davon unabhängig.",
+    "carousel_schema": "Vorbereitete Carousel-Bilder benötigen die noch ausstehende Supabase-Migration auf v11. Die bisherige Live-Bilderzeugung bleibt davon unabhängig.",
     "unavailable": "Supabase ist derzeit nicht erreichbar. Verbindung und Server prüfen.",
     "response": "Supabase hat eine unerwartete Antwort geliefert.",
     "conflict": "Supabase enthält einen neueren Stand oder einen offenen Post. Bitte den Datenbankstand prüfen und den offenen Post abschließen.",
@@ -67,6 +68,21 @@ class PromotionBook(BaseModel):
     id: UUID
     title: str
     author: str
+
+
+class CarouselSourceMedia(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+    scope: Literal["quote", "chapter"]
+    owner_id: UUID
+    provider: Literal["supabase", "cloudflare_r2"]
+    bucket: str
+    path: str
+    public_url: str | None = None
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(gt=0, le=8 * 1024 * 1024)
+    width: Literal[1080]
+    height: Literal[1350]
+    mime_type: Literal["image/jpeg"]
 
 
 class SupabaseRepository:
@@ -232,7 +248,7 @@ class SupabaseRepository:
         return value
 
     async def check_schema(self, *, full: bool = False, chapters: bool = False,
-                           book_teasers: bool = False) -> int:
+                           book_teasers: bool = False, carousel_images: bool = False) -> int:
         rows = await self._read("bookpromo_schema", {"select": "version", "limit": "2"})
         if (len(rows) != 1 or type(rows[0].get("version")) is not int
                 or not MIN_SCHEMA_VERSION <= rows[0]["version"] <= SCHEMA_VERSION):
@@ -242,6 +258,8 @@ class SupabaseRepository:
             raise DatabaseError("chapter_schema")
         if book_teasers and version < 10:
             raise DatabaseError("book_teaser_schema")
+        if carousel_images and version < 11:
+            raise DatabaseError("carousel_schema")
         if full:
             # Empty result sets also validate the exposed objects, columns and read grants.
             relations = {
@@ -259,6 +277,13 @@ class SupabaseRepository:
             }
             if version >= 9:
                 relations["reel_assets"] += ",source_kind,chapter_id"
+            if version >= 11:
+                relations["posts"] += (
+                    ",source_image_scope,source_image_owner_id,source_image_provider,"
+                    "source_image_bucket,source_image_path,source_image_public_url,"
+                    "source_image_sha256,source_image_size_bytes,source_image_width,"
+                    "source_image_height,source_image_mime_type,error_code"
+                )
             for relation, columns in relations.items():
                 await self._read(relation, {"select": columns, "limit": "0"})
         return version
@@ -274,6 +299,59 @@ class SupabaseRepository:
 
     async def upload_reel(self, object_path: str, data: bytes) -> str:
         return await self._upload_video(object_path, data, max_bytes=50 * 1024 * 1024)
+
+    async def upload_carousel_source(self, object_path: str, data: bytes) -> str:
+        """Upload an immutable, normalized 1080x1350 JPEG to private book assets."""
+        if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
+            raise ValueError("Ungültiges Carousel-Quellbild")
+        return await self._upload_book_asset(
+            object_path, data, content_type="image/jpeg", limit=8 * 1024 * 1024,
+            path_pattern=(
+                r"carousel-sources/(?:quotes|chapters)/"
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/"
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/"
+                r"(?P<digest>[0-9a-f]{64})\.jpg"
+            ),
+        )
+
+    async def delete_carousel_source(self, object_path: str) -> None:
+        if not re.fullmatch(
+            r"carousel-sources/(?:quotes|chapters)/"
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/"
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/"
+            r"[0-9a-f]{64}\.jpg", object_path,
+        ):
+            raise ValueError("Ungültiger Carousel-Objektpfad")
+        try:
+            async with httpx.AsyncClient(base_url=self._storage_url, headers=self._headers, timeout=30,
+                follow_redirects=False, trust_env=False, transport=self._transport) as client:
+                response = await client.delete("object/" + OVERLAY_BUCKET + "/" + object_path)
+        except httpx.HTTPError:
+            raise DatabaseError("unavailable") from None
+        if response.status_code in (401, 403):
+            raise DatabaseError("credentials")
+        if not 200 <= response.status_code < 300:
+            raise DatabaseError("unavailable")
+
+    async def list_carousel_sources(self, book_id: UUID) -> list[CarouselSourceMedia]:
+        result = await self._rpc_json("bookpromo_carousel_sources", {"p_book_id": str(book_id)})
+        rows = result.get("sources")
+        if not isinstance(rows, list):
+            raise DatabaseError("response")
+        try:
+            return [CarouselSourceMedia.model_validate(row) for row in rows]
+        except ValidationError:
+            raise DatabaseError("response") from None
+
+    async def set_carousel_source(
+        self, scope: Literal["quote", "chapter"], owner_id: UUID, media: dict | None,
+    ) -> dict:
+        result = await self._rpc_json("bookpromo_carousel_source_set", {
+            "p_scope": scope, "p_owner_id": str(owner_id), "p_media": media,
+        })
+        if result.get("outcome") not in {"set", "removed"}:
+            raise DatabaseError("response")
+        return result
 
     async def upload_book_teaser(self, object_path: str, data: bytes) -> str:
         """v10 allows larger finished trailers; quote/chapter limits remain unchanged."""

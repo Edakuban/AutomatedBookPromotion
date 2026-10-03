@@ -27,6 +27,16 @@ Runner = Callable[..., subprocess.CompletedProcess]
 Progress = Callable[[int, int], None]
 
 
+def chapter_video_ready(book_id: str, plan: dict) -> bool:
+    """Judge the current video, not the draft's aggregate image/job status."""
+    draft = plan.get("draft")
+    return bool(
+        plan.get("state") == "done" and not plan.get("media_active") and draft
+        and draft.book_id == str(book_id) and not draft.image_stale and not draft.video_stale
+        and draft.selected_video_path and draft.selected_video_sha256
+    )
+
+
 def complete_chapter_segments(book_id: str, chapters, plans: list[dict], reels) -> list["TeaserSegment"]:
     """Build the simple all-chapters cut, never silently fall back to quote reels."""
     by_chapter = {plan["chapter_id"]: plan for plan in plans}
@@ -38,10 +48,7 @@ def complete_chapter_segments(book_id: str, chapters, plans: list[dict], reels) 
         plan = by_chapter[chapter.id]
         draft = plan.get("draft")
         if (
-            plan["state"] != "done" or plan.get("media_active") or draft is None
-            or draft.book_id != str(book_id) or draft.video_stale or draft.image_stale
-            or draft.state not in {"ready", "stocked", "published"}
-            or not draft.selected_video_path or not draft.selected_video_sha256
+            not chapter_video_ready(book_id, plan)
             or reels.artifact_path(draft, "video") is None
         ):
             raise UploadError("Bitte zuerst für alle Kapitel aktuelle Kapitelvideos erzeugen.", 409)

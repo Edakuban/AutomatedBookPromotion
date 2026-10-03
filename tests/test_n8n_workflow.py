@@ -133,6 +133,26 @@ def test_base_image_is_cropped_without_distortion_and_normalized(mode):
 
 
 @pytest.mark.parametrize("mode", MODES)
+def test_prepared_source_precedes_live_generation_and_fails_closed(mode):
+    workflow = build(mode)
+    by_name = nodes(workflow)
+    assert targets(workflow, "Image request") == ["Prepared source?"]
+    assert targets(workflow, "Prepared source?") == ["Prepared source context"]
+    assert targets(workflow, "Prepared source?", 1) == ["Cloudflare FLUX image"]
+    validate = by_name["Validate prepared source"]["parameters"]["jsCode"]
+    assert "sha256(bytes)!==a.media_sha256" in validate
+    assert "size.width!==1080" in validate and "size.height!==1350" in validate
+    assert targets(workflow, "Public prepared R2 URL failed?") == ["Force signed prepared R2 URL"]
+    assert targets(workflow, "Public prepared R2 URL failed?", 1) == ["Prepared download unavailable"]
+    assert "bookpromo_prepared_image_fail" in by_name[
+        "Prepared download failure saved"
+    ]["parameters"]["url"]
+    assert "kein neues KI-Bild" in by_name[
+        "Prepared download Telegram notice"
+    ]["parameters"]["text"]
+
+
+@pytest.mark.parametrize("mode", MODES)
 def test_sentence_split_has_integrity_and_slide_budget_guards(mode):
     source = nodes(build(mode))["Split quote into slides"]["parameters"]["jsCode"]
     assert "new Intl.Segmenter('de',{granularity:'sentence'})" in source

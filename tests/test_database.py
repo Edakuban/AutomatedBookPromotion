@@ -108,6 +108,16 @@ def test_full_check_reads_all_objects_without_writes(settings):
     assert "reel_publications" in seen and "reel_assets" in seen
 
 
+def test_v10_remains_usable_but_prepared_carousel_images_require_v11(settings):
+    repo = SupabaseRepository(settings, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=[{"version": 10}])
+    ))
+    assert asyncio.run(repo.check_schema()) == 10
+    with pytest.raises(DatabaseError) as error:
+        asyncio.run(repo.check_schema(carousel_images=True))
+    assert error.value.code == "carousel_schema"
+
+
 def test_v8_remains_usable_but_chapter_queue_requires_v9(settings):
     seen = []
 

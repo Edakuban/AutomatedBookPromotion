@@ -102,6 +102,19 @@ class R2Client:
         await self._request("PUT", key, body=data, content_type="video/mp4")
         return key
 
+    async def upload_carousel_image(self, key: str, data: bytes, digest: str) -> str:
+        if (not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or hashlib.sha256(data).hexdigest() != digest
+                or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9")
+                or len(data) > 8 * 1024 * 1024
+                or not re.fullmatch(
+                    r"carousel-sources/(?:quotes|chapters)/[0-9a-f-]{36}/[0-9a-f-]{36}/"
+                    + digest + r"\.jpg", key,
+                )):
+            raise ValueError("Ungültiges Carousel-Quellbild.")
+        await self._request("PUT", key, body=data, content_type="image/jpeg")
+        return key
+
     async def delete(self, key: str) -> None:
         await self._request("DELETE", key)
 

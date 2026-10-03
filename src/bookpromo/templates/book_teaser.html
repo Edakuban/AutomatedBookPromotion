@@ -201,6 +201,15 @@
                 </form>
               {% endif %}
               {% if plan.image_actions_disabled_reason %}<small class="muted">{{ plan.image_actions_disabled_reason }}</small>{% endif %}
+              {% if plan.draft and plan.draft.selected_image_path and not plan.draft.image_stale %}
+                <details class="chapter-publish">
+                  <summary>Bild für Zitat-Carousels dieses Kapitels</summary>
+                  <img class="chapter-image-preview" loading="lazy" src="{{ url_for('chapter_carousel_source_preview', book_id=book.id, chapter_id=plan.chapter_id) }}?revision={{ plan.draft.revision }}" alt="4:5-Vorschau für Kapitel {{ chapter.position }}">
+                  {% if plan.carousel_source %}<p><span class="badge badge-ready">Kapitelbild vorbereitet</span> Es dient als Fallback für Zitate ohne eigenes vorbereitetes Bild.</p>{% else %}<p class="muted small">Ohne Vorbereitung erzeugt n8n das Carousel-Bild weiterhin live.</p>{% endif %}
+                  <form method="post" action="{{ url_for('set_chapter_carousel_source', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form"><button type="submit" {% if not plan.can_set_carousel_source or plan.media_active %}disabled{% endif %}>{{ 'Vorbereitetes Kapitelbild ersetzen' if plan.carousel_source else 'Als Kapitel-Fallback vorbereiten' }}</button></form>
+                  {% if plan.carousel_source %}<form method="post" action="{{ url_for('remove_chapter_carousel_source', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form"><button type="submit" class="secondary-button">Vorbereitung entfernen</button></form>{% endif %}
+                </details>
+              {% endif %}
               {% if plan.draft %}
                 <form method="post" action="{{ url_for('start_chapter_teaser_video', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form">
                   <input type="hidden" name="revision" value="{{ plan.draft.revision }}">

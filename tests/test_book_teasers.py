@@ -66,6 +66,47 @@ def test_complete_cut_rejects_cross_book_or_missing_source():
         complete_chapter_segments(book_id, chapters, plans, reels)
 
 
+@pytest.mark.parametrize("draft_state", ["failed", "editing"])
+def test_complete_cut_accepts_current_video_independently_of_draft_status(draft_state):
+    book_id, chapter_id = str(uuid4()), str(uuid4())
+    chapter = SimpleNamespace(id=chapter_id, position=1)
+    draft = SimpleNamespace(
+        id=str(uuid4()), book_id=book_id, selected_video_sha256="b" * 64,
+        selected_video_path="clip.mp4", duration_ms=12_000,
+        video_stale=False, image_stale=False, state=draft_state,
+    )
+    plan = {"chapter_id": chapter_id, "state": "done", "draft": draft}
+    reels = SimpleNamespace(artifact_path=lambda draft, kind: Path("clip.mp4"))
+    segments = complete_chapter_segments(book_id, [chapter], [plan], reels)
+    assert segments[0].draft_id == draft.id
+    assert draft.state == draft_state  # Keep unrelated failures visible, don't repair records.
+
+
+@pytest.mark.parametrize("blocker", ["image_stale", "video_stale", "missing_path", "missing_hash", "active_job", "unfinished_plan"])
+def test_complete_cut_still_rejects_unsafe_video_after_unrelated_failure(blocker):
+    book_id, chapter_id = str(uuid4()), str(uuid4())
+    chapter = SimpleNamespace(id=chapter_id, position=1)
+    draft = SimpleNamespace(
+        id=str(uuid4()), book_id=book_id, selected_video_sha256="b" * 64,
+        selected_video_path="clip.mp4", duration_ms=12_000,
+        video_stale=False, image_stale=False, state="failed",
+    )
+    plan = {"chapter_id": chapter_id, "state": "done", "draft": draft}
+    if blocker in {"image_stale", "video_stale"}:
+        setattr(draft, blocker, True)
+    elif blocker == "missing_path":
+        draft.selected_video_path = None
+    elif blocker == "missing_hash":
+        draft.selected_video_sha256 = None
+    elif blocker == "active_job":
+        plan["media_active"] = True
+    else:
+        plan["state"] = "video_queued"
+    reels = SimpleNamespace(artifact_path=lambda draft, kind: Path("clip.mp4"))
+    with pytest.raises(UploadError):
+        complete_chapter_segments(book_id, [chapter], [plan], reels)
+
+
 @pytest.fixture
 def teaser_setup(tmp_path):
     uploads = LocalUploadStore(tmp_path / "data", 1024 * 1024)

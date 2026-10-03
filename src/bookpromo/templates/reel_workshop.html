@@ -75,6 +75,24 @@
         <label>Eigenes Bild hochladen <input type="file" name="file" accept="image/png,image/jpeg,image/webp" required></label>
         <div class="form-actions"><button type="submit" {% if job and job.active %}disabled{% endif %}>Bild hochladen</button></div>
       </form>
+      <div class="reel-carousel-source">
+        <h4>Bild für spätere Zitat-Carousels</h4>
+        {% if quote_carousel_source %}
+          <p><span class="badge badge-ready">Zitatbild vorbereitet</span> n8n verwendet genau dieses Bild und erzeugt kein neues.</p>
+          <form method="post" action="{{ url_for('remove_quote_carousel_source', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Carousel-Bild wird entfernt …"><button type="submit" class="secondary-button">Vorbereitung entfernen</button></form>
+        {% elif chapter_carousel_source %}
+          <p class="notice small">Für dieses Zitat ist kein eigenes Bild hinterlegt. Beim nächsten Carousel greift das vorbereitete Kapitelbild.</p>
+        {% else %}
+          <p class="muted small">Ohne Vorbereitung erzeugt n8n das Bild wie bisher erst beim Lauf.</p>
+        {% endif %}
+        {% if draft and draft.selected_image_path and not draft.image_stale %}
+          <img class="reel-media-preview" src="{{ url_for('quote_carousel_source_preview', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?revision={{ draft.revision }}" alt="Vorschau des auf 4:5 normalisierten Carousel-Bilds">
+          <form method="post" action="{{ url_for('set_quote_carousel_source', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Carousel-Bild wird vorbereitet und gespeichert …" class="form-actions">
+            <button type="submit" {% if not book_synced or not carousel_schema_ready or (job and job.active) %}disabled{% endif %}>{{ 'Vorbereitetes Bild ersetzen' if quote_carousel_source else 'Dieses Bild für Zitat-Carousels vorbereiten' }}</button>
+          </form>
+        {% endif %}
+        {% if carousel_source_error %}<p class="teaser-warning small">{{ carousel_source_error }}</p>{% elif not book_synced %}<p class="muted small">Nach der Supabase-Synchronisierung kann das Bild vorbereitet werden.</p>{% endif %}
+      </div>
     </section>
 
     <section class="reel-step" aria-labelledby="reel-audio-title">

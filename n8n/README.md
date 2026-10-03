@@ -16,8 +16,9 @@ schreibt ausschließlich lokale Dateien und überträgt keinen Workflow an n8n.
 ## Reel-Produktion und Publisher
 
 Kapitel-Reels benötigen zusätzlich Schema v9; Gesamt-Teaservideos benötigen
-v10 (`20261002080336_book_teaser_sources.sql`, nach v9). Beide Migrationen
-sind nur lokal vorbereitet und werden nicht beim Einreihen automatisch ausgeführt.
+v10 (`20261002080336_book_teaser_sources.sql`, nach v9). Beide Migrationen sind
+im konfigurierten Supabase-Projekt bereits angewendet; das Einreihen führt selbst
+keine Migration aus.
 Der aktualisierte Publisher bleibt mit v8-Zitat-Reels kompatibel. Für Gesamt-Teaser
 prüft er eine separate Obergrenze von 300 MiB und 600 Sekunden; normale Reels
 behalten 50 MiB und 60 Sekunden. Die lokale Queue prüft tatsächliche MP4-Dimensionen,
@@ -79,9 +80,23 @@ ist bereits auf diesem Stand.
 
 ## Ablauf
 
-Beide Workflows reservieren einen v6-Entwurf mit ihrem festen
-`execution_mode`, erzeugen Caption und Grundmotiv und normalisieren das Motiv
-ohne Verzerrung auf 1080 × 1350 Pixel. Danach entstehen:
+Die Carousel-Workflows benötigen Schema v11 aus
+`20261003081501_prepared_carousel_images.sql`; dieser Stand ist im konfigurierten
+Supabase-Projekt angewendet. Beim Reservieren wird zuerst ein
+für das konkrete Zitat vorbereitetes Bild gewählt, danach ein vorbereitetes
+Bild seines Kapitels. Nur wenn beides fehlt, erzeugt der Workflow das Grundmotiv
+wie bisher live. Die Objektidentität (Provider, Bucket, Pfad und SHA-256) wird
+im Post eingefroren; temporäre Signed URLs landen nicht in der Datenbank.
+Supabase-Objekte werden frisch signiert. Bei R2 wird eine konfigurierte
+Custom-Domain zuerst getestet und bei einem Abruffehler dasselbe Objekt frisch
+per SigV4 signiert. Ist das vorbereitete Objekt anschließend nicht erreichbar
+oder stimmt sein Manifest nicht, wird der Post mit
+`prepared_image_unavailable` gestoppt und Telegram informiert. Es gibt dann
+bewusst keinen stillen KI-Fallback.
+
+Beide Workflows reservieren einen Entwurf mit ihrem festen `execution_mode`.
+Vorbereitete und live erzeugte Motive enden im selben geprüften Vertrag mit
+1080 × 1350 Pixeln. Danach entstehen:
 
 1. Hero mit Titel-Overlay und Kapitelmarke.
 2. Ein bis acht Zitat-Slides mit Titel-Overlay, halbtransparentem dunklem
