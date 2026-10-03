@@ -103,11 +103,15 @@ def test_chapter_prompt_dialog_escapes_content_and_uses_revision_fencing():
     assert controls["teaser_text"]["maxlength"] == "600"
     video = next(form for form in forms if form["attrs"].get("action") == "/start_chapter_teaser_video")
     assert any(attrs.get("name") == "revision" for _, attrs in video["controls"])
+    assert any(attrs.get("name") == "regenerate" and attrs.get("value") == "1"
+               for _, attrs in video["controls"])
     assert all("disabled" not in attrs for tag, attrs in video["controls"] if tag == "button")
     draft.selected_video_path = "clean.mp4"
+    plan["can_update_video_text"] = True
     plan["effective_image_prompt"] = "Scene plus characters <Samuel>"
     updated, _ = render_teaser(chapter_run=run)
-    assert "Textfassung aktualisieren" in updated
+    assert "Video neu erzeugen" in updated
+    assert "Nur Textfassung aktualisieren" in updated
     assert "Zuletzt verwendeter Generierungsprompt" in updated
     assert "Scene plus characters &lt;Samuel&gt;" in updated
 

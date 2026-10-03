@@ -93,7 +93,7 @@
 
       <div class="chapter-phase-actions" aria-label="Nächste Produktionsschritte">
         <form method="post" action="{{ url_for('optimize_all_chapter_teaser_images', book_id=book.id) }}">
-          <button type="submit" {% if not optimizable_count or chapter_media_active or not reference_workflow_configured %}disabled{% endif %}>Charaktere für alle Kapitel optimieren{% if optimizable_count %} ({{ optimizable_count }}){% endif %}</button>
+          <button type="submit" {% if not optimizable_count or not reference_workflow_configured %}disabled{% endif %}>Charaktere für alle Kapitel optimieren{% if optimizable_count %} ({{ optimizable_count }}){% endif %}</button>
         </form>
         <form method="post" action="{{ url_for('start_chapter_teaser_videos', book_id=book.id) }}">
           <button type="submit" {% if not can_start_chapter_videos %}disabled{% endif %}>Videos aus ausgewählten Bildern erzeugen</button>
@@ -200,12 +200,16 @@
                   <button type="submit" {% if not plan.can_configure_characters %}disabled{% endif %}>{{ 'Charakteroptimierung erneut versuchen' if plan.image_job and plan.image_job.state == 'failed' else 'Charaktere optimieren' }}</button>
                 </form>
               {% endif %}
-              {% if chapter_production_active %}<small class="muted">Gesperrte Aktionen sind nach dem laufenden Kapitel-Schritt wieder verfügbar.</small>{% endif %}
+              {% if plan.image_actions_disabled_reason %}<small class="muted">{{ plan.image_actions_disabled_reason }}</small>{% endif %}
               {% if plan.draft %}
                 <form method="post" action="{{ url_for('start_chapter_teaser_video', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form">
                   <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
-                  <button type="submit" {% if not plan.can_start_video %}disabled{% endif %}>{{ 'Textfassung aktualisieren' if plan.state == 'analyzed' and plan.draft.selected_video_path and not plan.draft.video_stale and not plan.draft.image_stale else 'Video neu erzeugen' if plan.state == 'done' else 'Video erneut versuchen' if plan.state == 'failed' else 'Video aus ausgewähltem Bild erzeugen' }}</button>
+                  <button type="submit" name="regenerate" value="1" {% if not plan.can_start_video %}disabled{% endif %}>{{ 'Video neu erzeugen' if plan.draft.selected_video_path else 'Video erneut versuchen' if plan.state == 'failed' else 'Video aus ausgewähltem Bild erzeugen' }}</button>
+                  {% if plan.can_update_video_text %}
+                    <button type="submit" class="secondary-button">Nur Textfassung aktualisieren</button>
+                  {% endif %}
                 </form>
+                {% if plan.can_update_video_text %}<small class="muted">Ein Video zum ausgewählten Bild ist bereits vorhanden. „Video neu erzeugen“ startet einen neuen KI-Lauf; die Textfassung verwendet das vorhandene Video.</small>{% endif %}
                 {% if plan.video_disabled_reason %}<small class="muted">{{ plan.video_disabled_reason }}</small>{% endif %}
               {% endif %}
               {% if plan.draft and plan.draft.image_stale %}<small class="teaser-warning">Bildprompt geändert: Bitte zuerst das Bild neu erzeugen.</small>{% elif plan.draft and plan.draft.video_stale %}<small class="teaser-warning">Bild oder Videoprompt geändert: Bitte Video neu erzeugen.</small>{% endif %}

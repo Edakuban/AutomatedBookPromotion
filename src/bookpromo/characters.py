@@ -356,31 +356,85 @@ def character_mask_selector(character: BookCharacter) -> str:
     # CLIPSeg becomes less precise when pose, atmosphere and reference-background prose are mixed
     # into the locator.  This is deliberately vocabulary-agnostic: it works for people, animals,
     # monsters, robots and any other subject described by the book.
-    subject = re.search(
-        r"(?:^|\b(?:is|appears as)\s+)(?:a|an|the)\s+(.+?)"
-        r"(?=\s+(?:with|who|whose|wearing|dressed|in|standing|sitting|lying)\b|$)",
+    subjects = list(re.finditer(
+        r"(?:^|\b(?:is|appears as)\s+|,\s*)(?:a|an|the)\s+(.+?)"
+        r"(?=,\s*(?:a|an|the)\b|\s+(?:with|who|whose|wearing|dressed|in|standing|sitting|lying)\b|$)",
         first,
         flags=re.IGNORECASE,
-    )
-    selector = subject.group(1) if subject else first
+    ))
+    # In "the Prince of Sloth, a massive infernal ruler with ...", the latter
+    # phrase describes the subject, whereas the former is an abstract title.
+    selector = subjects[-1].group(1) if subjects else first
     selector = re.sub(r"[,;]+", " ", selector)
     selector = re.sub(r"\s+", " ", selector).strip(" .")
-
-    # A concise body-material or colour phrase is often the strongest distinction between two
-    # otherwise similar figures.  Pull it from the description without maintaining a species,
-    # gender or colour catalogue.
-    appearance = re.search(
-        r"\b(?:skin|fur|feathers|scales|shell|body)\s+"
-        r"(?:is|are|appears?|looks?)\s+([^,.;]+)",
-        visual,
-        flags=re.IGNORECASE,
-    )
-    if appearance:
-        modifier = re.split(r"\s+(?:and|with|as|that|which)\s+", appearance.group(1), 1)[0]
-        modifier = " ".join(modifier.split())[:60].strip(" .")
-        if modifier and modifier.casefold() not in selector.casefold():
-            selector = f"{modifier} {selector}"
+    # Preserve distinguishing visible traits from later sentences, rather than
+    # stopping before "with" and discarding all anatomy, hair and clothing.
+    # No character names, species, colours or book-specific facts are hard-coded.
+    for trait in _mask_visual_traits(visual):
+        if trait.casefold() in selector.casefold():
+            continue
+        candidate = f"{selector}, {trait}"
+        if len(candidate) <= 240:
+            selector = candidate
     return selector[:240].rstrip(" .")
+
+
+def _mask_visual_traits(visual: str) -> list[str]:
+    groups = (
+        r"body|build|physique",
+        r"horns?|wings?|tail|antennae|antlers?|markings?|marks?",
+        r"hair|skin|flesh|fur|feathers|scales|shell",
+        r"eyes?",
+        r"clothing|coat|jacket|shirt|robes?|armor|armour",
+        r"face|jawline|cheekbones|beak|snout|claws?|fingernails",
+    )
+    patterns = [re.compile(rf"\b(?:{group})\b", re.IGNORECASE) for group in groups]
+    traits: list[tuple[int, int, str]] = []
+    for clause in re.split(r"[.!?;]\s*", visual):
+        # Instructions and conditional transformations must not become positive
+        # mask targets ("no horns" must never be interpreted as "horns").
+        if re.search(r"\b(?:no|not|without|lacks?|never)\b", clause, re.IGNORECASE):
+            continue
+        if re.search(r"\b(?:may|can|could)\b", clause, re.IGNORECASE):
+            continue
+        if re.match(r"\s*(?:when|if|cinematic|photorealistic|full[- ]body reference|portrait on)\b",
+                    clause, re.IGNORECASE):
+            continue
+        for priority, pattern in enumerate(patterns):
+            for match in pattern.finditer(clause):
+                prefix = clause[:match.start()]
+                if re.search(r"\b(?:rather than|instead of)\b", prefix, re.IGNORECASE):
+                    continue
+                prefix = re.split(
+                    r"\b(?:has|have|with|wears|wearing|is|are|was|were|his|her|its|their|"
+                    r"a|an|the|from|of)\b", prefix, flags=re.IGNORECASE,
+                )[-1]
+                words = re.findall(r"[\w-]+", prefix)[-6:]
+                while words and words[0].casefold() in {"he", "she", "it", "and", "or", "several", "some"}:
+                    words.pop(0)
+                feature = match.group().lower()
+                phrase = " ".join([*words, feature])
+                # "Its fur is silver-grey" describes a useful material/colour;
+                # "His eyes are the most alert part of him" does not.
+                appearance = re.match(
+                    r"\s+(?:is|are|appears?|looks?)\s+([^,;]+)", clause[match.end():], re.IGNORECASE,
+                )
+                if appearance and not words:
+                    value = re.split(
+                        r"\s+(?:and in|with|as|that|which|making|while|rather than)\s+",
+                        appearance.group(1), 1, flags=re.IGNORECASE,
+                    )[0].strip()
+                    if not re.match(r"(?:a|an|the|his|her|its|their)\b", value, re.IGNORECASE):
+                        phrase = f"{' '.join(value.split()[:6])} {feature}"
+                if len(phrase) <= 80 and (phrase != feature or priority == 1):
+                    traits.append((priority, match.start(), phrase))
+    result: list[str] = []
+    for _, _, trait in sorted(traits, key=lambda item: item[0]):
+        if trait.casefold() not in {value.casefold() for value in result}:
+            result.append(trait)
+        if len(result) == 4:
+            break
+    return result
 
 
 def character_forbidden_features(character: BookCharacter) -> tuple[str, ...]:

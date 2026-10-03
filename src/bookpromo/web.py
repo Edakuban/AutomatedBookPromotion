@@ -352,7 +352,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 item["state"] in {"queued", "running"} for item in statuses
             )
             plan["can_select_image"] = bool(
-                chapter_run["state"] in {"done", "partial", "failed"}
+                chapter_run["state"] in {"queued", "running", "rendering", "done", "partial", "failed"}
                 and plan["state"] in {"analyzed", "done", "failed"} and not plan["media_active"]
             )
             if plan["media_active"]:
@@ -391,24 +391,22 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 and draft.image_prompt and settings.reel_image_workflow.is_file()
             )
             plan["can_edit_prompt"] = bool(draft and plan["can_select_image"] and plan.get("suggestion"))
-            video_step_available = bool(
-                chapter_run["state"] in {"done", "partial", "failed", "rendering"}
-                and plan["state"] in {"analyzed", "done", "failed"} and not plan["media_active"]
-            )
             plan["can_start_video"] = bool(
-                draft and video_step_available and draft.selected_image_path
+                draft and plan["can_select_image"] and draft.selected_image_path
                 and not draft.image_stale and any(option["selected"] for option in plan["image_sources"])
                 and settings.reel_video_workflow.is_file()
             )
             plan["can_retry_video"] = bool(
                 plan["can_start_video"] and plan["state"] == "failed"
             )
+            plan["can_update_video_text"] = bool(
+                plan["can_start_video"] and plan["state"] != "done"
+                and draft.selected_video_path and not draft.video_stale
+            )
             plan["video_disabled_reason"] = ""
             if draft and not plan["can_start_video"]:
                 if plan["media_active"]:
                     plan["video_disabled_reason"] = "Für dieses Kapitel läuft bereits ein Bild- oder Videojob."
-                elif chapter_run["state"] in {"queued", "running"}:
-                    plan["video_disabled_reason"] = "Bitte zuerst die laufende Kapitelanalyse abschließen lassen."
                 elif chapter_run["state"] == "stale":
                     plan["video_disabled_reason"] = "Der Buchstand wurde geändert. Bitte die Kapitelanalyse aktualisieren."
                 elif draft.image_stale:
@@ -419,6 +417,17 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                     plan["video_disabled_reason"] = "Der ComfyUI-Video-Workflow ist nicht eingerichtet."
                 else:
                     plan["video_disabled_reason"] = "Der Bildschritt dieses Kapitels ist noch nicht abgeschlossen."
+            plan["image_actions_disabled_reason"] = ""
+            if plan["media_active"]:
+                plan["image_actions_disabled_reason"] = (
+                    "Für dieses Kapitel ist bereits ein Bild- oder Videojob vorgemerkt oder läuft gerade."
+                )
+            elif chapter_run["state"] == "stale":
+                plan["image_actions_disabled_reason"] = (
+                    "Der Buchstand wurde geändert. Bitte die Kapitelanalyse aktualisieren."
+                )
+            elif plan["state"] in {"image_queued", "video_queued"}:
+                plan["image_actions_disabled_reason"] = "Der Bildschritt dieses Kapitels ist noch nicht abgeschlossen."
             plan["can_bulk_optimize"] = bool(
                 plan["can_optimize"] and not draft.optimized_image_path
             )
@@ -872,15 +881,18 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if plan is None or not plan.get("can_start_video"):
             raise UploadError("Bitte zuerst ein aktuelles Kapitelbild erzeugen und auswählen.", 409)
         try:
-            async with request.form(max_files=0, max_fields=1) as form:
-                if set(form) - {"revision"}:
+            async with request.form(max_files=0, max_fields=2) as form:
+                if (set(form) - {"revision", "regenerate"}
+                        or any(len(form.getlist(key)) != 1 for key in form)
+                        or ("regenerate" in form and (form["regenerate"] != "1" or "revision" not in form))):
                     raise ValueError()
                 revision = int(str(form["revision"])) if "revision" in form else None
+                regenerate = "regenerate" in form
         except (KeyError, TypeError, ValueError):
             raise UploadError("Bitte die Kapitel-Seite neu laden.", 409) from None
         await run_in_threadpool(
             chapter_teaser_store.start_video, str(book_id), context["chapter_run"]["id"],
-            plan["draft"].id, revision=revision,
+            plan["draft"].id, revision=revision, regenerate=regenerate,
         )
         return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
 

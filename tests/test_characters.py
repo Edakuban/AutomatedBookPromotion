@@ -42,6 +42,89 @@ def test_mask_selector_is_generic_and_uses_only_the_reference_prompt(character_s
     assert not selector.startswith("Unit 7")
     assert "plot description" not in selector
     assert "neutral backdrop" not in selector
+    assert "triangular blue eye" in selector
+    assert "white spiral shoulder mark" in selector
+
+
+def test_mask_selector_keeps_later_visible_traits_and_drops_abstract_title(character_store):
+    _, book, store = character_store
+    character = store.create(
+        book.id, name="Belphegor",
+        image_prompt=(
+            "Belphegor is the Prince of Sloth, a massive infernal ruler with a bloated, heavy body "
+            "and an oppressive demonic presence. His flesh is dark and swollen, and in some places "
+            "it seems to dissolve into shadow. Several heavy horns grow from his skull. "
+            "His glowing red eyes are the most alert part of him. "
+            "Cinematic adult dark fantasy realism, infernal industrial throne room, no text."
+        ),
+    )
+    selector = character_mask_selector(character)
+    assert selector.startswith("massive infernal ruler")
+    for trait in ("bloated heavy body", "heavy horns", "dark and swollen flesh", "glowing red eyes"):
+        assert trait in selector
+    for abstract in ("Prince of Sloth", "oppressive", "shadow", "throne room", "most alert"):
+        assert abstract not in selector
+
+
+def test_mask_selector_retains_comma_separated_subject_and_never_turns_negatives_positive(character_store):
+    _, book, store = character_store
+    character = store.create(
+        book.id, name="Samuel",
+        image_prompt=(
+            "Samuel Hellsworth is a tall, athletic, dark-charismatic man in his early thirties "
+            "with a sharp jawline. He has dark brown to black hair, neatly styled back. "
+            "His most striking feature is his permanently glowing ruby-red eyes. "
+            "He has a lean muscular, battle-hardened body with broad shoulders. "
+            "He is still not fully monstrous: no horns, no wings, no fully transformed body. "
+            "His clothing includes a black or very dark shirt and fitted dark jacket."
+        ),
+    )
+    selector = character_mask_selector(character)
+    assert selector.startswith("tall athletic dark-charismatic man")
+    for trait in ("lean muscular battle-hardened body", "dark brown to black hair", "ruby-red eyes"):
+        assert trait in selector
+    assert "Samuel" not in selector and "Hellsworth" not in selector
+    assert "horns" not in selector and "wings" not in selector
+    assert len(selector) <= 240
+
+
+def test_mask_selector_is_generic_preserves_materials_and_ignores_optional_props(character_store):
+    _, book, store = character_store
+    character = store.create(
+        book.id, name="Pearl",
+        image_prompt=(
+            "Pearl is a small floating beast. Its body is translucent blue glass. "
+            "Its fur is opalescent silver. It has curved crystal antlers. "
+            "No horns or wings. When transformed, its eyes glow purple. "
+            "Small pouches may be attached to its coat. "
+            "Full-body reference portrait on a neutral backdrop."
+        ),
+    )
+    selector = character_mask_selector(character)
+    assert selector.startswith("small floating beast")
+    assert "translucent blue glass body" in selector
+    assert "opalescent silver fur" in selector
+    assert "curved crystal antlers" in selector
+    for unwanted in ("coat", "pouches", "purple", "horns", "wings", "neutral backdrop"):
+        assert unwanted not in selector
+
+
+def test_mask_selector_ignores_contrasted_wardrobe(character_store):
+    _, book, store = character_store
+    character = store.create(
+        book.id, name="Faye",
+        image_prompt=(
+            "Faye is a powerful human witch. She has medium to long dark brown hair. "
+            "She wears practical dark witch clothing rather than ornate fantasy robes. "
+            "When she channels power, her eyes ignite with golden flames. "
+            "She has no horns or wings."
+        ),
+    )
+    selector = character_mask_selector(character)
+    assert "medium to long dark brown hair" in selector
+    assert "practical dark witch clothing" in selector
+    for unwanted in ("robes", "golden flames", "horns", "wings"):
+        assert unwanted not in selector
 
 
 def test_forbidden_features_extracts_visible_traits_not_rendering_constraints(character_store):

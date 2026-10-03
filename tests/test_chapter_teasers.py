@@ -357,8 +357,8 @@ def test_media_reconciliation_chains_images_to_both_video_variants_and_completes
     assert not reconcile_chapter_teaser_media(uploads, reels, jobs)
     assert store.latest(book.id, include_plans=True)["plans"][0]["state"] == "video_queued"
     assert len(caption_texts) == 2  # No captions generated from the old clean clip.
-    with pytest.raises(UploadError, match="laufenden Kapitel"):
-        store.reopen_image_review(book.id, run["id"], [run["plans"][1]["draft_id"]])
+    store.reopen_image_review(book.id, run["id"], [run["plans"][1]["draft_id"]])
+    assert store.latest(book.id)["state"] == "rendering"
 
 
 def test_chapter_images_pause_for_bulk_character_optimization_selection_and_video_start(
@@ -587,7 +587,7 @@ def test_single_chapter_video_start_and_regeneration_preserves_other_chapters(se
     job = jobs.claim(kinds={"video"})
     assert job.draft_id == draft.id
     assert jobs.claim(kinds={"video"}) is None
-    with pytest.raises(UploadError, match="bearbeitet"):
+    with pytest.raises(UploadError, match="bearbeitet|Verarbeitungsschritt"):
         store.save_prompt(book.id, run["id"], draft.id, draft.revision,
                           image_prompt=draft.image_prompt, teaser_text="Anderer Text.")
 
