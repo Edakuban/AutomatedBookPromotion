@@ -269,6 +269,11 @@ class LocalUploadStore:
                                 "delete from local_reel_jobs where draft_id in "
                                 "(select id from local_reel_drafts where book_id=?)", (normalized_id,)
                             )
+                        if self._table_exists(connection, "local_carousel_crops"):
+                            connection.execute(
+                                "delete from local_carousel_crops where draft_id in "
+                                "(select id from local_reel_drafts where book_id=?)", (normalized_id,)
+                            )
                         connection.execute("delete from local_reel_drafts where book_id=?", (normalized_id,))
                     if self._table_exists(connection, "local_book_teasers"):
                         if self._table_exists(connection, "local_book_teaser_jobs"):

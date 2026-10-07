@@ -12,6 +12,7 @@ from contextlib import closing
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -36,6 +37,12 @@ DEFAULT_MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 
 JobKind = Literal["prompt", "image", "video", "upload"]
 ArtifactKind = Literal["image", "video", "cover"]
+
+
+def _scene_direction(value: object) -> str:
+    if not isinstance(value, str) or len(value) > 2000:
+        raise ValueError("Bitte eine Pose-/Requisiten-Vorgabe mit höchstens 2000 Zeichen angeben.")
+    return value.strip()
 
 
 @dataclass(frozen=True)
@@ -111,6 +118,8 @@ class ReelDraft:
     error: str | None
     remote_video_path: str | None
     remote_cover_path: str | None
+    scene_direction: str = ""
+    scene_plan_json: str = ""
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ReelDraft":
@@ -127,6 +136,8 @@ class ReelDraft:
         values.setdefault("uploaded_image_path", None)
         values.setdefault("uploaded_image_sha256", None)
         values.setdefault("selected_image_source", "scene")
+        values.setdefault("scene_direction", "")
+        values.setdefault("scene_plan_json", "")
         values["image_stale"] = bool(values["image_stale"])
         values["video_stale"] = bool(values["video_stale"])
         return cls(**values)
@@ -150,6 +161,35 @@ class ReelDraft:
             if path:
                 candidates.append((source, label, path))
         return tuple(candidates)
+
+    def image_candidate_sha256(self, source: str) -> str | None:
+        """Return the current candidate version without changing any selection."""
+        fields = {
+            "scene": self.scene_image_sha256,
+            "optimized": self.optimized_image_sha256,
+            "upload": self.uploaded_image_sha256,
+        }
+        return fields.get(source)
+
+    def image_candidate_is_selected(self, source: str) -> bool:
+        """A source label alone is not enough after a new generation finishes."""
+        paths = {candidate: path for candidate, _, path in self.image_candidates}
+        digest = self.image_candidate_sha256(source)
+        return bool(
+            self.selected_image_path and digest and source == self.selected_image_source
+            and paths.get(source) == self.selected_image_path
+            and digest == self.selected_image_sha256
+        )
+
+    @property
+    def selected_image_is_current_candidate(self) -> bool:
+        return self.image_candidate_is_selected(self.selected_image_source)
+
+    @property
+    def selected_image_label(self) -> str:
+        return {
+            "scene": "Szenenbild", "optimized": "Charakteroptimiert", "upload": "Eigenes Bild",
+        }.get(self.selected_image_source, "Bild")
 
 
 @dataclass(frozen=True)
@@ -212,6 +252,8 @@ class ReelStore:
                 audio_track_id text, audio_cue_id text, audio_start_ms integer,
                 caption_addition text not null, final_caption text not null,
                 image_prompt text not null, video_prompt text not null,
+                scene_direction text not null default '',
+                scene_plan_json text not null default '',
                 character_ids_json text not null default '[]',
                 character_snapshot_json text not null default '[]',
                 scene_image_path text, scene_image_sha256 text,
@@ -250,8 +292,17 @@ class ReelStore:
                 values_json text not null,
                 updated_at real not null
             );
+            create table if not exists local_carousel_crops (
+                draft_id text not null, image_sha256 text not null,
+                focus_x real not null, focus_y real not null, revision integer not null,
+                primary key(draft_id,image_sha256)
+            );
         """)
         columns = {row[1] for row in connection.execute("pragma table_info(local_reel_drafts)")}
+        if "scene_direction" not in columns:
+            connection.execute("alter table local_reel_drafts add column scene_direction text not null default ''")
+        if "scene_plan_json" not in columns:
+            connection.execute("alter table local_reel_drafts add column scene_plan_json text not null default ''")
         if "character_ids_json" not in columns:
             connection.execute("alter table local_reel_drafts add column character_ids_json text not null default '[]'")
         if "character_snapshot_json" not in columns:
@@ -562,6 +613,9 @@ class ReelStore:
         analysis_run_id: str,
         quote_id: str,
         quote_text: str,
+        *,
+        scene_direction: str = "",
+        scene_plan_json: str = "",
     ) -> ReelDraft:
         if not re.fullmatch(r"[0-9a-f]{64}", quote_source_key):
             raise UploadError("Der Zitatschlüssel ist ungültig.")
@@ -569,6 +623,14 @@ class ReelStore:
             raise UploadError("Das Zitat fehlt oder ist zu lang.")
         if len(analysis_run_id) > 100 or len(quote_id) > 100:
             raise UploadError("Der Analysestand ist ungültig.")
+        try:
+            scene_direction = _scene_direction(scene_direction)
+        except ValueError as exc:
+            raise UploadError(str(exc)) from None
+        if scene_plan_json:
+            self._validate_scene_plan(scene_plan_json)
+        elif not isinstance(scene_plan_json, str):
+            raise UploadError("Der Szenenplan ist ungültig.")
         with closing(self.connection()) as connection, connection:
             self.schema(connection)
             connection.execute("begin immediate")
@@ -584,10 +646,11 @@ class ReelStore:
             connection.execute(
                 """insert into local_reel_drafts
                 (id,book_id,quote_source_key,analysis_run_id,quote_id,quote_text,revision,
-                 duration_ms,caption_addition,final_caption,image_prompt,video_prompt,
+                 duration_ms,caption_addition,final_caption,image_prompt,video_prompt,scene_direction,scene_plan_json,
                  character_ids_json,character_snapshot_json,image_stale,video_stale,state,created_at,updated_at)
-                values (?,?,?,?,?,?,1,10000,'','','','','[]','[]',1,1,'editing',?,?)""",
-                (draft_id, book_id, quote_source_key, analysis_run_id, quote_id, quote_text, now, now),
+                values (?,?,?,?,?,?,1,10000,'','','','',?,?,'[]','[]',1,1,'editing',?,?)""",
+                (draft_id, book_id, quote_source_key, analysis_run_id, quote_id, quote_text,
+                 scene_direction, scene_plan_json, now, now),
             )
             row = connection.execute(
                 "select * from local_reel_drafts where id=?", (draft_id,)
@@ -685,6 +748,65 @@ class ReelStore:
             raise UploadError("Die Bildvariante ist ungültig.")
         return self.artifact_path(draft, "image", paths[source])
 
+    def carousel_crop(self, draft: ReelDraft) -> tuple[float, float, int]:
+        """Read the local crop for this exact immutable image without migrating on GET."""
+        with closing(self.uploads._read_connection()) as connection:
+            if not connection.execute(
+                "select 1 from sqlite_master where type='table' and name='local_carousel_crops'"
+            ).fetchone():
+                return (0.5, 0.5, 0)
+            row = connection.execute(
+                "select focus_x,focus_y,revision from local_carousel_crops where draft_id=? and image_sha256=?",
+                (draft.id, draft.selected_image_sha256),
+            ).fetchone()
+        return (row["focus_x"], row["focus_y"], row["revision"]) if row else (0.5, 0.5, 0)
+
+    def save_carousel_crop(self, draft_id: str, revision: int, image_sha256: str,
+                           crop_revision: int, focus_x: float, focus_y: float) -> None:
+        """Save only local carousel framing; never invalidate reel media or jobs."""
+        if any(not math.isfinite(value) or not 0 <= value <= 1 for value in (focus_x, focus_y)):
+            raise UploadError("Bitte einen gültigen Bildausschnitt auswählen.", 422)
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            draft = connection.execute("select * from local_reel_drafts where id=?", (draft_id,)).fetchone()
+            if (not draft or draft["revision"] != revision or draft["image_stale"]
+                    or not draft["selected_image_path"] or not image_sha256
+                    or draft["selected_image_sha256"] != image_sha256):
+                raise UploadError("Das ausgewählte Bild hat sich geändert. Bitte die Werkstatt neu öffnen.", 409)
+            current = connection.execute(
+                "select revision from local_carousel_crops where draft_id=? and image_sha256=?",
+                (draft_id, image_sha256),
+            ).fetchone()
+            if (current["revision"] if current else 0) != crop_revision:
+                raise UploadError("Der Ausschnitt wurde zwischenzeitlich geändert. Bitte die Werkstatt neu öffnen.", 409)
+            connection.execute(
+                """insert into local_carousel_crops values(?,?,?,?,?)
+                on conflict(draft_id,image_sha256) do update set
+                focus_x=excluded.focus_x,focus_y=excluded.focus_y,revision=excluded.revision""",
+                (draft_id, image_sha256, focus_x, focus_y, crop_revision + 1),
+            )
+
+    def selected_image_generation(self, draft: ReelDraft) -> dict:
+        """Return provenance for the actual selected version, not the newest alternative."""
+        if not draft.selected_image_path or not self.uploads.db_path.is_file():
+            return {}
+        with closing(self.uploads._read_connection()) as connection:
+            if connection.execute("select 1 from sqlite_master where name='local_reel_jobs'").fetchone() is None:
+                return {}
+            for row in connection.execute(
+                """select result_json from local_reel_jobs where draft_id=? and kind='image'
+                and state='done' order by updated_at desc,id desc""", (draft.id,),
+            ):
+                try:
+                    result = json.loads(row[0] or "{}")
+                    if (result.get("path") == draft.selected_image_path
+                            and result.get("sha256") == draft.selected_image_sha256):
+                        return result
+                except (TypeError, ValueError, AttributeError):
+                    continue
+        return {}
+
     def select_image(self, draft_id: str, revision: int, source: str) -> ReelDraft:
         with closing(self.connection()) as connection, connection:
             self.schema(connection)
@@ -717,11 +839,28 @@ class ReelStore:
         if (draft["selected_image_source"] == source
                 and draft["selected_image_path"] == relative and not draft["image_stale"]):
             return ReelDraft.from_row(draft)
+        snapshot_json = draft["character_snapshot_json"]
+        if source == "upload":
+            snapshot_json = "[]"
+        else:
+            for job_row in connection.execute(
+                """select result_json from local_reel_jobs where draft_id=? and kind='image'
+                and state='done' order by updated_at desc,id desc""", (draft_id,),
+            ):
+                try:
+                    result = json.loads(job_row[0] or "{}")
+                    snapshot = result.get("character_snapshot")
+                    if (result.get("path") == relative and result.get("sha256") == digest
+                            and isinstance(snapshot, list) and len(snapshot) <= 4):
+                        snapshot_json = json.dumps(snapshot, ensure_ascii=False)
+                        break
+                except (TypeError, ValueError, AttributeError):
+                    continue
         connection.execute(
             """update local_reel_drafts set selected_image_source=?,selected_image_path=?,
-            selected_image_sha256=?,image_stale=0,video_stale=1,state='editing',error=null,
+            selected_image_sha256=?,character_snapshot_json=?,image_stale=0,video_stale=1,state='editing',error=null,
             revision=revision+1,updated_at=? where id=? and revision=?""",
-            (source, relative, digest, time.time(), draft_id, revision),
+            (source, relative, digest, snapshot_json, time.time(), draft_id, revision),
         )
         saved = connection.execute(
             "select * from local_reel_drafts where id=?", (draft_id,)
@@ -819,6 +958,10 @@ class ReelStore:
                         "delete from local_reel_jobs where draft_id in "
                         "(select id from local_reel_drafts where book_id=?)", (book_id,)
                     )
+                    connection.execute(
+                        "delete from local_carousel_crops where draft_id in "
+                        "(select id from local_reel_drafts where book_id=?)", (book_id,)
+                    )
                     connection.execute("delete from local_reel_drafts where book_id=?", (book_id,))
                     connection.execute(
                         "delete from local_audio_cues where track_id in "
@@ -835,6 +978,55 @@ class ReelStore:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=committed)
 
+    @staticmethod
+    def _validate_scene_plan(plan_json: str):
+        if not isinstance(plan_json, str) or not plan_json:
+            raise UploadError("Der Szenenplan fehlt, ist ungültig oder zu groß.")
+        try:
+            size = len(plan_json.encode("utf-8"))
+        except UnicodeError:
+            raise UploadError("Der Szenenplan enthält ungültigen Text.") from None
+        if size > 64 * 1024:
+            raise UploadError("Der Szenenplan fehlt, ist ungültig oder zu groß.")
+        from .scene_plan import decode_saved_plan
+
+        try:
+            return decode_saved_plan(plan_json)
+        except ValueError as exc:
+            raise UploadError(str(exc)) from None
+
+    def save_scene_plan(self, draft_id: str, revision: int, plan_json: str) -> ReelDraft:
+        """Save a validated plan without changing the reviewed media selection."""
+        self._validate_scene_plan(plan_json)
+        if type(revision) is not int or revision < 1:
+            raise UploadError("Die Reel-Werkstatt ist veraltet. Bitte neu laden.", 409)
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            draft = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,),
+            ).fetchone()
+            if draft is None:
+                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+            if draft["revision"] != revision:
+                raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            if connection.execute(
+                "select 1 from local_reel_jobs where draft_id=? and state in ('queued','running') limit 1",
+                (draft_id,),
+            ).fetchone():
+                raise UploadError(
+                    "Für diesen Entwurf läuft noch ein Verarbeitungsschritt. "
+                    "Bitte dessen Abschluss abwarten und den Szenenplan erneut aktualisieren.", 409,
+                )
+            connection.execute(
+                """update local_reel_drafts set scene_plan_json=?,revision=revision+1,updated_at=?
+                where id=? and revision=?""", (plan_json, time.time(), draft_id, revision),
+            )
+            row = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,),
+            ).fetchone()
+        return ReelDraft.from_row(row)
+
     def update_draft(self, draft_id: str, revision: int, **changes) -> ReelDraft:
         """Optimistically update editable fields and mark dependencies stale."""
         character_ids = changes.pop("character_ids", None)
@@ -849,10 +1041,15 @@ class ReelStore:
         allowed = {
             "duration_ms", "audio_track_id", "audio_cue_id", "audio_start_ms",
             "caption_addition", "final_caption", "image_prompt", "video_prompt",
-            "character_ids_json",
+            "character_ids_json", "scene_direction",
         }
         if not changes or set(changes) - allowed:
             raise ValueError("Unbekannte oder fehlende Reel-Felder.")
+        if "scene_direction" in changes:
+            try:
+                changes["scene_direction"] = _scene_direction(changes["scene_direction"])
+            except ValueError as exc:
+                raise UploadError(str(exc)) from None
         for field in ("caption_addition", "final_caption", "image_prompt", "video_prompt"):
             if field in changes:
                 value = str(changes[field]).strip()
@@ -918,6 +1115,10 @@ class ReelStore:
                 "character_ids_json" in changes
                 and changes["character_ids_json"] != current["character_ids_json"]
             )
+            if generated_inputs_changed or (
+                "scene_direction" in changes and changes["scene_direction"] != current["scene_direction"]
+            ):
+                changes["scene_plan_json"] = ""
             if generated_inputs_changed:
                 changes.update(
                     scene_image_path=None, scene_image_sha256=None,
@@ -1033,6 +1234,226 @@ class ReelJobStore:
             connection.execute("begin immediate")
             return self._enqueue(connection, draft_id, kind, payload)
 
+    def enqueue_with_direction(
+        self, draft_id: str, revision: int, payload: dict, *, scene_direction: str | None = None,
+    ) -> ReelJob:
+        """Save next-render direction and queue its exact snapshot in one transaction."""
+        if type(revision) is not int or revision < 1:
+            raise UploadError("Die Reel-Werkstatt ist veraltet. Bitte neu laden.", 409)
+        if (not isinstance(payload, dict) or payload.get("operation") != "optimize"
+                or payload.get("strategy", "masked") not in ("masked", "reference_scene")):
+            raise UploadError("Bitte eine gültige Methode für die Charakteroptimierung auswählen.")
+        strategy = payload.get("strategy", "masked")
+        direction = None
+        if scene_direction is not None:
+            try:
+                direction = _scene_direction(scene_direction)
+            except ValueError as exc:
+                raise UploadError(str(exc)) from None
+            if strategy == "masked" and direction:
+                raise UploadError("Pose und Requisiten lassen sich nur bei der Neuinszenierung präzisieren.")
+        with closing(self.connection()) as connection, connection:
+            ReelStore.schema(connection)
+            connection.execute("begin immediate")
+            draft = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,),
+            ).fetchone()
+            if draft is None:
+                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+            if draft["revision"] != revision:
+                raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            if connection.execute(
+                "select 1 from local_reel_jobs where draft_id=? and state in ('queued','running') limit 1",
+                (draft_id,),
+            ).fetchone():
+                raise UploadError("Für diesen Entwurf läuft noch ein Verarbeitungsschritt.", 409)
+            effective_direction = draft["scene_direction"]
+            if strategy == "reference_scene" and direction is not None:
+                effective_direction = direction
+                if direction != draft["scene_direction"]:
+                    connection.execute(
+                        """update local_reel_drafts set scene_direction=?,scene_plan_json='',revision=revision+1,
+                        updated_at=? where id=?""", (direction, time.time(), draft_id),
+                    )
+            queued_payload = dict(payload)
+            # No caller-supplied direction can diverge from the saved snapshot.
+            queued_payload.pop("scene_direction", None)
+            if strategy == "reference_scene" and effective_direction:
+                queued_payload["scene_direction"] = effective_direction
+            return self._enqueue(connection, draft_id, "image", queued_payload)
+
+    def enqueue_planned_scene(
+        self, draft_id: str, revision: int, *, expected_fingerprint: str,
+    ) -> ReelJob:
+        """Queue exactly the reviewed, current plan in one revision-fenced transaction."""
+        from .scene_plan import compile_scene_plan
+
+        if type(revision) is not int or revision < 1:
+            raise UploadError("Die Reel-Werkstatt ist veraltet. Bitte neu laden.", 409)
+        if not isinstance(expected_fingerprint, str) or not expected_fingerprint:
+            raise UploadError("Bitte den Szenenplan aktualisieren.", 409)
+        with closing(self.connection()) as connection, connection:
+            ReelStore.schema(connection)
+            connection.execute("begin immediate")
+            draft = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,),
+            ).fetchone()
+            if draft is None:
+                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+            if draft["revision"] != revision:
+                raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            saved = self.reels._validate_scene_plan(draft["scene_plan_json"])
+            if saved.fingerprint != expected_fingerprint:
+                raise UploadError("Der Szenenplan ist veraltet. Bitte aktualisieren.", 409)
+            try:
+                prompt = compile_scene_plan(saved.plan)
+            except ValueError as exc:
+                raise UploadError(str(exc)) from None
+            if not isinstance(prompt, str) or not prompt.strip():
+                raise UploadError("Der Szenenplan enthält keinen gültigen Renderauftrag.")
+            if connection.execute(
+                "select 1 from local_reel_jobs where draft_id=? and state in ('queued','running') limit 1",
+                (draft_id,),
+            ).fetchone():
+                raise UploadError("Für diesen Entwurf läuft noch ein Verarbeitungsschritt.", 409)
+            return self._enqueue(connection, draft_id, "image", {
+                "operation": "optimize", "strategy": "planned_scene",
+                "scene_plan_json": draft["scene_plan_json"],
+            })
+
+    def enqueue_simple_image(self, draft_id: str, revision: int, **kwargs) -> ReelJob:
+        """Save the visible scene inputs and queue one button action atomically."""
+        with closing(self.connection()) as connection, connection:
+            ReelStore.schema(connection)
+            connection.execute("begin immediate")
+            return self._enqueue_simple_image(connection, draft_id, revision, **kwargs)
+
+    def _enqueue_simple_image(
+        self, connection, draft_id: str, revision: int, *, image_prompt: str,
+        scene_direction: str, character_ids: list[str], mode: str, payload: dict,
+    ) -> ReelJob:
+        from .chapter_teasers import ChapterTeaserStore
+        from .scene_plan import decode_saved_plan, validate_reference_bindings
+
+        if mode not in {"plain", "text", "references"}:
+            raise UploadError("Bitte eine gültige Bildaktion auswählen.")
+        if (not isinstance(image_prompt, str) or len(image_prompt) > 8000
+                or not isinstance(payload, dict)):
+            raise UploadError("Die Szenenbeschreibung ist ungültig oder zu lang.")
+        try:
+            direction = _scene_direction(scene_direction)
+            selected = [str(UUID(str(value))) for value in character_ids]
+        except (TypeError, ValueError):
+            raise UploadError("Bitte gültige Szenenangaben und Charaktere auswählen.") from None
+        if len(selected) > 4 or len(set(selected)) != len(selected) or (mode == "references" and not selected):
+            raise UploadError("Bitte ein bis vier unterschiedliche Charakterreferenzen auswählen.")
+        current = connection.execute("select * from local_reel_drafts where id=?", (draft_id,)).fetchone()
+        if current is None:
+            raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+        if type(revision) is not int or current["revision"] != revision:
+            raise UploadError("Die Szene wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+        if connection.execute(
+            "select 1 from local_reel_jobs where draft_id=? and state in ('queued','running')", (draft_id,),
+        ).fetchone():
+            raise UploadError("Für diese Szene läuft noch ein Verarbeitungsschritt.", 409)
+        inputs = dict(current)
+        inputs.update(image_prompt=image_prompt.strip() or current["quote_text"],
+                      scene_direction=direction, character_ids_json=json.dumps(selected))
+        if not inputs["image_prompt"] or len(inputs["image_prompt"]) > 8000:
+            raise UploadError("Bitte eine kurze Szenenbeschreibung angeben.")
+        fingerprint, characters = ChapterTeaserStore(self.reels.uploads).scene_plan_inputs(connection, inputs)
+        if payload.get("input_fingerprint") != fingerprint:
+            raise UploadError("Buchstil oder Charaktere wurden geändert. Bitte neu laden.", 409)
+        if mode == "references" and any(not character.has_reference for character in characters):
+            raise UploadError("Für jede ausgewählte Figur wird ein hinterlegtes Referenzbild benötigt.", 409)
+        context = payload.get("source_context")
+        if (not isinstance(context, dict) or set(context) != {"quote", "context_before", "context_after"}
+                or context.get("quote") != current["quote_text"]
+                or any(not isinstance(value, str) for value in context.values())
+                or len(context["quote"]) > 14000
+                or any(len(context[key]) > 4000 for key in ("context_before", "context_after"))):
+            raise UploadError("Der Buchkontext für diese Szene ist ungültig.")
+        queued_payload = dict(payload)
+        source_snapshot = queued_payload.get("source_snapshot")
+        if source_snapshot is not None:
+            if (not isinstance(source_snapshot, dict)
+                    or type(source_snapshot.get("extraction_revision")) is not int):
+                raise UploadError("Der gespeicherte Buchtextstand ist ungültig.")
+            record = connection.execute("select revision from local_extractions where book_id=?", (current["book_id"],)).fetchone()
+            if record is None or record[0] != source_snapshot["extraction_revision"]:
+                raise UploadError("Der Buchtext wurde geändert. Bitte neu laden.", 409)
+        encoded_plan = queued_payload.get("scene_plan_json", "")
+        if encoded_plan:
+            try:
+                saved = decode_saved_plan(encoded_plan)
+                validate_reference_bindings(saved.plan, characters)
+                if saved.fingerprint != fingerprint:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                raise UploadError("Der gespeicherte Szenenplan ist veraltet.", 409) from None
+        changed = any(inputs[key] != current[key] for key in ("image_prompt", "scene_direction", "character_ids_json"))
+        # Keep all candidate files and the reviewed media selection, even after editing inputs.
+        connection.execute(
+            """update local_reel_drafts set image_prompt=?,scene_direction=?,character_ids_json=?,
+            scene_plan_json=?,revision=revision+?,error=null,updated_at=? where id=?""",
+            (inputs["image_prompt"], direction, inputs["character_ids_json"], encoded_plan,
+             int(changed), time.time(), draft_id),
+        )
+        queued_payload.update(operation="simple", strategy=f"simple_{mode}", phase="queued")
+        return self._enqueue(connection, draft_id, "image", queued_payload)
+
+    def checkpoint_simple_image(
+        self, job: ReelJob, *, phase: str, scene_plan_json: str = "", prompt_id: str = "",
+        render_endpoint_hash: str = "", effective_image_prompt: str | None = None,
+        identity_edit_prompts: list[str] | None = None,
+    ) -> bool:
+        """Persist stages under the same job lease; a restart never repeats an ambiguous AI call."""
+        if phase not in {"planning_started", "plan_ready", "render_started"}:
+            raise ValueError("Unknown image stage")
+        if scene_plan_json:
+            ReelStore._validate_scene_plan(scene_plan_json)
+        if identity_edit_prompts is not None and (
+            phase != "render_started" or not isinstance(identity_edit_prompts, list)
+            or len(identity_edit_prompts) > 4
+            or any(not isinstance(p, str) or not p.strip() or len(p) > 20000 for p in identity_edit_prompts)
+        ):
+            raise ValueError("Invalid identity conditioning")
+        if effective_image_prompt is not None and (
+            phase != "render_started" or not isinstance(effective_image_prompt, str)
+            or not effective_image_prompt.strip() or len(effective_image_prompt) > 20000
+        ):
+            raise ValueError("Invalid frozen image conditioning")
+        now = time.time()
+        with closing(self.connection()) as connection, connection:
+            connection.execute("begin immediate")
+            if not self._owned(connection, job, now):
+                return False
+            draft = connection.execute("select revision from local_reel_drafts where id=?", (job.draft_id,)).fetchone()
+            if draft is None or draft["revision"] != job.input_revision:
+                return False
+            updated = dict(job.payload, phase=phase)
+            if identity_edit_prompts is not None:
+                if ("identity_edit_prompts" in updated and updated["identity_edit_prompts"] != identity_edit_prompts):
+                    raise ValueError("Submitted identity conditioning cannot be changed")
+                updated["identity_edit_prompts"] = identity_edit_prompts
+            if effective_image_prompt is not None:
+                if (updated.get("effective_image_prompt") is not None
+                        and updated["effective_image_prompt"] != effective_image_prompt):
+                    raise ValueError("Submitted image conditioning cannot be changed")
+                updated["effective_image_prompt"] = effective_image_prompt
+            if prompt_id:
+                if not isinstance(prompt_id, str) or len(prompt_id) > 200 or not re.fullmatch(r"[0-9a-f]{64}", render_endpoint_hash):
+                    raise ValueError("Invalid submitted ComfyUI job")
+                updated.update(comfy_prompt_id=prompt_id, render_endpoint_hash=render_endpoint_hash)
+            if scene_plan_json:
+                updated["scene_plan_json"] = scene_plan_json
+                connection.execute("update local_reel_drafts set scene_plan_json=?,updated_at=? where id=?",
+                                   (scene_plan_json, now, job.draft_id))
+            connection.execute("update local_reel_jobs set payload_json=?,updated_at=? where id=?",
+                               (json.dumps(updated, ensure_ascii=False), now, job.id))
+        job.payload.update(updated)
+        return True
+
     def _enqueue(
         self, connection: sqlite3.Connection, draft_id: str, kind: JobKind,
         payload: dict | None = None,
@@ -1041,7 +1462,7 @@ class ReelJobStore:
         if kind not in {"prompt", "image", "video", "upload"}:
             raise ValueError("Unbekannter Reel-Job.")
         payload = payload or {}
-        if kind == "image" and payload.get("operation", "scene") not in {"scene", "optimize"}:
+        if kind == "image" and payload.get("operation", "scene") not in {"scene", "optimize", "simple"}:
             raise ValueError("Unbekannter Bildschritt.")
         try:
             encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -1097,7 +1518,7 @@ class ReelJobStore:
                 # This is an explicit identity edit of the existing scene, not a new
                 # scene prompt. Keep that scene usable and fence the new job revision.
                 connection.execute(
-                    """update local_reel_drafts set character_ids_json=?,revision=revision+1,
+                    """update local_reel_drafts set character_ids_json=?,scene_plan_json='',revision=revision+1,
                     updated_at=? where id=?""", (json.dumps(selected), time.time(), draft_id),
                 )
                 draft = connection.execute(
@@ -1173,8 +1594,9 @@ class ReelJobStore:
                 (token, now + REEL_LEASE_SECONDS, now, row["id"]),
             )
             connection.execute(
-                "update local_reel_drafts set state=?,error=null,updated_at=? where id=?",
-                ("uploading" if row["kind"] == "upload" else "generating", now, row["draft_id"]),
+                "update local_reel_drafts set state=?,error=null,updated_at=? where id=? and revision=?",
+                ("uploading" if row["kind"] == "upload" else "generating", now,
+                 row["draft_id"], row["input_revision"]),
             )
             claimed = connection.execute(
                 "select * from local_reel_jobs where id=?", (row["id"],)
@@ -1239,15 +1661,34 @@ class ReelJobStore:
                         (safe_error, now, job.draft_id),
                     )
                 return True
-            if draft["revision"] != job.input_revision:
+            inputs_stale = draft["revision"] != job.input_revision
+            if job.payload.get("operation") == "simple" and not inputs_stale:
+                from .chapter_teasers import ChapterTeaserStore
+                try:
+                    fingerprint, _ = ChapterTeaserStore(self.reels.uploads).scene_plan_inputs(connection, draft)
+                    inputs_stale = fingerprint != job.payload.get("input_fingerprint")
+                except (UploadError, ValueError):
+                    inputs_stale = True
+                snapshot = job.payload.get("source_snapshot")
+                if snapshot is not None:
+                    record = connection.execute("select revision from local_extractions where book_id=?", (draft["book_id"],)).fetchone()
+                    inputs_stale = inputs_stale or record is None or record[0] != snapshot.get("extraction_revision")
+            if inputs_stale:
                 connection.execute(
                     """update local_reel_jobs set state='stale',result_json=?,error=null,token=null,
                     lease_until=null,updated_at=? where id=?""", (encoded, now, job.id)
                 )
+                if draft["revision"] == job.input_revision:
+                    connection.execute("update local_reel_drafts set state='editing',updated_at=? where id=?",
+                                       (now, job.draft_id))
                 return True
 
             updates: dict[str, object] = {}
             if job.kind == "prompt":
+                if "scene_direction" in result:
+                    direction = _scene_direction(result["scene_direction"])
+                    if not draft["scene_direction"]:
+                        updates["scene_direction"] = direction
                 for key in ("caption_addition", "final_caption", "image_prompt", "video_prompt"):
                     if key in result:
                         value = str(result[key]).strip()
@@ -1260,6 +1701,11 @@ class ReelJobStore:
                     updates["video_stale"] = 1
                 if "video_prompt" in updates and updates["video_prompt"] != draft["video_prompt"]:
                     updates["video_stale"] = 1
+                if any(
+                    key in updates and updates[key] != draft[key]
+                    for key in ("image_prompt", "scene_direction")
+                ):
+                    updates["scene_plan_json"] = ""
             elif job.kind in {"image", "video"}:
                 relative, digest = result.get("path"), result.get("sha256")
                 self._validate_artifact_result(draft, job.kind, relative, digest)
@@ -1267,7 +1713,15 @@ class ReelJobStore:
                     candidate = result.get("candidate", "scene")
                     if candidate not in {"scene", "optimized"}:
                         raise ValueError("Der Bildjob hat eine ungültige Bildvariante geliefert.")
-                    if candidate == "scene":
+                    if job.payload.get("operation") == "simple":
+                        fields = ("scene_image_path", "scene_image_sha256") if candidate == "scene" else (
+                            "optimized_image_path", "optimized_image_sha256")
+                        updates.update({fields[0]: relative, fields[1]: digest})
+                        # A newly generated alternative never silently replaces a reviewed selection.
+                        if not draft["selected_image_path"]:
+                            updates.update(selected_image_source=candidate, selected_image_path=relative,
+                                           selected_image_sha256=digest, image_stale=0, video_stale=1)
+                    elif candidate == "scene":
                         updates.update(
                             scene_image_path=relative, scene_image_sha256=digest,
                             optimized_image_path=None, optimized_image_sha256=None,
@@ -1283,7 +1737,8 @@ class ReelJobStore:
                     snapshot = result.get("character_snapshot", [])
                     if not isinstance(snapshot, list) or len(snapshot) > 4:
                         raise ValueError("Der Bildjob hat ungültige Charakterdaten geliefert.")
-                    updates["character_snapshot_json"] = json.dumps(snapshot, ensure_ascii=False)
+                    if job.payload.get("operation") != "simple" or not draft["selected_image_path"]:
+                        updates["character_snapshot_json"] = json.dumps(snapshot, ensure_ascii=False)
                 else:
                     updates.update(selected_video_path=relative, selected_video_sha256=digest,
                                    video_stale=0)
@@ -1352,13 +1807,19 @@ class ReelJobStore:
             ).fetchone():
                 return []
             rows = connection.execute(
-                """select id,kind,state,attempts,error,created_at,updated_at,result_json
+                """select id,kind,state,attempts,error,created_at,updated_at,result_json,payload_json
                 from local_reel_jobs where draft_id=? order by created_at desc,id desc""",
                 (draft_id,),
             ).fetchall()
         statuses = []
         for row in rows:
             item = dict(row)
+            payload = json.loads(item.pop("payload_json"))
+            if payload.get("operation") == "simple":
+                item["image_stage"] = {
+                    "queued": "Szenenauftrag wartet", "planning_started": "Szene wird geplant",
+                    "plan_ready": "Szenenauftrag ist vorbereitet", "render_started": "Bild wird erzeugt",
+                }.get(payload.get("phase"), "Szenenauftrag wartet")
             result_json = item.pop("result_json")
             if item["kind"] == "image" and result_json:
                 try:

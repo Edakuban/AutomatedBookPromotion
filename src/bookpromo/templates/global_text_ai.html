@@ -1,0 +1,3 @@
+{% set ai = global_ai() %}
+<input type="hidden" name="ai_provider" value="{{ ai.preferences.text_provider }}">
+<p class="small muted">Text-KI: {{ ai.text_label }} · {{ ai.text_model }} · <a href="{{ url_for('settings') }}#ai">Global ändern</a></p>

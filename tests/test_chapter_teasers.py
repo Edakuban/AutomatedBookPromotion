@@ -12,11 +12,13 @@ from bookpromo.chapter_teaser_worker import (
 )
 from bookpromo.chapter_teasers import (
     ChapterTeaserError, ChapterTeaserStore, ChapterTeaserSuggestion,
+    ChapterTeaserGeneration,
     analyze_whole_chapter,
 )
 from bookpromo.characters import CharacterStore
 from bookpromo.analysis_store import endpoint_hash
 from bookpromo.reels import ReelJobStore, ReelStore
+from bookpromo.scene_plan import ScenePlan
 from bookpromo.publication import PlatformDefault, PublicationDefaults
 from bookpromo.openwebui import OpenWebUIError
 from bookpromo.sync import SyncStore
@@ -42,6 +44,8 @@ def suggestion(chapter):
             "wardrobe, objects, framing, and scene geometry in one continuous shot."
         ),
         motion_intensity="medium",
+        scene_plan=ScenePlan(setting="Documented room", composition="Vertical wide shot",
+                             art_direction="Cinematic chiaroscuro"),
     )
 
 
@@ -57,7 +61,14 @@ class ChapterAPI:
             item for item in self.chapters
             if item.position == payload["chapter_metadata"]["position"]
         )
-        return suggestion(chapter)
+        value = suggestion(chapter)
+        actors = [{"name": identity["name"], "pose": "Turns towards the existing window"}
+                  for identity in payload.get("identity_labels", [])
+                  if any(label.casefold() in chapter.source_text.casefold()
+                         for label in [identity["name"], *identity.get("aliases", [])])]
+        return value.model_copy(update={"scene_plan": ScenePlan.model_validate({
+            **value.scene_plan.model_dump(), "actors": actors,
+        })})
 
 
 def prepare_run(setup, *, seconds=30):
@@ -93,7 +104,8 @@ def test_whole_chapter_is_sent_unchunked_and_excerpt_must_be_verbatim(setup):
     serialized = json.dumps(api.calls[0][1], ensure_ascii=False)
     for excluded in ("Geheimes Ende", "Eine andere Stadt", "Eine unbeteiligte Person", "Die Auflösung"):
         assert excluded not in serialized
-    assert api.calls[0][3]["max_tokens"] == 3200
+    assert api.calls[0][3]["max_tokens"] == 4800
+    assert api.calls[0][2] is ChapterTeaserGeneration
     assert "vollständigen Kapiteltext" in api.calls[0][0]
 
     class FabricatingAPI(ChapterAPI):

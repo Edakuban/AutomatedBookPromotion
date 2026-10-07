@@ -152,6 +152,32 @@ class ComfyClient:
         suffix = "; sent global interrupt" if interrupt_on_timeout else ""
         return ComfyResult(prompt_id, False, error=f"COMFY_TIMEOUT: exceeded {timeout_sec:.0f}s{suffix}")
 
+    def wait_for_prompt(
+        self, prompt_id: str, *, timeout_sec: float = 1800, poll_interval_sec: float = 1,
+    ) -> ComfyResult:
+        """Resume polling a known job without submitting or interrupting anything."""
+        if (not isinstance(prompt_id, str) or not prompt_id or len(prompt_id) > 200
+                or timeout_sec <= 0 or poll_interval_sec < 0):
+            raise ValueError("Invalid ComfyUI resume request")
+        deadline = time.monotonic() + timeout_sec
+        try:
+            while time.monotonic() <= deadline:
+                history = self.transport.get_json(f"{self.base_url}/history/{urllib.parse.quote(prompt_id, safe='')}")
+                entry = history.get(prompt_id)
+                if isinstance(entry, dict):
+                    status = entry.get("status") if isinstance(entry.get("status"), dict) else {}
+                    if status.get("status_str") == "error":
+                        return ComfyResult(prompt_id, False, error=_status_error(status))
+                    if status.get("completed") is True:
+                        return ComfyResult(prompt_id, True, extract_output_files(entry), extract_text_outputs(entry))
+                if poll_interval_sec:
+                    time.sleep(poll_interval_sec)
+        except urllib.error.HTTPError as exc:
+            return ComfyResult(prompt_id, False, error=_http_error_message(exc))
+        except (OSError, urllib.error.URLError, ValueError) as exc:
+            return ComfyResult(prompt_id, False, error=f"ComfyUI request failed: {exc}")
+        return ComfyResult(prompt_id, False, error="COMFY_TIMEOUT: existing job not yet completed; no new job submitted")
+
     def interrupt(self) -> None:
         """Best-effort global interrupt. Call only for a dedicated ComfyUI instance."""
         try:

@@ -161,7 +161,10 @@ def test_context_reused_for_new_profile_prompts_and_quote_analysis(setup):
     store.enqueue(book.id, settings, AnalysisOptions())
     full = FakeAPI()
     run_analysis_once(uploads, settings=settings, api_factory=lambda _: full)
-    assert [name for name, _, _ in full.calls] == ['BookProfile', 'CharacterSuggestions', 'Candidates', 'Candidates']
+    assert [name for name, _, _ in full.calls] == [
+        'BookProfile', 'CharacterSuggestions', 'Candidates', 'Candidates',
+        'ScenePlan', 'ScenePlan',
+    ]
     assert store.latest(book.id)['state'] == 'done'
 
 

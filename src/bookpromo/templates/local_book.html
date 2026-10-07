@@ -3,16 +3,33 @@
 {% block content %}
   <p class="breadcrumb"><a href="{{ url_for('books') }}">← Bücher</a></p>
   <div class="page-heading"><h1>{{ book.title }}</h1><span class="badge">{{ job.label if job else record.status if record else 'Datei gespeichert' }}</span></div>
-  <p><a href="{{ url_for('book_settings', book_id=book.id) }}">Bucheinstellungen bearbeiten</a>{% if result %} · <a href="{{ url_for('book_teaser', book_id=book.id) }}">Book-Teaser zusammenbauen</a>{% endif %} · {{ 'Für Promotion vorgemerkt' if management.details.promotion_enabled else 'Promotion pausiert' }}{% if management.details.author %} · {{ management.details.author }}{% endif %}</p>
-  <section class="panel" aria-labelledby="file-title">
-    <div class="panel-heading"><h2 id="file-title">Word-Dokument</h2></div>
+  <p class="muted workspace-subtitle">{{ 'Für Promotion vorgemerkt' if management.details.promotion_enabled else 'Promotion pausiert' }}{% if management.details.author %} · {{ management.details.author }}{% endif %}</p>
+  {% set workspace_active = 'overview' %}{% include 'workspace_nav.html' %}
+  <div data-settings-group data-settings-default="overview">
+  <nav class="settings-nav" aria-label="Buch-Arbeitsstand">
+    <a href="#overview" data-settings-link>Arbeitsstand</a>
+    {% if result %}<a href="#chapters" data-settings-link>Kapitel &amp; Zitate</a><a href="#analysis" data-settings-link>KI-Analyse</a>{% endif %}
+  </nav>
+  <section id="overview" data-settings-section="overview" class="workspace-dashboard" aria-label="Arbeitsstand">
+    <div class="next-action-card"><p class="eyebrow">Weiterarbeiten</p>
+      {% if job and job.active %}<h2>Dein Buch wird eingelesen</h2><p>Den aktuellen Importfortschritt findest du unten.</p>
+      {% elif not result %}<h2>Text und Kapitel einlesen</h2><p>Starte oder wiederhole den Import, um mit deinem Buch zu arbeiten.</p><a href="#import-workspace" class="button-link">Zum Import →</a>
+      {% elif result.needs_review %}<h2>Kapitelaufteilung prüfen</h2><p>Klär die Importhinweise, bevor die Zitate analysiert werden.</p><a href="#chapter-review" class="button-link" data-settings-link>Kapitel prüfen →</a>
+      {% elif not analysis or not analysis.result %}<h2>Zitate analysieren</h2><p>Die Buchanalyse erstellt Kontext und prüft Originalstellen für deine Promotion.</p><a href="#analysis" class="button-link" data-settings-link>KI-Analyse öffnen →</a>
+      {% else %}<h2>Zitate prüfen und Medien erstellen</h2><p>{{ management.usable_count }} nutzbare Zitate stehen für deine nächste Produktion zur Verfügung.</p><a href="#chapters" class="button-link" data-settings-link>Zitate öffnen →</a>{% endif %}
+    </div>
+    <dl class="workspace-metrics"><div><dt>Kapitel</dt><dd>{{ result.chapters|length if result else '—' }}</dd></div><div><dt>Nutzbare Zitate</dt><dd>{{ management.usable_count if analysis and analysis.result else '—' }}</dd></div><div><dt>Gesperrt</dt><dd>{{ management.blocked_count if analysis and analysis.result else '—' }}</dd></div><div><dt>Supabase</dt><dd>{{ 'Übertragung bestätigt' if sync_receipt else 'Noch nicht übertragen' }}</dd></div></dl>
+    <div class="workspace-shortcuts"><a href="{{ url_for('book_settings', book_id=book.id) }}#profile">Kreativprofil bearbeiten →</a><a href="{{ url_for('book_settings', book_id=book.id) }}#media">Cover, Logo &amp; Charaktere →</a>{% if result %}<a href="{{ url_for('book_teaser', book_id=book.id) }}">Book-Teaser zusammenbauen →</a>{% endif %}<a href="{{ url_for('book_settings', book_id=book.id) }}#publishing">Publishing einrichten →</a></div>
+  </section>
+  <details class="panel file-details" data-settings-section="overview">
+    <summary id="file-title">Word-Dokument &amp; Speicherung</summary>
     <dl class="setting-list">
       <div><dt>Datei</dt><dd>{{ book.filename }}</dd></div>
       <div><dt>Größe</dt><dd>{{ '%.1f' | format(book.size_bytes / 1024) }} KB</dd></div>
       <div><dt>Hochgeladen</dt><dd>{{ book.created_at | berlin_time }}</dd></div>
       <div><dt>Speicherung</dt><dd>Lokal{% if sync_receipt %} · Übertragung bestätigt (Stand {{ sync_receipt.revision }}). Änderungen danach bitte erneut übertragen.{% else %} · Noch nicht an Supabase übertragen{% endif %}</dd></div>
     </dl>
-  </section>
+  </details>
   {% if job and job.active %}
     <section class="panel next-settings" id="import-progress" data-status-url="{{ url_for('import_status', book_id=book.id) }}" aria-live="polite">
       <h2>Import im Hintergrund</h2>
@@ -23,7 +40,7 @@
       <noscript><p>Bitte die Seite neu laden, um den aktuellen Stand zu sehen.</p></noscript>
     </section>
   {% elif not result %}
-    <section class="panel next-settings">
+    <section class="panel next-settings" id="import-workspace" data-settings-section="overview">
       <h2>Text und Kapitel</h2>
       <p>{{ job.error if job and job.error else record.error if record and record.error else 'Kapitel und Text wurden noch nicht ausgelesen.' }}</p>
       <form action="{{ url_for('extract_book', book_id=book.id) }}" method="post" class="extract-form">
@@ -31,11 +48,11 @@
       </form>
     </section>
   {% else %}
-    <details id="chapter-review" class="panel next-settings" {% if result.needs_review %}open{% endif %}>
+    <details id="chapter-review" class="panel next-settings" data-settings-section="chapters" {% if result.needs_review %}open{% endif %}>
       <summary>Kapitelaufteilung prüfen und korrigieren</summary>
       <p>Die Absatznummern findest du im Text des jeweiligen Kapitels. Die Startabsätze stehen auch in der Kapitelübersicht. Jede Zeile beginnt ein Kapitel; es endet vor dem nächsten Kapitelanfang. Die erste Zeile muss beim ersten Textabsatz beginnen.</p>
       <p>„Überschriftabsätze“: 0 übernimmt den Text ab dem Kapitelanfang; 1 oder 2 lässt dort die Überschrift beziehungsweise Nummer und Titel aus dem späteren Zitattext aus.</p>
-      <form action="{{ url_for('correct_chapters', book_id=book.id) }}" method="post" id="chapter-form">
+      <form action="{{ url_for('correct_chapters', book_id=book.id) }}" method="post" id="chapter-form" data-unsaved-form>
         <input type="hidden" name="revision" value="{{ record.revision }}">
         <div id="chapter-rows">
           {% for boundary in result.boundaries %}
@@ -58,7 +75,7 @@
       </div></template>
     </details>
     {% if result.warnings %}
-      <aside class="notice" aria-label="Hinweise zum Einlesen">
+      <aside class="notice" data-settings-section="chapters" aria-label="Hinweise zum Einlesen">
         {% for warning in result.warnings %}
           {% if warning.blocking or not (result.reviewed and warning.code.startswith('chapter_')) %}
             <p>{{ warning.message }}</p>
@@ -67,7 +84,7 @@
         {% if result.reviewed %}<p>Die Kapitelaufteilung wurde manuell bestätigt.</p>{% endif %}
       </aside>
     {% endif %}
-    <section class="panel" aria-labelledby="chapter-title">
+    <section id="chapters" class="panel" data-settings-section="chapters" aria-labelledby="chapter-title">
       <div class="panel-heading"><h2 id="chapter-title">{{ result.chapters | length }} Kapitel</h2><span class="muted small">Zitate über den Kapitelnamen öffnen</span></div>
       <div class="table-scroll"><table>
         <thead><tr><th>Kapitel</th><th>Ab Absatz</th><th>Status</th><th>Textabsätze</th><th>Zeichen</th><th>Zitate</th></tr></thead>
@@ -79,6 +96,7 @@
         {% endfor %}</tbody>
       </table></div>
     </section>
+    <div id="analysis" data-settings-section="analysis">
     <section class="panel next-settings" aria-labelledby="analysis-title" {% if analysis and analysis.active %}id="analysis-progress" data-status-url="{{ url_for('analysis_status', book_id=book.id) }}"{% endif %}>
       <h2 id="analysis-title">KI-Buchanalyse</h2>
       {% if analysis %}
@@ -101,14 +119,7 @@
       {% elif not analysis or not analysis.active %}
         <p>Die Analyse erstellt internen Buchkontext und wählt Originalzitate aus. Beim externen Provider werden Buchabschnitte an Open WebUI übertragen; Qwen verarbeitet sie lokal in ComfyUI.</p>
         <form method="post" action="{{ url_for('analyze_book', book_id=book.id) }}" class="analysis-start-form">
-          <label>Text-KI für Buch- und Zitat-Analyse
-            <select name="ai_provider" required>
-              {% for provider in text_ai_providers %}
-                {% set selected_provider = analysis.provider if analysis else 'openwebui' %}
-                <option value="{{ provider.id }}" {% if selected_provider == provider.id or (not selected_provider and loop.first) %}selected{% endif %}>{{ provider.label }} · {{ provider.model }}</option>
-              {% endfor %}
-            </select>
-          </label>
+          {% include 'global_text_ai.html' %}
           <div class="form-actions"><button type="submit">{% if analysis and analysis.state == 'failed' %}KI-Analyse fortsetzen{% elif analysis and analysis.state in ['done','empty'] %}Mit aktueller Konfiguration analysieren{% else %}KI-Analyse starten{% endif %}</button></div>
         </form>
         <p class="small muted">Identische fertige Analyseläufe werden wiederverwendet. Ein anderer Provider, ein anderes Modell oder geänderte Analyseeinstellungen erzeugen einen neuen Lauf.</p>
@@ -137,6 +148,7 @@
         </details>
       {% endif %}
     </section>
+    </div>
   {% endif %}
   {% if sync_enabled and analysis and analysis.result %}
     <form method="post" action="{{ url_for('sync_book', book_id=book.id) }}" class="form-actions">
@@ -145,15 +157,15 @@
     </form>
   {% endif %}
   {% set deletion_active = not delete_available or delete_blocked or (job and job.active) or (analysis and analysis.active) %}
-  <section class="panel next-settings danger-zone" aria-labelledby="danger-zone-title">
-    <h2 id="danger-zone-title">Danger Zone</h2>
+  <details class="panel next-settings danger-zone" aria-labelledby="danger-zone-title">
+    <summary id="danger-zone-title">Lokales Buch löschen · Danger Zone</summary>
     <p>Löscht das Buch einschließlich Originaldatei, Extraktion, Analyseergebnissen und lokalen Bildern von diesem Rechner. Bereits synchronisierte Daten in Supabase bleiben erhalten.</p>
     <div class="form-actions">
       <button type="button" class="danger-button" data-delete-book-open {% if deletion_active %}disabled aria-describedby="delete-book-blocked"{% endif %}>Lokales Buch löschen</button>
     </div>
     {% if not delete_available %}<p id="delete-book-blocked" class="muted small">Bitte die Anwendung neu starten, um die neue Löschfunktion zu aktivieren.</p>
     {% elif deletion_active %}<p id="delete-book-blocked" class="muted small">Das Buch kann erst gelöscht werden, wenn Import und KI-Analyse beendet sind.</p>{% endif %}
-  </section>
+  </details>
   <dialog id="delete-book-dialog" class="delete-dialog" aria-labelledby="delete-book-title">
     <form method="post" action="/books/local/{{ book.id }}/delete">
       <h2 id="delete-book-title">Lokales Buch dauerhaft löschen?</h2>
@@ -165,4 +177,5 @@
       </div>
     </form>
   </dialog>
+  </div>
 {% endblock %}

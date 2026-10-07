@@ -288,7 +288,9 @@ def test_web_uploads_assets_enforces_setup_and_renders_preview(setup):
         assert preview.status_code == 200 and preview.headers["content-type"] == "image/jpeg"
         with Image.open(BytesIO(preview.content)) as rendered:
             assert rendered.size == (1080, 1350)
-        assert "Vorgemerkt" in client.get("/").text
+        library = client.get("/").text
+        assert "Lokale Auswahl: Aktiv · Auto-Flow" in library
+        assert 'data-library-promotion="yes"' in library
 
 
 def test_asset_upload_requires_local_origin(setup):

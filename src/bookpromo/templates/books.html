@@ -2,13 +2,15 @@
 {% block title %}Bücher · Book Promotion{% endblock %}
 {% block content %}
   <div class="page-heading">
-    <h1>Bücher</h1>
-    <span class="badge">Lokaler Upload</span>
+    <div><p class="eyebrow">Deine Buchprojekte</p><h1>Bücher</h1><p class="muted">Inhalte prüfen, Medien gestalten und die nächste Produktion öffnen.</p></div>
+    <a class="button-link" href="#add-book" data-upload-open>+ Buch hinzufügen</a>
   </div>
   {% if local_deleted %}
     <div class="notice success" role="status"><p>Das lokale Buchprojekt wurde vollständig gelöscht. Supabase wurde nicht verändert.</p></div>
   {% endif %}
 
+  <details id="add-book" class="upload-disclosure" {% if not local_books %}open{% endif %}>
+  <summary>Neues Buch hinzufügen · Word-Dokument</summary>
   <form id="upload-form" class="upload-panel" action="{{ url_for('upload_book') }}" method="post" enctype="multipart/form-data" aria-labelledby="upload-title" aria-describedby="upload-help" data-max-bytes="{{ max_upload_mb * 1024 * 1024 }}">
     <div>
       <h2 id="upload-title">Neues Buch hinzufügen</h2>
@@ -21,34 +23,55 @@
       <button id="upload-submit" type="submit">Buch anlegen</button>
     </div>
   </form>
+  </details>
   <div id="upload-feedback" class="notice" role="status" aria-live="polite" hidden>
     <p id="upload-message"></p>
     <progress id="upload-progress" max="100" value="0" aria-label="Uploadfortschritt" hidden></progress>
   </div>
-  <p class="intro">Die Datei wird lokal gespeichert und im Hintergrund in Text und Kapitel aufgeteilt. Öffne das Buch, prüfe die Kapitel und starte die KI-Zitatauswahl.</p>
+  <div class="library-toolbar" data-library-tools hidden>
+    <label class="search-field">Bücher durchsuchen <input type="search" data-library-search placeholder="Titel oder Autor auf dieser Seite"></label>
+    <label class="search-field">Ansicht <select data-library-filter><option value="all">Alle Bücher</option><option value="local">Lokal bearbeitbar</option><option value="remote">Nur in Supabase</option><option value="promotion">Promotion vorgemerkt</option></select></label>
+    <span class="muted small" data-library-count aria-live="polite"></span>
+  </div>
   <section class="panel" aria-labelledby="local-library-title">
-    <div class="panel-heading"><h2 id="local-library-title">Lokale Buchprojekte</h2></div>
+    <div class="panel-heading"><h2 id="local-library-title">Bibliothek</h2><span class="muted small">Lokale Buchprojekte{% if show_remote %} &amp; Supabase{% endif %}</span></div>
     {% if local_error %}<p class="notice">{{ local_error }}</p>{% else %}
-    <div class="table-scroll" role="region" aria-label="Lokale Buchprojekte" tabindex="0">
-      <table>
-        <thead><tr><th scope="col">Buch</th><th scope="col">Import</th><th scope="col">Kapitel</th><th scope="col">Zitate</th><th scope="col">Promotion</th><th scope="col">Hochgeladen</th></tr></thead>
-        <tbody>
+    <div class="library-list" aria-label="Lokale Buchprojekte">
         {% for book in local_books %}
           {% set job = local_jobs.get(book.id) %}
           {% set managed = local_management.get(book.id) %}
-          <tr {% if not job or job.active %}data-import-row="{{ url_for('import_status', book_id=book.id) }}"{% endif %}><td><a href="{{ url_for('local_book', book_id=book.id) }}"><strong>{{ book.title }}</strong></a></td>
-            <td><span class="badge" data-import-label>{{ job.label if job else 'Datei gespeichert' }}</span></td>
-            <td data-chapter-count>{{ job.chapter_count if job and job.chapter_count is not none else '—' }}</td>
-            <td>{% if managed and managed.suggestion_id %}{{ managed.usable_count }} nutzbar · {{ managed.blocked_count }} gesperrt{% else %}{{ {'queued':'Analyse wartet','running':'Analyse läuft','failed':'Analyse fehlgeschlagen','stale':'Analyse veraltet'}.get(managed.analysis_state if managed else '', 'Noch nicht analysiert') }}{% endif %}</td>
-            <td><a href="{{ url_for('book_settings', book_id=book.id) }}">{{ 'Vorgemerkt' if managed and managed.details.promotion_enabled else 'Pausiert' }}</a></td>
-            <td>{{ book.created_at | berlin_time }}</td></tr>
+          {% set remote = local_remote.get(book.id) %}
+          <article class="library-book" data-library-item data-library-kind="local" data-library-promotion="{{ 'yes' if managed and managed.details.promotion_enabled else 'no' }}" {% if not job or job.active %}data-import-row="{{ url_for('import_status', book_id=book.id) }}"{% endif %}>
+            <div class="library-book-identity">
+              <span class="book-thumbnail" aria-hidden="true">
+                <span class="book-monogram">{{ book.title[:1] }}</span>
+                {% if local_covers.get(book.id) %}<img class="book-cover" data-book-cover src="{{ url_for('book_asset', book_id=book.id, kind='cover_front') }}?revision={{ local_covers[book.id].revision }}" alt="" width="44" height="62" loading="lazy" decoding="async">{% endif %}
+              </span>
+              <div><a href="{{ url_for('local_book', book_id=book.id) }}"><strong>{{ book.title }}</strong></a>{% if managed and managed.details.author %}<p class="muted small">{{ managed.details.author }}</p>{% endif %}<p class="muted small">Hochgeladen {{ book.created_at | berlin_time }}</p></div>
+            </div>
+            <div class="library-book-status"><span class="badge" data-import-label>{{ job.label if job else 'Datei gespeichert' }}</span><p class="small"><span data-chapter-count>{{ job.chapter_count if job and job.chapter_count is not none else '—' }}</span> Kapitel</p><p class="muted small">{% if managed and managed.suggestion_id %}{{ managed.usable_count }} nutzbar · {{ managed.blocked_count }} gesperrt{% else %}{{ {'queued':'Analyse wartet','running':'Analyse läuft','failed':'Analyse fehlgeschlagen','stale':'Analyse veraltet'}.get(managed.analysis_state if managed else '', 'Noch nicht analysiert') }}{% endif %}</p></div>
+            <div class="library-book-sync">
+              {% if remote %}
+                <span class="badge{% if remote.active %} badge-ready{% endif %}">Supabase: {{ 'Promotion aktiv' if remote.active else 'Promotion pausiert' }}</span>
+                <p class="small">{{ {'new':'Neu','queued':'Wartet','extracting':'Wird eingelesen','analyzing':'Wird analysiert','needs_review':'Prüfung nötig','ready':'Bereit','failed':'Fehlgeschlagen'}.get(remote.status, remote.status) }}</p>
+                <p class="muted small">Letzter Post: {{ remote.last_published_at | berlin_time if remote.last_published_at else 'Noch kein Carousel-Post' }}</p>
+              {% elif database_error and show_remote %}<span class="badge">Supabase-Status unbekannt</span>
+              {% elif local_sync.get(book.id) %}<span class="badge">Übertragung bestätigt</span><p class="muted small">Aktueller Supabase-Status auf dieser Seite nicht geladen.</p>
+              {% else %}<span class="badge">Lokal · kein bestätigter Sync</span>{% endif %}
+              <p class="small"><a href="{{ url_for('book_settings', book_id=book.id) }}#publishing">Lokale Auswahl: {{ 'Aktiv' if managed and managed.details.promotion_enabled else 'Pausiert' }} · {{ 'Auto-Flow' if managed and managed.details.publication_mode == 'auto' else 'Telegram-Freigabe' }}</a></p>
+              {% if remote or local_sync.get(book.id) %}<details><summary class="small">Sync &amp; Supabase-Details</summary>
+                {% if local_sync.get(book.id) %}<p class="small">Übertragung bestätigt · Stand {{ local_sync[book.id].revision }}</p>{% endif %}
+                {% if remote %}<p class="small"><strong>{{ remote.title }}</strong></p><p class="small">{{ remote.chapter_count }} Kapitel · {{ remote.quote_count }} Zitate</p>{% if remote.author %}<p class="small">{{ remote.author }}</p>{% endif %}{% endif %}
+              </details>{% endif %}
+            </div>
+            <a class="button-link secondary-button" href="{{ url_for('local_book', book_id=book.id) }}">Weiterarbeiten →</a>
+          </article>
         {% else %}
-          <tr><td colspan="6" class="empty-state"><strong>Noch kein Buch hochgeladen.</strong><p>Lege oben dein erstes Word-Dokument ab.</p></td></tr>
+          <div class="empty-state"><strong>Noch kein Buch hochgeladen.</strong><p>Lege oben dein erstes Word-Dokument ab.</p></div>
         {% endfor %}
-        </tbody>
-      </table>
     </div>{% endif %}
   </section>
+  {% if local_books %}<p class="page-note">Lokale Änderungen werden erst durch „Buchstand nach Supabase übertragen“ übernommen. „Letzter Post“ zeigt den registrierten Carousel-Post, nicht die separate Reel-Queue.</p>{% endif %}
   {% if local_page > 1 or local_has_more %}
   <nav class="pagination" aria-label="Lokale Buchseiten">
     {% if local_page > 1 %}<a href="{{ url_for('books') }}?local_page={{ local_page - 1 }}&amp;page={{ page }}">← Zurück</a>{% endif %}
@@ -58,9 +81,12 @@
   {% endif %}
   {% if not show_remote %}<p class="page-note">{{ database_error }} Deine lokalen Uploads bleiben gespeichert.</p>{% endif %}
 
+  {% set remote_only = namespace(items=[]) %}
+  {% for remote in books if remote.id|string not in local_ids %}{% set remote_only.items = remote_only.items + [remote] %}{% endfor %}
   {% if show_remote %}
+  {% if remote_only.items or database_error %}
   <section class="panel" aria-labelledby="library-title">
-    <div class="panel-heading"><h2 id="library-title">Bücher in Supabase</h2></div>
+    <div class="panel-heading"><h2 id="library-title">Weitere Bücher in Supabase</h2><span class="muted small">Ohne lokales Projekt auf dieser Bibliotheksseite</span></div>
     <div class="table-scroll" role="region" aria-label="Buchübersicht" tabindex="0">
       <table>
         <thead><tr>
@@ -71,21 +97,22 @@
           <th scope="col">Letzter Post</th>
         </tr></thead>
         <tbody>
-        {% for book in books %}
-        <tr>
+        {% for book in remote_only.items %}
+        <tr data-library-item data-library-kind="remote" data-library-promotion="no">
           <td><strong>{{ book.title }}</strong>{% if book.author %}<br><span class="muted small">{{ book.author }}</span>{% endif %}</td>
-          <td>{{ {'new':'Neu','queued':'Wartet','extracting':'Wird eingelesen','analyzing':'Wird analysiert','needs_review':'Prüfung nötig','ready':'Bereit','failed':'Fehlgeschlagen'}[book.status] }}</td>
+          <td><span class="badge{% if book.active %} badge-ready{% endif %}">Promotion {{ 'aktiv' if book.active else 'pausiert' }}</span><br>{{ {'new':'Neu','queued':'Wartet','extracting':'Wird eingelesen','analyzing':'Wird analysiert','needs_review':'Prüfung nötig','ready':'Bereit','failed':'Fehlgeschlagen'}[book.status] }}</td>
           <td>{{ book.chapter_count }}</td><td>{{ book.quote_count }}</td>
           <td>{{ book.last_published_at | berlin_time }}</td>
         </tr>
         {% else %}<tr><td colspan="5" class="empty-state">
-          <strong>{% if database_connected %}Noch keine Bücher auf dieser Seite.{% else %}Buchübersicht noch nicht verbunden.{% endif %}</strong>
-          <p>{% if database_error %}{{ database_error }}{% else %}Die Datenbank ist erreichbar. Lokale Uploads wurden noch nicht nach Supabase übertragen.{% endif %}</p>
+          <strong>Supabase-Status gerade nicht verfügbar.</strong>
+          <p>{{ database_error }} Deine lokalen Buchprojekte bleiben verfügbar.</p>
           <a href="{{ url_for('settings') }}">Einrichtungsstatus ansehen <span aria-hidden="true">→</span></a>
         </td></tr>{% endfor %}</tbody>
       </table>
     </div>
   </section>
+  {% endif %}
   {% if page > 1 or has_more %}
   <nav class="pagination" aria-label="Buchseiten">
     {% if page > 1 %}<a href="{{ url_for('books') }}?page={{ page - 1 }}">← Zurück</a>{% endif %}

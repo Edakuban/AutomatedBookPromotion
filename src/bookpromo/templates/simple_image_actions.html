@@ -1,0 +1,31 @@
+{# Both quote and chapter generation use this form and the same atomic backend action. #}
+{% set ai = global_ai() %}
+<form method="post" action="{{ simple_image_action }}" class="simple-image-form" data-simple-image-form data-simple-image-busy="{{ 'true' if simple_image_busy else 'false' }}" data-unsaved-form {% if simple_image_is_quote %}data-reel-action{% endif %} data-waiting="Szene wird vorbereitet, danach das Bild erzeugt …">
+  <input type="hidden" name="revision" value="{{ simple_image_draft.revision }}">
+  <fieldset {% if simple_image_busy %}disabled{% endif %}>
+    <details class="simple-image-scene-editor" {% if simple_image_is_quote %}open{% endif %}>
+      <summary>Szene &amp; Charaktere{% if simple_image_draft.character_ids %} · {% for character in simple_image_characters %}{% if character.id in simple_image_draft.character_ids %}{{ character.name }}{% if not loop.last %} {% endif %}{% endif %}{% endfor %}{% else %} · ohne eigene Figuren{% endif %}</summary>
+    <label>Szene <textarea name="image_prompt" rows="4" maxlength="8000" required placeholder="Welcher Moment soll zu sehen sein?">{{ simple_image_draft.image_prompt or simple_image_draft.quote_text }}</textarea></label>
+    <fieldset class="reel-character-picker">
+      <legend>Deine Charaktere in dieser Szene · bis zu vier</legend>
+      {% for character in simple_image_characters %}
+        <label class="checkbox-label"><input type="checkbox" name="character_ids" value="{{ character.id }}" data-has-reference="{{ 'true' if character.has_reference else 'false' }}" {% if character.id in simple_image_draft.character_ids %}checked{% endif %}> <span>{{ character.name }} · {{ 'Referenzbild' if character.has_reference else 'nur Beschreibung' }}</span></label>
+      {% else %}<p class="small muted">Die Szene kann auch ohne eigene Referenzfiguren erzeugt werden. Charaktere kannst du in den Bucheinstellungen hinterlegen.</p>{% endfor %}
+    </fieldset>
+    <details class="simple-image-options">
+      <summary>Pose, Ausdruck &amp; Requisiten anpassen</summary>
+      <label>Optionale Szenenregie <textarea name="scene_direction" rows="3" maxlength="2000" placeholder="Zum Beispiel: Mira dreht sich zum Fenster; beide Hände sind frei.">{{ simple_image_draft.scene_direction }}</textarea></label>
+      <p class="small muted">Neue Pose und Requisiten kommen aus der Szene. Namen für jede sichtbare Figur angeben; keine zusätzliche Pflichtbeschreibung.</p>
+    </details>
+    <p class="small muted">Änderungen werden mit dem Bildklick gespeichert. Ein aktueller Plan wird wiederverwendet, sonst plant die gewählte Text-KI einmal automatisch.</p>
+    </details>
+    <p class="small muted simple-image-provider-label">{{ ai.preset.label }} · Planung: {{ ai.text_label }} · <a href="{{ url_for('settings') }}#ai">Global ändern</a></p>
+    <div class="simple-image-buttons">
+      <button type="submit" name="mode" value="plain">Bild erzeugen</button>
+      <button type="submit" name="mode" value="text">Bild mit Beschreibung erzeugen</button>
+      <button type="submit" name="mode" value="references" data-simple-image-reference>Bild mit Referenzbild erzeugen</button>
+    </div>
+    <details class="simple-image-explanation"><summary class="small muted">Welcher Bild-Modus?</summary><p class="small muted">„Bild erzeugen“ nutzt Szene und Buchstil ohne Charakter-Aussehensvorgaben. „Mit Beschreibung“ ergänzt die gespeicherten Charakter-Imageprompts. „Mit Referenzbild“ erzeugt erst die Szene und setzt dann die Identitäten einzeln aus den Referenzbildern ein – ohne zusätzliche Aussehensbeschreibungen; Szenenkleidung und Pose sollen erhalten bleiben. Dafür ist kein vorheriges Bild nötig. Vorhandene Varianten und deine Auswahl bleiben erhalten.</p></details>
+    <p class="small teaser-warning" data-simple-image-hint aria-live="polite" hidden></p>
+  </fieldset>
+</form>

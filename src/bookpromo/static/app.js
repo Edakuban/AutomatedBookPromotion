@@ -1,3 +1,165 @@
+// Sections are progressively enhanced: without JavaScript every form and
+// action remains visible. Values stay enabled so a shared save keeps all fields.
+function wireSimpleImageForms(scope) {
+  for (const form of scope.querySelectorAll('[data-simple-image-form]')) {
+    const cast = [...form.querySelectorAll('[name="character_ids"]')];
+    const referenceButton = form.querySelector('[data-simple-image-reference]');
+    const hint = form.querySelector('[data-simple-image-hint]');
+    const provider = form.querySelector('[name="ai_provider"]');
+    const providerLabel = form.querySelector('[data-simple-image-provider-label]');
+    const syncProvider = () => {
+      if (providerLabel && provider) providerLabel.textContent = provider.selectedOptions[0]?.textContent || 'Keine Text-KI eingerichtet';
+    };
+    provider?.addEventListener('change', syncProvider);
+    syncProvider();
+    form.addEventListener('invalid', event => {
+      // Chapter scene fields are compact by default; expose invalid fields.
+      for (let parent = event.target.parentElement; parent && parent !== form; parent = parent.parentElement) {
+        if (parent.tagName === 'DETAILS') parent.open = true;
+      }
+    }, true);
+    const busy = form.dataset.simpleImageBusy === 'true';
+    const syncCast = () => {
+      const selected = cast.filter(input => input.checked);
+      const tooMany = selected.length > 4;
+      const missing = selected.some(input => input.dataset.hasReference !== 'true');
+      if (referenceButton) referenceButton.disabled = busy || form.dataset.simpleImageSubmitting === 'true' || tooMany || !selected.length || missing;
+      for (const input of cast) input.setCustomValidity(tooMany ? 'Bitte höchstens vier sichtbare Figuren auswählen.' : '');
+      if (hint) {
+        hint.textContent = tooMany ? 'Bitte höchstens vier sichtbare Figuren auswählen.'
+          : missing ? 'Für den Referenzmodus braucht jede ausgewählte Figur ein Referenzbild. Ohne Referenzen kannst du „Bild mit Beschreibung erzeugen“ nutzen.'
+          : !selected.length ? 'Ohne Charakterauswahl nutzt „Bild erzeugen“ nur die Szene. Für den Referenzmodus mindestens eine Figur auswählen.' : '';
+        hint.hidden = !hint.textContent;
+      }
+    };
+    for (const input of cast) input.addEventListener('change', syncCast);
+    syncCast();
+  }
+}
+wireSimpleImageForms(document);
+
+for (const panel of document.querySelectorAll('[data-image-preset-check]')) {
+  const button = panel.querySelector('button');
+  const message = panel.querySelector('[role="status"]');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    message.hidden = false;
+    message.textContent = 'Bild-Presets werden geprüft …';
+    try {
+      const response = await fetch(panel.dataset.checkUrl, {method: 'POST'});
+      const result = await response.json();
+      message.textContent = result.message || 'Prüfung fehlgeschlagen.';
+    } catch { message.textContent = 'ComfyUI-Prüfung konnte nicht abgeschlossen werden.'; }
+    finally { button.disabled = false; }
+  });
+}
+
+for (const group of document.querySelectorAll("[data-settings-group]")) {
+  const sections = [...group.querySelectorAll("[data-settings-section]")];
+  const links = [...group.querySelectorAll("[data-settings-link]")];
+  const key = `bookpromo-section:${location.pathname}`;
+  const known = new Set(sections.map(section => section.dataset.settingsSection));
+  const sectionForHash = () => {
+    let id;
+    try { id = decodeURIComponent(location.hash.slice(1)); } catch { return null; }
+    const target = document.getElementById(id);
+    if (!target || !group.contains(target)) return null;
+    return target.closest("[data-settings-section]")?.dataset.settingsSection || null;
+  };
+  const readSelection = () => { try { return sessionStorage.getItem(key); } catch { return null; } };
+  let current = null;
+  const select = name => {
+    if (!known.has(name) && name !== "all") name = group.dataset.settingsDefault || sections[0]?.dataset.settingsSection;
+    current = name;
+    sections.forEach(section => { section.hidden = name !== "all" && section.dataset.settingsSection !== name; });
+    links.forEach(link => {
+      const target = document.getElementById(link.hash.slice(1));
+      const selected = target?.closest("[data-settings-section]")?.dataset.settingsSection === name;
+      if (selected) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+    });
+    document.querySelectorAll("[data-workspace-settings]").forEach(link => {
+      if (!location.pathname.endsWith("/settings")) return;
+      const parentSection = ["book-data", "art-direction"].includes(name) ? "profile" : name === "characters" ? "media" : name;
+      if (link.dataset.workspaceSettings === parentSection) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
+    document.querySelectorAll("[data-workspace-view]").forEach(link => {
+      if (new URL(link.href).pathname !== location.pathname) return;
+      const selected = link.dataset.workspaceView === name || (link.dataset.workspaceView === "chapters" && name === "analysis");
+      if (selected) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
+    });
+    try { sessionStorage.setItem(key, name); } catch { /* restricted storage */ }
+  };
+  const showTarget = () => {
+    const name = sectionForHash();
+    if (!name) return;
+    select(name);
+    const target = document.getElementById(location.hash.slice(1));
+    if (target instanceof HTMLDetailsElement) target.open = true;
+  };
+  const errorSection = sections.find(section => section.querySelector('[role="alert"], .notice.error'));
+  select(sectionForHash() || errorSection?.dataset.settingsSection || readSelection() || group.dataset.settingsDefault || sections[0]?.dataset.settingsSection);
+  if (sectionForHash()) requestAnimationFrame(() => { showTarget(); document.getElementById(location.hash.slice(1))?.scrollIntoView({block: "start"}); });
+  window.addEventListener("hashchange", showTarget);
+  for (const link of links) link.addEventListener("click", event => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    const target = document.getElementById(link.hash.slice(1));
+    const name = target?.closest("[data-settings-section]")?.dataset.settingsSection;
+    if (name) { select(name); if (target instanceof HTMLDetailsElement) target.open = true; }
+  });
+  for (const link of document.querySelectorAll("[data-workspace-settings]")) link.addEventListener("click", () => {
+    if (new URL(link.href).pathname === location.pathname) select(link.dataset.workspaceSettings);
+  });
+  group.addEventListener("invalid", event => {
+    const section = event.target.closest("[data-settings-section]");
+    const invalidSections = new Set([...event.target.form?.querySelectorAll("input:invalid, select:invalid, textarea:invalid") || []]
+      .map(input => input.closest("[data-settings-section]")?.dataset.settingsSection).filter(Boolean));
+    if (invalidSections.size > 1) select("all");
+    else if (section?.hidden) select(section.dataset.settingsSection);
+    let ancestor = event.target.parentElement;
+    while (ancestor && ancestor !== group) { if (ancestor instanceof HTMLDetailsElement) ancestor.open = true; ancestor = ancestor.parentElement; }
+  }, true);
+  // Always provide an escape hatch for cross-section review.
+  const nav = group.querySelector(".settings-nav");
+  if (nav) {
+    const all = document.createElement("button");
+    all.type = "button";
+    all.className = "secondary-button";
+    all.textContent = "Alles anzeigen";
+    all.addEventListener("click", () => select("all"));
+    nav.append(all);
+  }
+}
+
+for (const cover of document.querySelectorAll("[data-book-cover]")) {
+  const fallback = () => { cover.hidden = true; };
+  cover.addEventListener("error", fallback);
+  if (cover.complete && !cover.naturalWidth) fallback();
+}
+
+const libraryTools = document.querySelector("[data-library-tools]");
+if (libraryTools) {
+  libraryTools.hidden = false;
+  const search = libraryTools.querySelector("[data-library-search]");
+  const filter = libraryTools.querySelector("[data-library-filter]");
+  const items = [...document.querySelectorAll("[data-library-item]")];
+  const update = () => {
+    const query = search.value.toLocaleLowerCase("de").trim();
+    for (const item of items) {
+      const matches = filter.value === "all" || item.dataset.libraryKind === filter.value || (filter.value === "promotion" && item.dataset.libraryPromotion === "yes");
+      item.hidden = !matches || !item.textContent.toLocaleLowerCase("de").includes(query);
+    }
+    libraryTools.querySelector("[data-library-count]").textContent = `${items.filter(item => !item.hidden).length} von ${items.length} Büchern auf dieser Seite`;
+  };
+  search.addEventListener("input", update);
+  filter.addEventListener("change", update);
+  update();
+}
+document.querySelector("[data-upload-open]")?.addEventListener("click", () => {
+  const upload = document.getElementById("add-book");
+  if (upload) upload.open = true;
+});
+
 const form = document.getElementById("upload-form");
 if (form) {
   const input = document.getElementById("word-file");
@@ -132,6 +294,68 @@ if (chapterImageLightbox) {
   }
 }
 
+// Chapter plans use saved inputs. Unsaved cast, prompt or direction edits must
+// be saved before a new plan or a render based on the saved plan can start.
+const chapterImageMethods = [...document.querySelectorAll("[data-chapter-image-method]")];
+const chapterPlanRows = [...document.querySelectorAll("[data-chapter-plan-row]")];
+const chapterPlanDirty = row => [...row.querySelectorAll(
+  '[data-chapter-plan-inputs] [name="scene_direction"], [name="image_prompt"], [name="character_id"]'
+)].some(input => input.type === "checkbox" ? input.checked !== input.defaultChecked
+  : input.value.trim() !== input.defaultValue.trim());
+const syncChapterImageMethods = () => {
+  for (const form of chapterImageMethods) {
+    const method = form.querySelector("[data-chapter-method]");
+    const render = form.querySelector("[data-chapter-method-render]");
+    const message = form.querySelector("[data-chapter-method-message]");
+    if (!method || !render) continue;
+    const planned = method.value === "planned_scene" || method.value === "scene_plan";
+    const row = form.closest("[data-chapter-plan-row]");
+    const dirty = row ? chapterPlanDirty(row) : chapterPlanRows.some(chapterPlanDirty);
+    const ready = planned ? form.dataset.planReady === "true" : form.dataset.legacyReady === "true";
+    render.disabled = !ready || (planned && dirty);
+    if (message) {
+      if (!message.dataset.initialMessage) message.dataset.initialMessage = message.textContent;
+      message.textContent = dirty && planned
+        ? "Auswahl, Bildprompt oder Regie geändert: im Editor speichern und den Szenenplan aktualisieren."
+        : message.dataset.initialMessage;
+      message.hidden = !planned || (ready && !dirty);
+    }
+  }
+  for (const row of chapterPlanRows) {
+    const generation = row.querySelector("[data-chapter-plan-generate]");
+    const button = generation?.querySelector('button[type="submit"]');
+    if (!button) continue;
+    if (!button.dataset.initialDisabled) button.dataset.initialDisabled = String(button.disabled);
+    const dirty = chapterPlanDirty(row);
+    button.disabled = button.dataset.initialDisabled === "true" || dirty;
+    const pending = generation.querySelector("[data-chapter-plan-pending]");
+    if (pending) pending.hidden = !dirty;
+  }
+};
+for (const form of chapterImageMethods) {
+  form.querySelector("[data-chapter-method]")?.addEventListener("change", syncChapterImageMethods);
+  form.addEventListener("submit", event => {
+    syncChapterImageMethods();
+    if (form.querySelector("[data-chapter-method-render]")?.disabled) event.preventDefault();
+  });
+}
+for (const row of chapterPlanRows) {
+  row.addEventListener("input", syncChapterImageMethods);
+  row.addEventListener("change", event => {
+    const source = event.target;
+    if (source.matches('[data-chapter-cast-source] [name="character_id"]')) {
+      const editorInput = [...row.querySelectorAll('[data-chapter-plan-inputs] [name="character_id"]')]
+        .find(input => input.value === source.value);
+      if (editorInput && editorInput.checked !== source.checked) {
+        editorInput.checked = source.checked;
+        editorInput.dispatchEvent(new Event("change", {bubbles: true}));
+      }
+    }
+    syncChapterImageMethods();
+  });
+}
+syncChapterImageMethods();
+
 // Chapter and final-teaser queue forms are outside the dynamically loaded reel
 // workshop, so their scheduled-date validation must be wired independently.
 for (const publication of document.querySelectorAll("[data-publication-form]")) {
@@ -173,7 +397,7 @@ if (chapterProduction) {
         progress.value = Number(result.completed);
       }
       if (!result.active || result.state !== state) {
-        window.location.reload();
+        window.bookpromoUnsaved.reload();
         return;
       }
       state = result.state;
@@ -206,7 +430,7 @@ if (bookTeaserRender) {
         progress.value = Number(result.progress_ms);
       }
       if (!result.active || result.state !== state) {
-        window.location.reload();
+        window.bookpromoUnsaved.reload();
         return;
       }
       state = result.state;
@@ -227,12 +451,14 @@ if (chapterForm) {
     if (rows.children.length >= 250) return;
     rows.append(document.getElementById("chapter-row-template").content.cloneNode(true));
     chapterEdits = true;
+    window.bookpromoUnsaved.refresh(chapterForm);
     rows.lastElementChild.querySelector("input").focus();
   });
   rows.addEventListener("click", (event) => {
     if (event.target.matches(".remove-chapter") && rows.children.length > 1) {
       event.target.closest(".chapter-row").remove();
       chapterEdits = true;
+      window.bookpromoUnsaved.refresh(chapterForm);
     }
   });
 }
@@ -299,6 +525,7 @@ if (profileGenerator) {
       }
       for (const name of fields) form.elements.namedItem(name).value = data.fields[name];
       form.elements.namedItem("profile_run_id").value = data.id;
+      window.bookpromoUnsaved.refresh(form);
       status.textContent = "Vorschläge eingesetzt. Bitte prüfen, bei Bedarf bearbeiten und mit Bucheinstellungen speichern übernehmen.";
     } catch (error) {
       status.textContent = error.message;
@@ -335,7 +562,7 @@ if (characterAnalysis) {
         }
         provider.disabled = data.active;
         if (observedActive && !data.active && data.state === "done") {
-          window.location.reload();
+          window.bookpromoUnsaved.reload();
           return;
         }
         observedActive ||= data.active;
@@ -392,7 +619,7 @@ if (analysisPanel) {
     try {
       const status = await readImportStatus(analysisPanel.dataset.statusUrl);
       if (!status.active) {
-        if (!chapterEdits) { window.location.reload(); return; }
+        if (!chapterEdits) { window.bookpromoUnsaved.reload(); return; }
         analysisPanel.querySelector("[data-analysis-stage]").textContent = `${status.label}. Speichere deine Kapiteländerungen oder lade die Seite neu, um das Ergebnis zu sehen.`;
         analysisPanel.querySelector("progress").hidden = true;
         return;
@@ -445,7 +672,7 @@ if (importPanel) {
   async function refreshImport() {
     try {
       const status = await readImportStatus(importPanel.dataset.statusUrl);
-      if (!status.active) { window.location.reload(); return; }
+      if (!status.active) { window.bookpromoUnsaved.reload(); return; }
       document.getElementById("import-stage").textContent = status.stage;
       const meter = document.getElementById("import-meter");
       if (status.total > 0) { meter.max = status.total; meter.value = status.completed; }
@@ -598,6 +825,7 @@ if (reelDialog) {
   const content = reelDialog.querySelector("[data-reel-content]");
   const title = reelDialog.querySelector("#reel-dialog-title");
   let workshopUrl = "";
+  let workshopRequest = 0;
   let pollTimer;
   let fragmentCleanup = () => {};
 
@@ -817,6 +1045,55 @@ if (reelDialog) {
   }
 
   function wireReelFragment() {
+    wireSimpleImageForms(content);
+    // Only forms restored from a real user edit are dirty at entry. Initializers
+    // normalize display values (e.g. audio 20.0 -> 20); accepting another form
+    // refreshes every form and can otherwise mistake that normalization for an edit.
+    const restoredDirtyForms = new Set(content.querySelectorAll('form[data-reel-dirty="true"]'));
+    const stepKey = `bookpromo-reel-steps:${new URL(workshopUrl, location.href).pathname}`;
+    const steps = [...content.querySelectorAll("[data-reel-step]")];
+    let savedSteps = null;
+    try { savedSteps = JSON.parse(sessionStorage.getItem(stepKey)); } catch { /* first open or restricted storage */ }
+    if (Array.isArray(savedSteps)) steps.forEach(step => { step.open = savedSteps.includes(step.dataset.reelStep); });
+    steps.forEach(step => step.addEventListener("toggle", () => {
+      try { sessionStorage.setItem(stepKey, JSON.stringify(steps.filter(item => item.open).map(item => item.dataset.reelStep))); } catch { /* restricted storage */ }
+    }));
+    content.querySelectorAll("form[data-reel-action]").forEach(form => {
+      form.addEventListener("invalid", event => {
+        const step = event.target.closest("[data-reel-step]");
+        if (step) step.open = true;
+      }, true);
+      const strategy = form.querySelector('[name="strategy"]');
+      const direction = form.querySelector('[name="scene_direction"]');
+      const saveDirection = form.querySelector('button[formaction]');
+      if (strategy && direction) {
+        const saveWasDisabled = !!saveDirection?.disabled;
+        const render = form.querySelector('[data-plan-render]');
+        const renderWasDisabled = !!render?.disabled;
+        const planSources = [...content.querySelectorAll('[name="image_prompt"], [name="character_ids"], [name="scene_direction"]')];
+        const planButton = content.querySelector('[data-plan-generate] button[type="submit"]');
+        const planWasDisabled = !!planButton?.disabled;
+        const syncDirection = () => {
+          const masked = strategy.value === "masked";
+          direction.disabled = masked;
+          if (saveDirection) saveDirection.disabled = masked || saveWasDisabled;
+          const sourceChanged = planSources.some(input => input.type === "checkbox"
+            ? input.checked !== input.defaultChecked : input.value.trim() !== input.defaultValue.trim());
+          if (render) render.disabled = renderWasDisabled || (strategy.value === "planned_scene" && (
+            render.dataset.planCurrent !== "true" || sourceChanged
+          ));
+          if (planButton) planButton.disabled = planWasDisabled || sourceChanged;
+          const pending = content.querySelector('[data-plan-pending]');
+          if (pending) pending.hidden = !sourceChanged;
+        };
+        strategy.addEventListener("change", syncDirection);
+        for (const input of planSources) {
+          input.addEventListener("input", syncDirection);
+          input.addEventListener("change", syncDirection);
+        }
+        syncDirection();
+      }
+    });
     const duration = content.querySelector('[name="duration_seconds"]');
     const output = content.querySelector("[data-reel-duration-output]");
     if (duration && output) {
@@ -824,7 +1101,9 @@ if (reelDialog) {
       duration.addEventListener("input", showDuration);
       showDuration();
     }
-    fragmentCleanup = wireAudioEditor();
+    const audioCleanup = wireAudioEditor();
+    const cropCleanup = window.bookpromoCrop.wire(content);
+    fragmentCleanup = () => { audioCleanup(); cropCleanup(); };
     const caption = content.querySelector('[name="addition"]');
     const counter = content.querySelector("[data-caption-count]");
     if (caption && counter) {
@@ -845,15 +1124,32 @@ if (reelDialog) {
       syncTime();
     }
     const active = content.querySelector("[data-reel-active='true']");
+    content.querySelectorAll("form[data-reel-action]").forEach(form => {
+      if (restoredDirtyForms.has(form)) window.bookpromoUnsaved.refresh(form);
+      else window.bookpromoUnsaved.accept(form);
+    });
     if (active) pollTimer = window.setTimeout(() => loadWorkshop(workshopUrl, false), 2000);
   }
 
   async function loadWorkshop(url, announce = true) {
     window.clearTimeout(pollTimer);
-    fragmentCleanup();
-    fragmentCleanup = () => {};
+    if (!reelDialog.open) return;
+    const request = ++workshopRequest;
+    // Browsers cannot copy file selections into replacement DOM. Keep them intact.
+    if (!announce && (content.querySelector('[data-carousel-crop][data-reel-dirty="true"]') || [...content.querySelectorAll('form[data-reel-dirty="true"] input[type="file"]')].some(input => input.files.length))) {
+      pollTimer = window.setTimeout(() => loadWorkshop(url, false), 2000);
+      return;
+    }
     workshopUrl = url;
-    if (announce) content.innerHTML = '<p class="muted">Reel-Daten werden geladen …</p>';
+    const snapshotForms = () => [...content.querySelectorAll('form[data-reel-dirty="true"]')].map(form => ({
+      action: form.action,
+      controls: [...form.elements].filter(input => input.name && input.type !== "hidden" && input.type !== "file" && input.type !== "submit").map((input, index) => ({index, name: input.name, value: input.value, checked: input.checked})),
+    }));
+    if (announce) {
+      fragmentCleanup();
+      fragmentCleanup = () => {};
+      content.innerHTML = '<p class="muted">Medien-Daten werden geladen …</p>';
+    }
     try {
       const response = await fetch(url, {headers: {Accept: "text/html"}, cache: "no-store"});
       if (!response.ok) {
@@ -861,30 +1157,62 @@ if (reelDialog) {
         try { message = (await response.json()).error || message; } catch {}
         throw new Error(message);
       }
-      content.innerHTML = await response.text();
-      title.textContent = content.querySelector("[data-reel-title]")?.textContent || "Reel erzeugen";
+      const html = await response.text();
+      if (!reelDialog.open || request !== workshopRequest) return;
+      window.bookpromoUnsaved.hasChanges(content);
+      if (content.querySelector('[data-carousel-crop][data-reel-dirty="true"]') || [...content.querySelectorAll('form[data-reel-dirty="true"] input[type="file"]')].some(input => input.files.length)) {
+        pollTimer = window.setTimeout(() => loadWorkshop(url, false), 2000);
+        return;
+      }
+      const unsaved = snapshotForms();
+      fragmentCleanup();
+      fragmentCleanup = () => {};
+      content.innerHTML = html;
+      window.bookpromoUnsaved.track(content);
+      for (const saved of unsaved) {
+        const form = [...content.querySelectorAll("form[data-reel-action]")].find(item => item.action === saved.action);
+        if (!form) continue;
+        const controls = [...form.elements].filter(input => input.name && input.type !== "hidden" && input.type !== "file" && input.type !== "submit");
+        for (const value of saved.controls) {
+          const input = controls[value.index];
+          if (!input || input.name !== value.name) continue;
+          input.value = value.value;
+          if (typeof value.checked === "boolean") input.checked = value.checked;
+        }
+        form.dataset.reelDirty = "true";
+      }
+      title.textContent = "Medien-Werkstatt";
       wireReelFragment();
     } catch (error) {
-      content.innerHTML = "";
+      if (!reelDialog.open || request !== workshopRequest) return;
+      if (announce) content.innerHTML = "";
       reelMessage(error.message, true);
     }
   }
 
   for (const opener of document.querySelectorAll("[data-reel-open]")) {
-    opener.addEventListener("click", () => {
+    opener.addEventListener("click", event => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
       reelDialog.showModal();
       loadWorkshop(opener.dataset.reelUrl);
     });
   }
-  reelDialog.querySelector("[data-reel-close]").addEventListener("click", () => reelDialog.close());
-  reelDialog.addEventListener("cancel", () => window.clearTimeout(pollTimer));
+  const closeWorkshop = () => { if (window.bookpromoUnsaved.confirmDiscard(reelDialog)) reelDialog.close(); };
+  reelDialog.querySelector("[data-reel-close]").addEventListener("click", closeWorkshop);
+  reelDialog.addEventListener("cancel", event => {
+    if (!window.bookpromoUnsaved.confirmDiscard(reelDialog)) event.preventDefault();
+  });
   reelDialog.addEventListener("close", () => {
+    workshopRequest += 1;
     window.clearTimeout(pollTimer);
     fragmentCleanup();
     fragmentCleanup = () => {};
+    window.bookpromoUnsaved.forget(content);
+    content.innerHTML = "";
   });
   reelDialog.addEventListener("click", event => {
-    if (event.target === reelDialog) reelDialog.close();
+    if (event.target === reelDialog) closeWorkshop();
   });
   content.addEventListener("submit", async event => {
     const form = event.target.closest("form[data-reel-action]");
@@ -892,18 +1220,30 @@ if (reelDialog) {
     event.preventDefault();
     window.clearTimeout(pollTimer);
     const buttons = [...form.querySelectorAll("button")];
+    const buttonDisabledStates = buttons.map(button => button.disabled);
+    if (form.hasAttribute('data-simple-image-form')) form.dataset.simpleImageSubmitting = 'true';
     buttons.forEach(button => { button.disabled = true; });
-    reelMessage(form.dataset.waiting || "Aktion wird gestartet …");
+    reelMessage(event.submitter?.dataset.waiting || form.dataset.waiting || "Aktion wird gestartet …");
+    const submittedValues = window.bookpromoUnsaved.capture(form);
     try {
-      const response = await fetch(form.action, {
-        method: form.method || "POST", body: new FormData(form), headers: {Accept: "application/json"}, cache: "no-store",
+      const action = event.submitter?.hasAttribute("formaction") ? event.submitter.formAction : form.action;
+      const body = new FormData(form);
+      // Named submit buttons are not included by FormData(form), and buttons
+      // are disabled above while waiting. Preserve the explicitly chosen mode.
+      if (event.submitter?.name) body.append(event.submitter.name, event.submitter.value);
+      const response = await fetch(action, {
+        method: form.method || "POST", body, headers: {Accept: "application/json"}, cache: "no-store",
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Die Aktion konnte nicht abgeschlossen werden.");
+      window.bookpromoUnsaved.accept(form, submittedValues);
       await loadWorkshop(result.workshop_url || workshopUrl, false);
     } catch (error) {
       reelMessage(error.message, true);
-      buttons.forEach(button => { button.disabled = false; });
+      delete form.dataset.simpleImageSubmitting;
+      buttons.forEach((button, index) => { button.disabled = buttonDisabledStates[index]; });
+      form.querySelector('[name="character_ids"]')?.dispatchEvent(new Event("change", {bubbles: true}));
+      form.querySelector('[name="strategy"]')?.dispatchEvent(new Event("change", {bubbles: true}));
     }
   });
 }

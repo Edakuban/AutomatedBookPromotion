@@ -13,10 +13,16 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .config import TextAIProvider
+from .characters import BookCharacter
 from .extraction_store import ExtractionStore
+from .management import ManagementStore
 from .reel_prompts import validate_video_prompt
-from .reels import ReelJobStore, ReelStore
+from .reels import ReelDraft, ReelJobStore, ReelStore
 from .scene_context import build_scene_context
+from .scene_plan import (
+    SCENE_PLAN_INSTRUCTION, ScenePlan, compile_scene_plan,
+    scene_plan_fingerprint, validate_reference_bindings,
+)
 from .text_ai import provider_endpoint_hash, provider_missing, provider_model_id
 from .uploads import LocalUploadStore, UploadError
 
@@ -48,6 +54,13 @@ class ChapterTeaserSuggestion(_StrictModel):
     image_prompt: str = Field(min_length=1, max_length=4000)
     video_prompt: str = Field(min_length=1, max_length=1800)
     motion_intensity: Literal["calm", "medium", "dynamic"]
+    scene_plan: ScenePlan | None = None
+
+
+class ChapterTeaserGeneration(ChapterTeaserSuggestion):
+    """New requests require a plan; historical suggestions remain readable."""
+
+    scene_plan: ScenePlan
 
 
 CHAPTER_TEASER_SYSTEM = """Du planst ein einzelnes Kapitel-Reel für die Promotion eines Buches.
@@ -79,7 +92,16 @@ Song lip-syncen oder zurückhaltend performen, wenn Gesicht und Szene dazu passe
 neuen Sänger oder Darsteller. Bewegung, Licht, Reflexionen, Partikel und Atmosphäre dürfen deutlich auf
 Rhythmus, Dynamik und Gesang des Songs reagieren. Beschreibe nur die sichtbare Reaktion, keinen neuen
 Ton. Nicht "subtle movement", "minimal movement", "mostly still" oder nahezu statisch formulieren.
-Antworte nur im JSON-Schema."""
+Antworte nur im JSON-Schema.
+Erzeuge scene_plan im selben Aufruf. Plane darin ausschließlich die gewählte Szene aus
+source_excerpt und scene_summary, niemals zusätzliche Momente aus anderen Kapitelstellen.
+identity_labels liefern nur kanonische Namen und Aliase, keine zusätzliche Handlung.
+""" + SCENE_PLAN_INSTRUCTION + """
+Für diesen Kapitelauftrag ist der Fokus des Szenenplans die gewählte source_excerpt,
+nicht der vollständige Kapiteltext. scene_summary fasst nur diesen belegten Moment zusammen.
+Nutze den übrigen Kapiteltext ausschließlich zum Auflösen unmittelbarer Bezüge. Kombiniere
+keine weiteren Handlungen, Personen oder Requisiten aus anderen Momenten in den Szenenplan.
+"""
 
 
 class ChapterTeaserError(RuntimeError):
@@ -104,6 +126,7 @@ async def analyze_whole_chapter(
     chapter,
     book_context: dict,
     duration_seconds: float,
+    characters=(),
 ) -> ChapterTeaserSuggestion:
     scene_context = build_scene_context(
         focus_text=chapter.source_text,
@@ -114,14 +137,25 @@ async def analyze_whole_chapter(
         "chapter_metadata": {"position": chapter.position, "title": chapter.title},
         **scene_context,
         "reel_duration_seconds": round(duration_seconds, 3),
+        "identity_labels": [{
+            "name": character.get("name", "") if isinstance(character, dict) else character.name,
+            "aliases": list(character.get("aliases", ()) if isinstance(character, dict) else character.aliases),
+        } for character in characters],
     }, ensure_ascii=False)
     if len(CHAPTER_TEASER_SYSTEM) + len(payload) > 200_000:
         raise ChapterTeaserError(
             f"Kapitel {chapter.position} ist für einen einzelnen vollständigen KI-Aufruf zu lang."
         )
     suggestion = await client.complete_json(
-        CHAPTER_TEASER_SYSTEM, payload, ChapterTeaserSuggestion, max_tokens=3200,
+        CHAPTER_TEASER_SYSTEM, payload, ChapterTeaserGeneration, max_tokens=4800,
     )
+    try:
+        suggestion = ChapterTeaserGeneration.model_validate(suggestion.model_dump())
+        compile_scene_plan(suggestion.scene_plan)
+    except ValueError:
+        raise ChapterTeaserError(
+            f"Die KI hat für Kapitel {chapter.position} keinen konsistenten Szenenplan geliefert."
+        ) from None
     if suggestion.source_excerpt not in chapter.source_text:
         raise ChapterTeaserError(
             f"Die KI hat für Kapitel {chapter.position} keine wortgetreu belegte Szene geliefert."
@@ -605,10 +639,17 @@ class ChapterTeaserStore:
         self, book_id: str, run_id: str, draft_ids: list[str], *, optimize: bool = False,
         regenerate: bool = False,
         character_ids: list[str] | None = None, revision: int | None = None,
+        strategy: str = "masked",
     ) -> None:
         """Return completed legacy/current chapters to image review without deleting artifacts."""
         if optimize and regenerate:
             raise ValueError("Szenenbild und Charakteroptimierung sind getrennte Schritte.")
+        if not isinstance(strategy, str) or strategy not in {"masked", "planned_scene", "scene_plan"} or (
+            strategy == "planned_scene" and not optimize
+        ) or (strategy == "scene_plan" and not regenerate):
+            raise UploadError("Bitte eine gültige Methode für das Kapitelbild auswählen.")
+        if revision is not None and (type(revision) is not int or revision < 1):
+            raise UploadError("Das Kapitelbild wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
         normalized_book = str(UUID(str(book_id)))
         normalized_run = str(UUID(str(run_id)))
         normalized_drafts = [str(UUID(str(value))) for value in draft_ids]
@@ -636,12 +677,13 @@ class ChapterTeaserStore:
                 row["state"] not in {"analyzed", "done", "failed"} for row in rows
             ):
                 raise UploadError("Mindestens ein Kapitelbild kann jetzt nicht bearbeitet werden.", 409)
+            planned_payloads = {}
             for draft_id in normalized_drafts:
                 self._editable_plan(connection, normalized_book, normalized_run, draft_id)
+                current = connection.execute(
+                    "select * from local_reel_drafts where id=?", (draft_id,),
+                ).fetchone()
                 if revision is not None:
-                    current = connection.execute(
-                        "select revision from local_reel_drafts where id=?", (draft_id,),
-                    ).fetchone()
                     if current is None or current["revision"] != revision:
                         raise UploadError("Das Kapitelbild wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
                 if connection.execute(
@@ -649,11 +691,32 @@ class ChapterTeaserStore:
                     and state in ('queued','running') limit 1""", (draft_id,),
                 ).fetchone():
                     raise UploadError("Für dieses Kapitel läuft noch ein Verarbeitungsschritt.", 409)
+                if strategy != "masked":
+                    if current is None:
+                        raise UploadError("Der Kapitel-Entwurf fehlt.", 409)
+                    if character_ids is not None:
+                        try:
+                            supplied = [str(UUID(str(value))) for value in character_ids]
+                        except (TypeError, ValueError):
+                            raise UploadError("Bitte gültige Charakterreferenzen auswählen.") from None
+                        if len(supplied) > 4 or len(supplied) != len(set(supplied)):
+                            raise UploadError("Bitte höchstens vier unterschiedliche Charakterreferenzen auswählen.")
+                        if set(supplied) != set(json.loads(current["character_ids_json"])):
+                            raise UploadError(
+                                "Bitte die Charakterauswahl zuerst speichern und den Szenenplan aktualisieren.", 409,
+                            )
+                    self._validate_current_scene_plan(
+                        connection, current, current["scene_plan_json"], require_references=strategy == "planned_scene",
+                    )
+                    planned_payloads[draft_id] = {
+                        "operation": "scene" if regenerate else "optimize", "strategy": strategy,
+                        "scene_plan_json": current["scene_plan_json"],
+                    }
             if optimize or regenerate:
                 jobs = ReelJobStore(ReelStore(self.uploads))
                 for draft_id in normalized_drafts:
-                    payload = {"operation": "scene" if regenerate else "optimize"}
-                    if optimize and character_ids is not None:
+                    payload = planned_payloads.get(draft_id, {"operation": "scene" if regenerate else "optimize"})
+                    if strategy == "masked" and optimize and character_ids is not None:
                         payload["character_ids"] = character_ids
                     jobs._enqueue(connection, draft_id, "image", payload)
                     if regenerate:
@@ -669,9 +732,122 @@ class ChapterTeaserStore:
             )
             self._review_summary(connection, normalized_run, now)
 
+    def enqueue_simple_image(
+        self, book_id: str, run_id: str, draft_id: str, revision: int, **kwargs,
+    ):
+        """One chapter image action, with the same source/checkpoint and queue fences as review."""
+        book_id, run_id, draft_id = (str(UUID(str(value))) for value in (book_id, run_id, draft_id))
+        now = time.time()
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            ReelStore.schema(connection)
+            connection.execute("begin immediate")
+            self._editable_plan(connection, book_id, run_id, draft_id)
+            job = ReelJobStore(ReelStore(self.uploads))._enqueue_simple_image(
+                connection, draft_id, revision, **kwargs,
+            )
+            connection.execute(
+                """update local_chapter_teaser_plans set state='image_queued',manual_image_review=1,
+                error=null,updated_at=? where run_id=? and draft_id=?""", (now, run_id, draft_id),
+            )
+            self._review_summary(connection, run_id, now)
+            return job
+
+    def scene_plan_inputs(self, connection, draft) -> tuple[str, list[BookCharacter]]:
+        """Read current style and selected reference metadata inside the caller's transaction."""
+        columns = set(draft.keys())
+        art_direction = ManagementStore(self.uploads)._snapshot(
+            connection, draft["book_id"],
+        )["details"].image_prompt_base
+        try:
+            selected = json.loads(draft["character_ids_json"]) if "character_ids_json" in columns else []
+            if not isinstance(selected, list) or len(selected) > 4 or len(set(selected)) != len(selected):
+                raise ValueError("Invalid cast")
+            references = []
+            for character_id in selected:
+                if not ManagementStore.exists(connection, "local_book_characters"):
+                    raise ValueError("Missing cast")
+                row = connection.execute(
+                    "select * from local_book_characters where book_id=? and id=?",
+                    (draft["book_id"], character_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("Missing character")
+                references.append(BookCharacter.from_row(row))
+        except (TypeError, ValueError):
+            raise UploadError("Die gespeicherten Charakterreferenzen fehlen oder sind ungültig.", 409) from None
+        fingerprint = scene_plan_fingerprint(
+            quote=draft["quote_text"], image_prompt=draft["image_prompt"],
+            scene_direction=draft["scene_direction"] if "scene_direction" in columns else "",
+            art_direction=art_direction, characters=references,
+        )
+        return fingerprint, references
+
+    def _validate_current_scene_plan(self, connection, draft, plan_json: str, *, require_references: bool = False):
+        saved = ReelStore._validate_scene_plan(plan_json)
+        fingerprint, references = self.scene_plan_inputs(connection, draft)
+        if saved.fingerprint != fingerprint:
+            raise UploadError("Der Szenenplan ist veraltet. Bitte den Szenenplan aktualisieren.", 409)
+        if require_references and (not references or any(not reference.has_reference for reference in references)):
+            raise UploadError("Für die Charakteroptimierung bitte gespeicherte Charakterreferenzen auswählen.", 409)
+        try:
+            validate_reference_bindings(saved.plan, references)
+            compile_scene_plan(saved.plan)
+        except ValueError:
+            raise UploadError("Der Szenenplan passt nicht zur gespeicherten Charakterauswahl.", 409) from None
+        return saved
+
+    def check_scene_plan_inputs(
+        self, book_id: str, run_id: str, draft_id: str, revision: int, expected_fingerprint: str,
+    ) -> None:
+        """Read-only preflight immediately before an explicit planning request."""
+        if (type(revision) is not int or revision < 1
+                or not isinstance(expected_fingerprint, str) or not _is_sha256(expected_fingerprint)):
+            raise UploadError("Der Kapitel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+        if not self.uploads.db_path.is_file():
+            raise UploadError("Der Kapitel-Entwurf wurde nicht gefunden.", 404)
+        with closing(self.uploads._read_connection()) as connection:
+            connection.execute("begin")
+            self._editable_plan(connection, book_id, run_id, draft_id)
+            draft = connection.execute("select * from local_reel_drafts where id=?", (draft_id,)).fetchone()
+            if draft is None or draft["revision"] != revision:
+                raise UploadError("Der Kapitel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            fingerprint, _ = self.scene_plan_inputs(connection, draft)
+            if fingerprint != expected_fingerprint:
+                raise UploadError(
+                    "Die Szenenplan-Grundlagen wurden zwischenzeitlich geändert. Bitte neu laden.", 409,
+                )
+
+    def save_scene_plan(
+        self, book_id: str, run_id: str, draft_id: str, revision: int, plan_json: str,
+    ) -> ReelDraft:
+        """Commit one reviewed chapter plan against current book and reference metadata."""
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            ReelStore.schema(connection)
+            connection.execute("begin immediate")
+            plan = self._editable_plan(connection, book_id, run_id, draft_id)
+            draft = connection.execute("select * from local_reel_drafts where id=?", (draft_id,)).fetchone()
+            if draft is None or type(revision) is not int or draft["revision"] != revision:
+                raise UploadError("Der Kapitel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            saved = self._validate_current_scene_plan(connection, draft, plan_json)
+            now = time.time()
+            connection.execute(
+                """update local_reel_drafts set scene_plan_json=?,revision=revision+1,updated_at=?
+                where id=? and revision=?""", (plan_json, now, draft_id, revision),
+            )
+            suggestion = ChapterTeaserSuggestion.model_validate_json(plan["suggestion_json"])
+            connection.execute(
+                "update local_chapter_teaser_plans set suggestion_json=?,updated_at=? where run_id=? and draft_id=?",
+                (suggestion.model_copy(update={"scene_plan": saved.plan}).model_dump_json(), now, run_id, draft_id),
+            )
+            row = connection.execute("select * from local_reel_drafts where id=?", (draft_id,)).fetchone()
+        return ReelDraft.from_row(row)
+
     def save_prompt(
         self, book_id: str, run_id: str, draft_id: str, revision: int, *,
         image_prompt: str, teaser_text: str, video_prompt: str | None = None,
+        character_ids: list[str] | None = None, scene_direction: str | None = None,
     ) -> None:
         """Edit reviewed chapter content atomically; saving never starts generation."""
         image_prompt, teaser_text = image_prompt.strip(), teaser_text.strip()
@@ -685,6 +861,17 @@ class ChapterTeaserStore:
                 video_prompt = validate_video_prompt(video_prompt)
             except ValueError as exc:
                 raise UploadError(f"Der Videoprompt ist nicht verwendbar: {exc}") from None
+        if scene_direction is not None:
+            if not isinstance(scene_direction, str) or len(scene_direction) > 2000:
+                raise UploadError("Bitte eine Pose-/Requisiten-Vorgabe mit höchstens 2000 Zeichen angeben.")
+            scene_direction = scene_direction.strip()
+        if character_ids is not None:
+            try:
+                character_ids = [str(UUID(str(value))) for value in character_ids]
+            except (TypeError, ValueError):
+                raise UploadError("Bitte gültige Charakterreferenzen auswählen.") from None
+            if len(character_ids) > 4 or len(character_ids) != len(set(character_ids)):
+                raise UploadError("Bitte höchstens vier unterschiedliche Charakterreferenzen auswählen.")
         now = time.time()
         with closing(self.connection()) as connection, connection:
             self.schema(connection)
@@ -699,16 +886,36 @@ class ChapterTeaserStore:
             image_changed = image_prompt != draft["image_prompt"]
             video_changed = motion != draft["video_prompt"]
             text_changed = teaser_text != draft["caption_addition"]
-            if not (image_changed or video_changed or text_changed):
+            direction = draft["scene_direction"] if scene_direction is None else scene_direction
+            stored_cast = json.loads(draft["character_ids_json"])
+            cast = stored_cast if character_ids is None else character_ids
+            cast_changed = set(cast) != set(stored_cast)
+            if not cast_changed:
+                cast = stored_cast
+            direction_changed = direction != draft["scene_direction"]
+            if cast_changed:
+                for character_id in cast:
+                    if not ManagementStore.exists(connection, "local_book_characters"):
+                        raise UploadError("Die ausgewählten Charakterreferenzen fehlen.", 409)
+                    if not connection.execute(
+                        "select 1 from local_book_characters where book_id=? and id=?",
+                        (book_id, character_id),
+                    ).fetchone():
+                        raise UploadError("Bitte Charaktere aus diesem Buch auswählen.", 409)
+            content_changed = image_changed or video_changed or text_changed
+            scene_changed = image_changed or cast_changed or direction_changed
+            if not (content_changed or scene_changed):
                 return
             updated = suggestion.model_copy(update={
                 "image_prompt": image_prompt, "teaser_text": teaser_text, "video_prompt": motion,
+                "scene_plan": None if scene_changed else suggestion.scene_plan,
             })
             # Keep old artifact files recoverable, but never offer obsolete image
             # candidates or caption exports as the edited chapter's current result.
             connection.execute(
                 """update local_reel_drafts set image_prompt=?,video_prompt=?,caption_addition=?,
-                final_caption=?,revision=revision+1,
+                final_caption=?,scene_direction=?,character_ids_json=?,revision=revision+1,
+                scene_plan_json=case when ? then '' else scene_plan_json end,
                 image_stale=case when ? then 1 else image_stale end,
                 video_stale=case when ? then 1 else video_stale end,
                 scene_image_path=case when ? then null else scene_image_path end,
@@ -720,15 +927,19 @@ class ChapterTeaserStore:
                 state=case when ? then 'editing' else state end,error=null,updated_at=? where id=?""",
                 (image_prompt, motion, teaser_text,
                  compose_chapter_caption(teaser_text, json.loads(plan["context_json"])),
+                 direction, json.dumps(cast), scene_changed,
                  image_changed, image_changed or video_changed,
                  *([image_changed] * 6), image_changed or video_changed, now, draft_id),
             )
             connection.execute(
-                """update local_chapter_teaser_plans set suggestion_json=?,state='analyzed',
+                """update local_chapter_teaser_plans set suggestion_json=?,
+                state=case when ? then 'analyzed' else state end,
                 manual_image_review=case when ? then 1 else manual_image_review end,
-                text_video_path=null,text_video_sha256=null,error=null,updated_at=?
+                text_video_path=case when ? then null else text_video_path end,
+                text_video_sha256=case when ? then null else text_video_sha256 end,error=null,updated_at=?
                 where run_id=? and draft_id=?""",
-                (updated.model_dump_json(), image_changed, now, run_id, draft_id),
+                (updated.model_dump_json(), content_changed, image_changed,
+                 content_changed, content_changed, now, run_id, draft_id),
             )
             self._review_summary(connection, run_id, now)
 
@@ -969,7 +1180,7 @@ class ChapterTeaserStore:
             ).fetchone():
                 return []
             rows = connection.execute(
-                """select p.*,r.state as run_state from local_chapter_teaser_plans p
+                """select p.*,r.state as run_state,r.context_json from local_chapter_teaser_plans p
                 join local_chapter_teaser_runs r on r.id=p.run_id
                 where r.state in ('running','rendering')
                 and p.state in ('analyzed','image_queued','video_queued')

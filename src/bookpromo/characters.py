@@ -498,13 +498,16 @@ def character_scene_prompt(base_prompt: str, characters: Iterable[BookCharacter]
         )
         prompt += (
             "\n\nCHARACTER IDENTITIES — appearance references only. "
-            "The main scene prompt is authoritative for location, action, pose, clothing and "
-            "composition, including people lying down, sitting or interacting. Never replace its "
+            "The main scene prompt is authoritative for location, action, pose, artistic style and "
+            "composition, including people lying down, sitting or interacting. The character references "
+            "are authoritative for identity, body build, clothing and worn accessories. Never replace its "
             "scene with a standing portrait or a location, pose or action from these references. "
             "Only when the scene leaves horizontal placement unspecified, use this identity order: "
             + layout + ". Never exchange faces, ages, hair or other identity features. "
             "Use only each character's reference-image prompt for appearance, including explicitly "
-            "described non-human traits. Do not introduce extra people, objects, actions or locations.\n"
+            "described non-human traits. Ignore the references' rendering styles, backgrounds, poses "
+            "and held props; retain the scene's style, actions and held objects. "
+            "Do not introduce extra people, objects, actions or locations.\n"
             "BOOK-SPECIFIC CHARACTER LOCKS:\n" + "\n".join(entries)
         )
     if len(prompt) > 20_000:

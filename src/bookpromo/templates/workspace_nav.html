@@ -1,0 +1,8 @@
+<nav class="workspace-nav" aria-label="Bereiche dieses Buches">
+  <a href="{{ url_for('local_book', book_id=book.id) }}#overview" data-workspace-view="overview" {% if workspace_active == 'overview' %}aria-current="page"{% endif %}>Übersicht</a>
+  <a href="{{ url_for('local_book', book_id=book.id) }}#chapters" data-workspace-view="chapters" {% if workspace_active == 'content' %}aria-current="page"{% endif %}>Inhalt &amp; Zitate</a>
+  <a href="{{ url_for('book_settings', book_id=book.id) }}#profile" data-workspace-settings="profile" {% if workspace_active == 'profile' %}aria-current="page"{% endif %}>Kreativprofil</a>
+  <a href="{{ url_for('book_settings', book_id=book.id) }}#media" data-workspace-settings="media">Medien</a>
+  <a href="{{ url_for('book_teaser', book_id=book.id) }}" {% if workspace_active == 'production' %}aria-current="page"{% endif %}>Produktion</a>
+  <a href="{{ url_for('book_settings', book_id=book.id) }}#publishing" data-workspace-settings="publishing">Publishing</a>
+</nav>

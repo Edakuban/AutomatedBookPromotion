@@ -2,8 +2,21 @@
 {% block title %}Bucheinstellungen · {{ book.title }}{% endblock %}
 {% block content %}
   <p class="breadcrumb"><a href="{{ url_for('local_book', book_id=book.id) }}">← {{ book.title }}</a></p>
-  <h1>Bucheinstellungen</h1>
-  <p class="intro">Buchdaten und Vorgaben für die spätere Promotion. Gespeicherte Änderungen bleiben bei einer neuen KI-Analyse erhalten.</p>
+  <div class="page-heading">
+    <div><p class="eyebrow">{{ book.title }}</p><h1>Bucheinstellungen</h1></div>
+    <span class="badge">Kreativprofil &amp; Medien</span>
+  </div>
+  {% set workspace_active = 'profile' %}{% include 'workspace_nav.html' %}
+  <p class="intro">Buchdaten, Kreativprofil und Medien an einem Ort. Wähle einen Bereich; deine Eingaben bleiben beim Wechsel erhalten.</p>
+  <div data-settings-group>
+  <nav class="settings-nav" aria-label="Bereiche der Bucheinstellungen">
+    <a href="#book-data" data-settings-link>Buchdaten</a>
+    <a href="#profile" data-settings-link>KI-Profil</a>
+    <a href="#art-direction" data-settings-link>Art Direction</a>
+    <a href="#media" data-settings-link>Medien</a>
+    <a href="#characters" data-settings-link>Charaktere{% if characters %} · {{ characters | length }}{% endif %}</a>
+    <a href="#publishing" data-settings-link>Publishing</a>
+  </nav>
   {% if promotion_missing %}
     <p class="notice" role="status">Bucheinstellungen gespeichert. Die Promotion bleibt deaktiviert. Bitte zuerst: {{ promotion_missing | join(', ') }}.</p>
   {% elif saved %}<p class="notice" role="status">Bucheinstellungen gespeichert.</p>{% endif %}
@@ -15,18 +28,15 @@
   {% elif not management.manual %}
     <p class="notice">{% if management.suggestion_id %}Die Profilfelder sind mit dem aktuellen KI-Vorschlag vorbelegt.{% else %}Du kannst die Buchdaten schon vor der Analyse speichern. Den späteren KI-Vorschlag kannst du hier zur Bearbeitung übernehmen.{% endif %}</p>
   {% endif %}
-  <section class="panel next-settings" id="profile-generator"
+  <section class="panel next-settings" id="profile-generator" data-settings-section="profile"
            data-start-url="{{ url_for('start_profile', book_id=book.id) }}"
            data-status-url="{{ url_for('profile_status', book_id=book.id) }}"
            data-result-url="{{ url_for('profile_result', book_id=book.id) }}">
     <h2>Profil mit KI ausfüllen</h2>
     <p>Erstellt ausschließlich Vorschläge für die acht Profilfelder, mit je einem eigenen KI-Aufruf. Ein passender gespeicherter Buchkontext wird wiederverwendet. Fehlt er, wird er einmalig aus dem Buchtext vorbereitet. Kapitel und Zitate werden dabei nicht verändert.</p>
-    <p class="muted small">Verwendet den unten gewählten Text-KI-Provider. <a href="{{ url_for('local_book', book_id=book.id) }}#chapter-review">Kapitelaufteilung und Importhinweise prüfen</a>. Titel, Autor, Zieladresse und Promotion-Auswahl bearbeitest du selbst.</p>
-    <label>Text-KI für Profilvorschläge
-      <select data-profile-provider required>
-        {% for provider in text_ai_providers %}<option value="{{ provider.id }}">{{ provider.label }} · {{ provider.model }}</option>{% endfor %}
-      </select>
-    </label>
+    <p class="muted small">Verwendet die globale Text-KI. <a href="{{ url_for('local_book', book_id=book.id) }}#chapter-review">Kapitelaufteilung und Importhinweise prüfen</a>. Titel, Autor, Zieladresse und Promotion-Auswahl bearbeitest du selbst.</p>
+    <input type="hidden" data-profile-provider value="{{ global_ai().preferences.text_provider }}">
+    <p class="small muted">{{ global_ai().text_label }} · <a href="{{ url_for('settings') }}#ai">Global ändern</a></p>
     <p data-profile-status role="status">Profilstatus wird geladen …</p>
     <progress data-profile-progress aria-label="Profilanalyse läuft" hidden></progress>
     <div class="form-actions">
@@ -36,14 +46,18 @@
     <p class="muted small">Einsetzen ersetzt die acht Profilfelder im Formular. Erst „Bucheinstellungen speichern“ übernimmt sie dauerhaft. Fertige identische Analysen werden wiederverwendet; unterbrochene Analysen lassen sich fortsetzen.</p>
     <noscript><p>Zum Starten und Einsetzen der Vorschläge bitte JavaScript aktivieren.</p></noscript>
   </section>
-  <form method="post" action="{{ url_for('save_book_settings', book_id=book.id) }}" class="book-settings-form">
+  <form method="post" action="{{ url_for('save_book_settings', book_id=book.id) }}" class="book-settings-form" data-unsaved-form>
     <input type="hidden" name="revision" value="{{ management.revision }}">
     <input type="hidden" name="suggestion_id" value="{{ management.suggestion_id }}">
     <input type="hidden" name="profile_run_id" value="{{ profile_run_id | default('') }}">
-    <section class="panel settings-fields">
+    <section class="panel settings-fields" id="book-data" data-settings-section="book-data">
       <h2>Buchdaten</h2>
       <label>Titel <input name="title" value="{{ details.title }}" maxlength="240" required></label>
       <label>Autor <input name="author" value="{{ details.author }}" maxlength="200"></label>
+      <p class="muted small">Der Titel und Autor bleiben beim Einsetzen neuer KI-Profilvorschläge erhalten.</p>
+    </section>
+    <section class="panel next-settings settings-fields" id="publishing" data-settings-section="publishing">
+      <h2>Publishing &amp; Promotion</h2>
       <label>Zieladresse zum Buch <input name="target_url" type="url" value="{{ details.target_url }}" maxlength="2000" placeholder="https://…"></label>
       <label>Freigabemodus
         <select name="publication_mode">
@@ -54,7 +68,7 @@
       <label class="checkbox-label"><input name="promotion_enabled" type="checkbox" {% if details.promotion_enabled %}checked{% endif %}> Instagram-Carousel verwenden und für Promotion aktivieren</label>
       <p class="muted small">Buchdaten werden immer gespeichert. Die Promotion lässt sich erst mit Frontcover, Logo, Schlussseitentext und Buchtitel-Overlay aktivieren. Übertrage den fertigen Buchstand anschließend auf der Buchseite nach Supabase.</p>
     </section>
-    <section class="panel next-settings settings-fields">
+    <section class="panel next-settings settings-fields" id="profile" data-settings-section="profile">
       <h2>Buchprofil · intern, kann Spoiler enthalten</h2>
       <label>Genre <input name="genre" value="{{ details.genre }}" maxlength="200"></label>
       <label>Stimmung <input name="mood" value="{{ details.mood }}" maxlength="200"></label>
@@ -64,11 +78,14 @@
       <label>Spoilerhinweise · ein Hinweis pro Zeile <textarea name="spoilers" rows="4" maxlength="4000">{{ details.spoilers }}</textarea></label>
       <p class="muted small">Der interne Kontext ist für die Verarbeitung gedacht und kein öffentlicher Begleittext.</p>
     </section>
-    <section class="panel next-settings settings-fields">
-      <h2>Vorgaben für Bild und Begleittext</h2>
+    <section class="panel next-settings settings-fields" id="art-direction" data-settings-section="art-direction">
+      <h2>Art Direction &amp; Begleittext</h2>
       <label>Globale Art Direction / Bildstil <textarea name="image_prompt_base" rows="5" maxlength="4000" placeholder="Zum Beispiel: dark fantasy graphic novel, muted ember palette, dramatic chiaroscuro …">{{ details.image_prompt_base }}</textarea></label>
       <p class="muted small">Verbindlich für alle neu erzeugten Szenen- und Charakterbilder dieses Buches: Medium, Farbwelt, Licht, Textur und Atmosphäre. Konkrete Figuren, Orte und Handlungen stammen weiterhin aus der jeweiligen Szene.</p>
       <label>Caption-Vorgaben <textarea name="caption_guidelines" rows="5" maxlength="4000">{{ details.caption_guidelines }}</textarea></label>
+    </section>
+    <section class="panel next-settings settings-fields" id="media" data-settings-section="media">
+      <h2>Carousel &amp; Bild-Overlay</h2>
       <label>Text auf der Carousel-Schlussseite <textarea name="carousel_end_text" rows="4" maxlength="500" placeholder="Jetzt entdecken …">{{ details.carousel_end_text }}</textarea></label>
       <h3>Bild-Overlay</h3>
       <p class="muted small">Der Overlay-Titel wird links oben auf das fertige Bild gesetzt. Bleibt das Feld leer, wird der normale Buchtitel verwendet. Eigene Zeilenumbrüche werden beibehalten.</p>
@@ -83,10 +100,13 @@
         <label>Verlaufsfarbe unten <input name="carousel_background_bottom_color" type="color" value="{{ details.carousel_background_bottom_color }}"></label>
       </div>
       {% if overlay_preview %}<figure class="overlay-preview"><img src="{{ url_for('book_overlay', book_id=book.id) }}" alt="Vorschau des Buchtitel-Overlays"><figcaption>Transparente 4:5-Overlay-Vorschau · Kapitelname folgt später im Workflow rechts unten.</figcaption></figure>{% endif %}
-      <div class="form-actions"><button type="submit">Bucheinstellungen speichern</button><a href="{{ url_for('local_book', book_id=book.id) }}">Zurück zum Buch</a></div>
     </section>
+    <div class="form-actions settings-savebar">
+      <div><button type="submit">Bucheinstellungen speichern</button><p class="unsaved-status" data-unsaved-status role="status" hidden>Noch nicht gespeichert</p><p class="muted small">Speichert die Eingaben aus allen Bereichen gemeinsam.</p></div>
+      <a href="{{ url_for('local_book', book_id=book.id) }}">Zurück zum Buch</a>
+    </div>
   </form>
-  <section class="panel next-settings settings-fields">
+  <section class="panel next-settings settings-fields" id="media-assets" data-settings-section="media">
     <h2>Carousel-Schlussseite</h2>
     <p>Aus dem Frontcover erzeugt die Anwendung einen perspektivischen 2.5D-Buch-Mockup. Cover und Logo bleiben lokal; die Vorschau kombiniert sie mit dem gespeicherten Schlussseitentext und Buchtitel-Overlay.</p>
     <div class="asset-grid">
@@ -131,9 +151,9 @@
     {% endif %}
   </section>
   {% if management.manual and management.suggestion_id %}
-    <p class="page-note"><a href="{{ url_for('book_settings', book_id=book.id) }}?preview=ai">Aktuellen KI-Profilvorschlag zur Bearbeitung laden</a> · Verlässt dieses Formular; noch nicht gespeicherte Eingaben gehen verloren. Der gespeicherte Stand bleibt bis zum erneuten Speichern erhalten.</p>
+    <p class="page-note" data-settings-section="profile"><a href="{{ url_for('book_settings', book_id=book.id) }}?preview=ai">Aktuellen KI-Profilvorschlag zur Bearbeitung laden</a> · Verlässt dieses Formular; noch nicht gespeicherte Eingaben gehen verloren. Der gespeicherte Stand bleibt bis zum erneuten Speichern erhalten.</p>
   {% endif %}
-  <section class="panel next-settings settings-fields" id="characters"
+  <section class="panel next-settings settings-fields" id="characters" data-settings-section="characters"
            data-character-analysis
            data-start-url="{{ url_for('start_character_analysis', book_id=book.id) }}"
            data-status-url="{{ url_for('character_analysis_status', book_id=book.id) }}">
@@ -154,7 +174,7 @@
             {% else %}
               <div class="character-placeholder">Noch kein Referenzbild</div>
             {% endif %}
-            <form method="post" action="{{ url_for('save_book_character', book_id=book.id, character_id=character.id) }}">
+            <form method="post" action="{{ url_for('save_book_character', book_id=book.id, character_id=character.id) }}" data-unsaved-form>
               <input type="hidden" name="revision" value="{{ character.revision }}">
               <label>Name <input name="name" value="{{ character.name }}" maxlength="160" required></label>
               <label>Aliasse · mit Komma trennen <input name="aliases" value="{{ character.aliases | join(', ') }}" maxlength="1200"></label>
@@ -181,11 +201,8 @@
     {% else %}
       <p class="muted">Noch keine Charakterprofile vorhanden.</p>
       <div class="character-analysis-actions">
-        <label>Text-KI für Charakteranalyse
-          <select data-character-analysis-provider required>
-            {% for provider in text_ai_providers %}<option value="{{ provider.id }}">{{ provider.label }} · {{ provider.model }}</option>{% endfor %}
-          </select>
-        </label>
+        <input type="hidden" data-character-analysis-provider value="{{ global_ai().preferences.text_provider }}">
+        <p class="small muted">{{ global_ai().text_label }} · <a href="{{ url_for('settings') }}#ai">Global ändern</a></p>
         <button type="button" data-character-analysis-start>Charaktere aus Buch analysieren</button>
         <progress data-character-analysis-progress aria-label="Charakteranalyse läuft" hidden></progress>
         <p class="small muted" data-character-analysis-status role="status">Charakteranalyse-Status wird geladen …</p>
@@ -193,7 +210,7 @@
     {% endif %}
     <details class="character-create">
       <summary>Charakter manuell hinzufügen</summary>
-      <form method="post" action="{{ url_for('create_book_character', book_id=book.id) }}">
+      <form method="post" action="{{ url_for('create_book_character', book_id=book.id) }}" data-unsaved-form>
         <label>Name <input name="name" maxlength="160" required></label>
         <label>Beschreibung in diesem Buch <textarea name="description" rows="4" maxlength="5000"></textarea></label>
         <label>Referenzbild-Prompt <textarea name="image_prompt" rows="5" maxlength="6000"></textarea></label>
@@ -201,4 +218,5 @@
       </form>
     </details>
   </section>
+  </div>
 {% endblock %}

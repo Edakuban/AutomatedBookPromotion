@@ -96,7 +96,10 @@ def test_busy_run_only_locks_actions_for_its_own_chapter(setup):
     row = html.split(f'data-page-position-anchor="chapter-{second["chapter_id"]}"', 1)[1].split("</tr>", 1)[0]
     for action in ("image/regenerate", "image/optimize"):
         form = row.split(f'/teaser/chapters/{second["chapter_id"]}/{action}', 1)[1].split("</form>", 1)[0]
-        assert "disabled" not in form
+        # An unavailable plan may disable planned rendering independently of
+        # another chapter's job. The legacy methods must remain available.
+        assert 'data-legacy-ready="true"' in form
+        assert '<option value="masked"' in form
     video = row.split(f'/teaser/chapters/{second["chapter_id"]}/video/start', 1)[1].split("</form>", 1)[0]
     assert "disabled" not in video
     assert "vorgemerkt oder läuft gerade" not in row
@@ -105,6 +108,8 @@ def test_busy_run_only_locks_actions_for_its_own_chapter(setup):
     for action in ("image/regenerate", "image/optimize", "video/start"):
         form = busy_row.split(f'/teaser/chapters/{first["chapter_id"]}/{action}', 1)[1].split("</form>", 1)[0]
         assert "disabled" in form
+        if action.startswith("image/"):
+            assert 'data-legacy-ready="false"' in form
 
 
 def test_failed_run_allows_valid_existing_chapter_image_to_be_repaired(setup):

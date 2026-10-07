@@ -4,11 +4,38 @@ from uuid import uuid4
 
 import httpx
 from PIL import Image
+from io import BytesIO
+import pytest
 from pathlib import Path
 
 from bookpromo.carousel_sources import carousel_source_path, prepare_carousel_source
 from bookpromo.config import Settings
 from bookpromo.r2 import R2Client
+from bookpromo.uploads import UploadError
+
+
+def test_crop_focus_matches_top_bottom_and_landscape(tmp_path):
+    for size, axis in [((90, 160), "vertical"), ((160, 90), "horizontal")]:
+        source = tmp_path / f"{axis}.png"
+        image = Image.new("RGB", size, "blue")
+        image.paste("red", (0, 0, size[0] if axis == "vertical" else 30,
+                            30 if axis == "vertical" else size[1]))
+        image.save(source)
+        start = prepare_carousel_source(source, (0, 0))
+        end = prepare_carousel_source(source, (1, 1))
+        assert start.data != end.data
+        with Image.open(BytesIO(start.data)) as framed:
+            assert framed.size == (1080, 1350)
+            assert framed.getpixel((10, 10))[0] > 240
+        with Image.open(BytesIO(end.data)) as framed:
+            assert framed.getpixel((10, 10))[2] > 240
+        assert prepare_carousel_source(source).data == prepare_carousel_source(source, (.5, .5)).data
+
+
+@pytest.mark.parametrize("focus", [(-.1, .5), (.5, 1.1), (float('nan'), .5), (.5, float('inf'))])
+def test_crop_rejects_invalid_focus(tmp_path, focus):
+    with pytest.raises(UploadError):
+        prepare_carousel_source(tmp_path / "unused.png", focus)
 
 
 def test_prepare_carousel_source_is_deterministic_and_exact(tmp_path):

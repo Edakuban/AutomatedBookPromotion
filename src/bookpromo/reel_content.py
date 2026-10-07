@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .openwebui import OpenWebUIClient
 from .scene_context import build_scene_context
+from .scene_direction import generate_scene_direction
+from .scene_plan import SCENE_PLAN_INSTRUCTION, ScenePlan, describe_scene_direction, scene_plan_data
 
 
 class _StrictModel(BaseModel):
@@ -18,12 +21,15 @@ class _StrictModel(BaseModel):
 class ReelCopySuggestion(_StrictModel):
     addition: str = Field(min_length=1, max_length=800)
     image_prompt: str = Field(min_length=1, max_length=4000)
+    scene_plan: ScenePlan
 
 
 class ReelCopy(_StrictModel):
     addition: str = Field(min_length=1, max_length=800)
     image_prompt: str = Field(min_length=1, max_length=4000)
     caption: str = Field(min_length=1, max_length=2200)
+    scene_direction: str = Field(default="", max_length=2000)
+    scene_plan: ScenePlan | None = None
 
 
 class ReelMotionSuggestion(_StrictModel):
@@ -52,7 +58,11 @@ keine unbelegten Gesichts-, Körper- oder Kleidungsmerkmale.
 
 image_prompt beschreibt ein 9:16-Hochformat im extrahierten Medium und Rendering-Stil der globalen
 Art Direction. Ist dort kein Stil angegeben, verwende eine fotorealistische filmische Darstellung. Keine sichtbare
-Schrift, Buchstaben, Logos oder Wasserzeichen. Antworte ausschließlich im geforderten JSON-Format."""
+Schrift, Buchstaben, Logos oder Wasserzeichen. Erstelle zuerst scene_plan als eindeutigen,
+strukturierten Plan. image_prompt muss ausschließlich dieselbe festgelegte Szene beschreiben;
+Figuren, Körperhaltung, Anzahl der Gegenstände und Kontakte müssen dem Plan entsprechen.
+Antworte ausschließlich im geforderten JSON-Format.
+""" + SCENE_PLAN_INSTRUCTION
 
 
 MOTION_SYSTEM = """Create one concise image-to-video motion prompt for a book-promotion reel.
@@ -115,6 +125,8 @@ async def generate_reel_copy(
     book_profile: dict,
     context_before: str = "",
     context_after: str = "",
+    characters: Iterable = (),
+    scene_direction: str = "",
 ) -> ReelCopy:
     scene_context = build_scene_context(
         focus_text=quote,
@@ -123,11 +135,21 @@ async def generate_reel_copy(
         book_profile=book_profile,
         source_kind="quote",
     )
+    labels = scene_plan_data(
+        quote=quote, context_before=context_before, context_after=context_after,
+        characters=characters,
+    ).get("identity_labels")
+    if labels:
+        scene_context["identity_labels"] = labels
+    if scene_direction:
+        scene_context["manual_direction"] = scene_plan_data(
+            quote=quote, scene_direction=scene_direction,
+        )["manual_direction"]
     suggestion = await client.complete_json(
         COPY_SYSTEM,
         json.dumps(scene_context, ensure_ascii=False),
         ReelCopySuggestion,
-        max_tokens=1800,
+        max_tokens=4096,
     )
     caption = compose_caption(
         quote=quote,
@@ -136,7 +158,8 @@ async def generate_reel_copy(
         author=str(book_profile.get("author") or ""),
         target_url=str(book_profile.get("target_url") or ""),
     )
-    return ReelCopy(**suggestion.model_dump(), caption=caption)
+    return ReelCopy(**suggestion.model_dump(), caption=caption,
+                    scene_direction=describe_scene_direction(suggestion.scene_plan))
 
 
 async def generate_motion_prompt(

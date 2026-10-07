@@ -7,6 +7,8 @@
   <link rel="icon" href="{{ url_for('static', path='favicon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
   <script src="{{ url_for('static', path='page_position.js') }}" defer></script>
+  <script src="{{ url_for('static', path='unsaved_changes.js') }}" defer></script>
+  <script src="{{ url_for('static', path='carousel_crop.js') }}" defer></script>
   <script src="{{ url_for('static', path='app.js') }}" defer></script>
 </head>
 <body>
@@ -15,7 +17,7 @@
     <div class="header-inner">
       <a class="brand" href="{{ url_for('books') }}">Book Promotion</a>
       <nav aria-label="Hauptnavigation">
-        <a href="{{ url_for('books') }}" {% if active_page == 'books' %}aria-current="page"{% endif %}>Bücher</a>
+        <a href="{{ url_for('books') }}" {% if active_page == 'books' %}aria-current="page"{% endif %}>Bibliothek</a>
         <a href="{{ url_for('settings') }}" {% if active_page == 'settings' %}aria-current="page"{% endif %}>Einstellungen</a>
       </nav>
       <span class="local-label">Lokale Anwendung</span>
@@ -26,7 +28,7 @@
   </main>
   <footer class="container site-footer">
     <span>Book Promotion</span>
-    <span>Analysetool · Schritt 9 von 9 · Lokale Ablage</span>
+    <span>Bücher · Zitate · Medien · Veröffentlichung</span>
   </footer>
 </body>
 </html>

@@ -9,7 +9,9 @@ import wave
 import pytest
 from PIL import Image
 
+from bookpromo.characters import CharacterStore
 from bookpromo.reels import REEL_LEASE_SECONDS, ReelJobStore, ReelStore
+from bookpromo.scene_plan import ScenePlan, encode_saved_plan
 from bookpromo.uploads import LocalUploadStore, UploadError
 
 
@@ -51,6 +53,426 @@ def setup(tmp_path):
 
 def new_draft(reels, book_id):
     return reels.get_or_create_draft(book_id, "b" * 64, "run-1", "quote-1", "Wörtliches Zitat")
+
+
+def saved_scene_plan(fingerprint="a" * 64):
+    return encode_saved_plan(ScenePlan(
+        setting="Library", composition="Wide shot", art_direction="Watercolor",
+        actors=[{"name": "Aster", "pose": "Leans towards window", "free_parts": ["left paw"]}],
+    ), fingerprint)
+
+
+def test_scene_plan_save_is_durable_fenced_and_preserves_reviewed_media(setup):
+    uploads, _, reels, jobs = setup
+    before = current_scene(setup)
+    saved = saved_scene_plan()
+    after = reels.save_scene_plan(before.id, before.revision, saved)
+    assert after.scene_plan_json == saved
+    assert after.revision == before.revision + 1
+    assert ReelStore(uploads).get_draft(after.id) == after
+    for key in ("state", "error", "image_prompt", "scene_direction", "scene_image_path", "scene_image_sha256",
+                "selected_image_source", "selected_image_path", "selected_image_sha256",
+                "selected_video_path", "selected_video_sha256", "image_stale", "video_stale"):
+        assert getattr(after, key) == getattr(before, key)
+    original_jobs = jobs.status(after.id)
+    with pytest.raises(UploadError) as conflict:
+        reels.save_scene_plan(before.id, before.revision, saved_scene_plan("b" * 64))
+    assert conflict.value.status == 409
+    assert reels.get_draft(before.id) == after
+    assert jobs.status(after.id) == original_jobs
+
+
+def test_scene_plan_seed_is_only_used_for_new_drafts(setup):
+    _, book_id, reels, _ = setup
+    original = reels.get_or_create_draft(book_id, "b" * 64, "run-1", "quote-1", "Zitat",
+                                          scene_plan_json=saved_scene_plan())
+    assert original.scene_plan_json == saved_scene_plan()
+    existing = reels.get_or_create_draft(book_id, "b" * 64, "run-1", "quote-1", "Zitat",
+                                          scene_plan_json=saved_scene_plan("b" * 64))
+    assert existing == original
+
+
+@pytest.mark.parametrize("running", [False, True], ids=["queued", "running"])
+def test_scene_plan_save_rejects_jobs_enqueued_during_plan_generation(setup, running):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    before = reels.save_scene_plan(before.id, before.revision, saved_scene_plan())
+    jobs.enqueue(before.id, "image")
+    if running:
+        jobs.claim()
+    before = reels.get_draft(before.id)
+    original_jobs = jobs.status(before.id)
+    with pytest.raises(UploadError, match="Abschluss abwarten") as conflict:
+        reels.save_scene_plan(before.id, before.revision, saved_scene_plan("b" * 64))
+    assert conflict.value.status == 409
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == original_jobs
+
+
+@pytest.mark.parametrize("field", ["image_prompt", "scene_direction", "character_ids"])
+@pytest.mark.parametrize("changed", [False, True])
+def test_scene_plan_invalidates_only_changed_scene_inputs(setup, field, changed):
+    uploads, book_id, reels, _ = setup
+    before = current_scene(setup)
+    before = reels.save_scene_plan(before.id, before.revision, saved_scene_plan())
+    if field == "character_ids":
+        value = [CharacterStore(uploads).create(book_id, name="Aster").id] if changed else []
+    else:
+        value = "Changed input" if changed else getattr(before, field)
+    after = reels.update_draft(before.id, before.revision, **{field: value})
+    assert after.scene_plan_json == ("" if changed else before.scene_plan_json)
+
+
+def test_scene_plan_survives_caption_video_and_duration_edits(setup):
+    _, _, reels, _ = setup
+    before = current_scene(setup)
+    before = reels.save_scene_plan(before.id, before.revision, saved_scene_plan())
+    after = reels.update_draft(before.id, before.revision, final_caption="A new caption",
+                              video_prompt="Camera pans", duration_ms=12_000)
+    assert after.scene_plan_json == before.scene_plan_json
+
+
+def test_planned_scene_enqueue_snapshots_saved_plan_without_changing_media_or_revision(setup):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    before = reels.save_scene_plan(before.id, before.revision, saved_scene_plan())
+    job = jobs.enqueue_planned_scene(before.id, before.revision, expected_fingerprint="a" * 64)
+    assert job.input_revision == before.revision
+    assert job.payload == {"operation": "optimize", "strategy": "planned_scene",
+                           "scene_plan_json": before.scene_plan_json}
+    assert reels.get_draft(before.id) == before
+
+
+@pytest.mark.parametrize("failure", ["revision", "fingerprint", "busy", "blank", "malformed", "invalid-inventory"])
+def test_planned_scene_enqueue_rejects_invalid_or_stale_plan_atomically(setup, failure):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    before = reels.save_scene_plan(before.id, before.revision, saved_scene_plan())
+    revision, fingerprint = before.revision, "a" * 64
+    if failure == "revision":
+        revision -= 1
+    elif failure == "fingerprint":
+        fingerprint = "b" * 64
+    elif failure == "busy":
+        jobs.enqueue(before.id, "prompt")
+    else:
+        corrupt = {"blank": "", "malformed": "{bad-json",
+                   "invalid-inventory": before.scene_plan_json.replace(
+                       '"contacts":[]',
+                       '"contacts":[{"object_id":"missing","part":"left paw","action":"holds"}]',
+                   )}[failure]
+        with reels.connection() as connection, connection:
+            connection.execute("update local_reel_drafts set scene_plan_json=? where id=?", (corrupt, before.id))
+    before = reels.get_draft(before.id)
+    original_jobs = jobs.status(before.id)
+    with pytest.raises(UploadError):
+        jobs.enqueue_planned_scene(before.id, revision, expected_fingerprint=fingerprint)
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == original_jobs
+
+
+def test_scene_plan_reads_legacy_rows_without_a_read_migration(setup):
+    _, book_id, reels, _ = setup
+    before = new_draft(reels, book_id)
+    assert before.scene_plan_json == ""
+    with reels.connection() as connection, connection:
+        connection.execute("alter table local_reel_drafts drop column scene_plan_json")
+    assert reels.get_draft(before.id) == before
+    assert reels.find_draft(book_id, "b" * 64, "run-1") == before
+    assert reels.list_drafts(book_id) == [before]
+    with reels.connection() as connection:
+        assert "scene_plan_json" not in {
+            row[1] for row in connection.execute("pragma table_info(local_reel_drafts)")
+        }
+    after = reels.update_draft(before.id, before.revision, final_caption="A caption")
+    assert after.scene_plan_json == ""
+    with reels.connection() as connection, connection:
+        ReelStore.schema(connection)
+        ReelStore.schema(connection)
+        assert "scene_plan_json" in {
+            row[1] for row in connection.execute("pragma table_info(local_reel_drafts)")
+        }
+
+
+@pytest.mark.parametrize("invalid", [None, 17, [], {}, "", "x" * 65537, "ü" * 32769],
+                         ids=["none", "number", "list", "mapping", "blank", "oversized-ascii", "oversized-utf8"])
+def test_scene_plan_save_rejects_missing_nontext_or_oversized_plan_without_mutation(setup, invalid):
+    _, book_id, reels, jobs = setup
+    before = new_draft(reels, book_id)
+    with pytest.raises(UploadError):
+        reels.save_scene_plan(before.id, before.revision, invalid)
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == []
+
+
+def test_scene_direction_seed_is_durable_and_never_overwrites_an_existing_draft(setup):
+    uploads, book_id, reels, _ = setup
+    seeded = reels.get_or_create_draft(book_id, "b" * 64, "run-1", "quote-1", "Zitat",
+                                      scene_direction="  The fox leaps over a stream; no held props. \n")
+    assert seeded.scene_direction == "The fox leaps over a stream; no held props."
+    assert ReelStore(uploads).get_draft(seeded.id) == seeded
+    edited = reels.update_draft(seeded.id, seeded.revision, scene_direction="Manual pose correction")
+    existing = reels.get_or_create_draft(book_id, "b" * 64, "run-1", "quote-1", "Zitat",
+                                        scene_direction="A different AI suggestion")
+    assert existing == edited
+    assert existing.scene_direction == "Manual pose correction"
+
+
+def test_scene_direction_reads_legacy_rows_without_migration_until_next_write(setup):
+    uploads, book_id, reels, _ = setup
+    original = new_draft(reels, book_id)
+    with reels.connection() as connection, connection:
+        connection.execute("alter table local_reel_drafts drop column scene_direction")
+    assert reels.get_draft(original.id).scene_direction == ""
+    assert reels.find_draft(book_id, "b" * 64, "run-1").scene_direction == ""
+    assert reels.list_drafts(book_id)[0].scene_direction == ""
+    with reels.connection() as connection:
+        assert "scene_direction" not in {row[1] for row in connection.execute("pragma table_info(local_reel_drafts)")}
+    # Additive migration is idempotent and does not replace old rows or seed them implicitly.
+    existing = reels.get_or_create_draft(book_id, "b" * 64, "run-1", "quote-1", "Zitat",
+                                        scene_direction="New analysis suggestion")
+    assert existing == original
+    with reels.connection() as connection, connection:
+        ReelStore.schema(connection)
+        ReelStore.schema(connection)
+        columns = {row[1] for row in connection.execute("pragma table_info(local_reel_drafts)")}
+    assert "scene_direction" in columns
+    updated = reels.update_draft(existing.id, existing.revision, scene_direction="Saved after migration")
+    assert ReelStore(uploads).get_draft(existing.id) == updated
+
+
+@pytest.mark.parametrize("invalid", [None, 17, [], {}, "x" * 2001, " " * 2001])
+def test_scene_direction_validation_rejects_invalid_seeds_and_updates_without_mutation(setup, invalid):
+    _, book_id, reels, _ = setup
+    with pytest.raises(UploadError, match="2000"):
+        reels.get_or_create_draft(book_id, "b" * 64, "run-1", "quote-1", "Zitat", scene_direction=invalid)
+    assert reels.list_drafts(book_id) == []
+    before = new_draft(reels, book_id)
+    with pytest.raises(UploadError, match="2000"):
+        reels.update_draft(before.id, before.revision, scene_direction=invalid)
+    assert reels.get_draft(before.id) == before
+
+
+def test_scene_direction_updates_are_fenced_but_do_not_invalidate_existing_media(setup):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    track, _ = reels.save_audio(book_id, wav_bytes(20), "song.wav")
+    draft = reels.update_draft(draft.id, draft.revision, image_prompt="A watercolor scene",
+                              video_prompt="Camera pans gently", final_caption="Zitat mit Begleittext",
+                              audio_track_id=track.id, audio_start_ms=0)
+    image_path, image_hash = reels.save_artifact(draft.id, "image", png_bytes(), "scene.png")
+    jobs.enqueue(draft.id, "image")
+    jobs.finish(jobs.claim(), result={"path": image_path, "sha256": image_hash})
+    video_path, video_hash = reels.save_artifact(draft.id, "video",
+                                               BytesIO(b"\x00\x00\x00\x18ftypisomvideo"), "reel.mp4")
+    jobs.enqueue(draft.id, "video")
+    jobs.finish(jobs.claim(), result={"path": video_path, "sha256": video_hash})
+    before = reels.get_draft(draft.id)
+    assert not before.image_stale and not before.video_stale
+    updated = reels.update_draft(before.id, before.revision, scene_direction="  Both paws forward.  ")
+    assert updated.scene_direction == "Both paws forward."
+    assert updated.revision == before.revision + 1
+    for key in ("image_prompt", "video_prompt", "scene_image_path", "scene_image_sha256",
+                "selected_image_source", "selected_image_path", "selected_image_sha256",
+                "selected_video_path", "selected_video_sha256", "image_stale", "video_stale"):
+        assert getattr(updated, key) == getattr(before, key)
+    with pytest.raises(UploadError) as conflict:
+        reels.update_draft(before.id, before.revision, scene_direction="Obsolete edit")
+    assert conflict.value.status == 409
+    cleared = reels.update_draft(updated.id, updated.revision, scene_direction=" \n ")
+    assert cleared.scene_direction == ""
+    boundary = reels.update_draft(cleared.id, cleared.revision, scene_direction="x" * 2000)
+    assert len(boundary.scene_direction) == 2000
+
+
+@pytest.mark.parametrize("existing", ["", "User-selected pose"])
+@pytest.mark.parametrize("result_direction", [None, "  Fresh AI pose  "])
+def test_prompt_completion_only_fills_blank_scene_direction_and_supports_legacy_results(setup, existing, result_direction):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    if existing:
+        draft = reels.update_draft(draft.id, draft.revision, scene_direction=existing)
+    jobs.enqueue(draft.id, "prompt")
+    job = jobs.claim()
+    result = {"image_prompt": "A forest scene"}
+    if result_direction is not None:
+        result["scene_direction"] = result_direction
+    assert jobs.finish(job, result=result)
+    after = reels.get_draft(draft.id)
+    assert after.scene_direction == (existing or (result_direction or "").strip())
+    assert after.image_prompt == "A forest scene"
+
+
+@pytest.mark.parametrize("invalid", [None, 17, [], "x" * 2001])
+def test_invalid_prompt_scene_direction_cannot_partially_commit_caption_or_pose(setup, invalid):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    jobs.enqueue(draft.id, "prompt")
+    job = jobs.claim()
+    before = reels.get_draft(draft.id)
+    with pytest.raises(ValueError, match="2000"):
+        jobs.finish(job, result={"scene_direction": invalid, "image_prompt": "Must not commit"})
+    assert reels.get_draft(draft.id) == before
+    assert jobs.status(draft.id)[0]["state"] == "running"
+
+
+def test_scene_direction_user_edit_fences_running_prompt_result(setup):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    jobs.enqueue(draft.id, "prompt")
+    job = jobs.claim()
+    edited = reels.update_draft(draft.id, draft.revision, scene_direction="User correction during AI run")
+    assert jobs.finish(job, result={"scene_direction": "Late AI correction", "image_prompt": "Late scene"})
+    assert reels.get_draft(draft.id) == edited
+    assert jobs.status(draft.id)[0]["state"] == "stale"
+
+
+def current_scene(setup, direction="Saved pose"):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    draft = reels.update_draft(draft.id, draft.revision, image_prompt="A cinematic forest scene",
+                              scene_direction=direction)
+    path, digest = reels.save_artifact(draft.id, "image", png_bytes(), "scene.png")
+    jobs.enqueue(draft.id, "image")
+    jobs.finish(jobs.claim(), result={"path": path, "sha256": digest})
+    return reels.get_draft(draft.id)
+
+
+@pytest.mark.parametrize("direction,expected,changed", [
+    (None, "Saved pose", False), ("  Saved pose  ", "Saved pose", False),
+    ("  New pose  ", "New pose", True), ("", "", True),
+])
+def test_atomic_direction_enqueue_snapshots_saved_direction_and_preserves_media(setup, direction, expected, changed):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    payload = {"operation": "optimize", "strategy": "reference_scene", "scene_direction": "Not canonical"}
+    job = jobs.enqueue_with_direction(before.id, before.revision, payload, scene_direction=direction)
+    after = reels.get_draft(before.id)
+    assert after.scene_direction == expected
+    assert after.revision == before.revision + int(changed)
+    assert job.input_revision == after.revision
+    assert job.payload.get("scene_direction", "") == expected
+    assert payload["scene_direction"] == "Not canonical"  # Caller dictionary remains unchanged.
+    for key in ("image_prompt", "video_prompt", "scene_image_path", "scene_image_sha256",
+                "selected_image_source", "selected_image_path", "selected_image_sha256",
+                "selected_video_path", "selected_video_sha256", "image_stale", "video_stale"):
+        assert getattr(after, key) == getattr(before, key)
+
+
+@pytest.mark.parametrize("direction", [None, ""])
+def test_atomic_masked_enqueue_preserves_saved_direction_and_legacy_payload(setup, direction):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    job = jobs.enqueue_with_direction(before.id, before.revision, {"operation": "optimize"},
+                                      scene_direction=direction)
+    assert job.payload == {"operation": "optimize"}
+    assert job.input_revision == before.revision
+    assert reels.get_draft(before.id) == before
+
+
+@pytest.mark.parametrize("invalid_revision", [True, "4", None, 0, -1, 1])
+def test_atomic_direction_enqueue_rejects_invalid_or_old_revisions(setup, invalid_revision):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    original_jobs = jobs.status(before.id)
+    with pytest.raises(UploadError) as conflict:
+        jobs.enqueue_with_direction(before.id, invalid_revision,
+                                    {"operation": "optimize", "strategy": "reference_scene"},
+                                    scene_direction="Must not save")
+    assert conflict.value.status == 409
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == original_jobs
+
+
+@pytest.mark.parametrize("active_kind,running", [("prompt", False), ("image", False), ("prompt", True)])
+def test_atomic_direction_enqueue_rejects_any_active_draft_job(setup, active_kind, running):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    jobs.enqueue(before.id, active_kind)
+    if running:
+        assert jobs.claim()
+    before = reels.get_draft(before.id)
+    original_jobs = jobs.status(before.id)
+    with pytest.raises(UploadError) as conflict:
+        jobs.enqueue_with_direction(before.id, before.revision,
+                                    {"operation": "optimize", "strategy": "reference_scene"},
+                                    scene_direction="Must not save while busy")
+    assert conflict.value.status == 409
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == original_jobs
+
+
+@pytest.mark.parametrize("payload", [
+    {"operation": "optimize", "strategy": "reference_scene", "unserializable": {1}},
+    {"operation": "optimize", "strategy": "reference_scene", "oversized": "x" * 70000},
+    {"operation": "optimize", "strategy": "reference_scene", "character_ids": ["invalid"]},
+])
+def test_atomic_direction_enqueue_rolls_back_direction_if_queue_validation_fails(setup, payload):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    original_jobs = jobs.status(before.id)
+    with pytest.raises((UploadError, ValueError)):
+        jobs.enqueue_with_direction(before.id, before.revision, payload, scene_direction="Must roll back")
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == original_jobs
+
+
+def test_atomic_direction_enqueue_rolls_back_when_current_scene_is_missing(setup):
+    _, book_id, reels, jobs = setup
+    before = new_draft(reels, book_id)
+    before = reels.update_draft(before.id, before.revision, image_prompt="Scene without an existing image")
+    with pytest.raises(UploadError) as conflict:
+        jobs.enqueue_with_direction(before.id, before.revision,
+                                    {"operation": "optimize", "strategy": "reference_scene"},
+                                    scene_direction="Must roll back with no scene")
+    assert conflict.value.status == 409
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == []
+
+
+@pytest.mark.parametrize("payload,direction", [
+    ({"operation": "scene"}, "New pose"),
+    ({"operation": "optimize", "strategy": "unknown"}, "New pose"),
+    ({"operation": "optimize", "strategy": []}, "New pose"),
+    ({"operation": "optimize", "strategy": "masked"}, "Forbidden pose"),
+    ({"operation": "optimize", "strategy": "reference_scene"}, 17),
+    ({"operation": "optimize", "strategy": "reference_scene"}, "x" * 2001),
+])
+def test_atomic_direction_enqueue_rejects_invalid_inputs_without_mutation(setup, payload, direction):
+    _, _, reels, jobs = setup
+    before = current_scene(setup)
+    original_jobs = jobs.status(before.id)
+    with pytest.raises(UploadError):
+        jobs.enqueue_with_direction(before.id, before.revision, payload, scene_direction=direction)
+    assert reels.get_draft(before.id) == before
+    assert jobs.status(before.id) == original_jobs
+
+
+def test_local_carousel_crop_is_image_scoped_fenced_and_does_not_change_reels(setup):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    assert reels.carousel_crop(draft) == (.5, .5, 0)
+    draft = reels.save_uploaded_image(draft.id, draft.revision, png_bytes(), "source.png")
+    draft = reels.select_image(draft.id, draft.revision, "upload")
+    reels.save_carousel_crop(draft.id, draft.revision, draft.selected_image_sha256, 0, .2, .9)
+    assert reels.get_draft(draft.id) == draft
+    assert jobs.status(draft.id) == []
+    assert ReelStore(reels.uploads).carousel_crop(draft) == (.2, .9, 1)
+    with pytest.raises(UploadError) as conflict:
+        reels.save_carousel_crop(draft.id, draft.revision, draft.selected_image_sha256, 0, .3, .7)
+    assert conflict.value.status == 409
+    with pytest.raises(UploadError):
+        reels.save_carousel_crop(draft.id, draft.revision - 1, draft.selected_image_sha256, 1, .5, .5)
+    with pytest.raises(UploadError):
+        reels.save_carousel_crop(draft.id, draft.revision, "a" * 64, 1, .5, .5)
+    with pytest.raises(UploadError):
+        reels.save_carousel_crop(draft.id, draft.revision, draft.selected_image_sha256, 1, float('nan'), .5)
+    changed = reels.save_uploaded_image(draft.id, draft.revision, png_bytes((70, 140)), "new.png")
+    changed = reels.select_image(changed.id, changed.revision, "upload")
+    assert reels.carousel_crop(changed) == (.5, .5, 0)
+    reels.delete_book_assets(book_id)
+    with reels.connection() as connection:
+        assert connection.execute('select count(*) from local_carousel_crops').fetchone()[0] == 0
 
 
 def test_audio_is_streamed_validated_deduplicated_and_book_scoped(setup):
@@ -208,6 +630,26 @@ def test_scene_optimized_and_uploaded_images_remain_selectable(setup):
     assert edited.selected_image_source == "upload" and not edited.image_stale
     assert edited.scene_image_path is None and edited.optimized_image_path is None
     assert edited.uploaded_image_path == uploaded.uploaded_image_path
+
+
+@pytest.mark.parametrize("kind", ["prompt", "image"])
+def test_claiming_stale_queued_job_preserves_latest_draft_state_and_error(setup, kind):
+    _, book_id, reels, jobs = setup
+    draft = new_draft(reels, book_id)
+    draft = reels.update_draft(draft.id, draft.revision, image_prompt="Old image prompt")
+    queued = jobs.enqueue(draft.id, kind)
+    updated = reels.update_draft(draft.id, draft.revision, image_prompt="New image prompt")
+    with reels.connection() as connection, connection:
+        connection.execute("update local_reel_drafts set state='failed',error=? where id=?",
+                           ("A failure belonging to the latest revision", updated.id))
+    before = reels.get_draft(updated.id)
+    claimed = jobs.claim(now=100)
+    assert claimed.id == queued.id
+    assert claimed.input_revision != before.revision
+    assert reels.get_draft(before.id) == before
+    assert jobs.finish(claimed, result={}, now=101)
+    assert jobs.status(before.id)[0]["state"] == "stale"
+    assert reels.get_draft(before.id) == before
 
 
 def test_job_completion_is_fenced_by_lease_and_draft_revision(setup):

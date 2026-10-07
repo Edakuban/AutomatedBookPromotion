@@ -17,6 +17,9 @@ from bookpromo.web import _reel_delivery_asset_id, create_app
 from test_analysis import setup, FakeAPI, TEXT
 from test_extraction import package, p
 from test_reels import png_bytes, wav_bytes
+from bookpromo.sync import SyncStore
+from bookpromo.carousel_sources import prepare_carousel_source
+from PIL import Image
 
 
 def analyzed(setup, **kwargs):
@@ -30,6 +33,62 @@ def form_data(snapshot):
     fields = snapshot['details'].model_dump()
     if fields.pop('promotion_enabled'): fields['promotion_enabled'] = 'on'
     return {**fields, 'revision': str(snapshot['revision']), 'suggestion_id': snapshot['suggestion_id']}
+
+
+def test_carousel_crop_saves_locally_and_only_prepare_uploads_saved_pixels(setup, monkeypatch):
+    settings, uploads, book, _, _ = setup
+    quote = analyzed(setup).get(book.id)['quotes'][0]['quote']
+    reel_url = f"/books/local/{book.id}/chapters/{quote.chapter_id}/quotes/{quote.id}/reel"
+    monkeypatch.setattr(SyncStore, 'receipt', lambda *args: {'revision': 1})
+    uploaded, linked = [], []
+
+    class Remote:
+        async def check_schema(self, **kwargs): pass
+        async def list_carousel_sources(self, *args): return []
+        async def upload_carousel_source(self, key, data): uploaded.append((key, data))
+        async def set_carousel_source(self, scope, owner, media):
+            linked.append((scope, owner, media))
+            return {}
+
+    with TestClient(create_app(settings, repository=Remote(), start_worker=False),
+                    base_url='http://127.0.0.1:8000') as client:
+        assert client.get(reel_url).status_code == 200
+        reels = ReelStore(uploads)
+        draft = reels.list_drafts(book.id)[0]
+        source = BytesIO()
+        image = Image.new('RGB', (90, 160), 'blue')
+        image.paste('red', (0, 0, 90, 30))
+        image.save(source, 'PNG'); source.seek(0)
+        draft = reels.save_uploaded_image(draft.id, draft.revision, source, 'portrait.png')
+        draft = reels.select_image(draft.id, draft.revision, 'upload')
+        fields = {'revision': str(draft.revision), 'image_sha256': draft.selected_image_sha256,
+                  'crop_revision': '0'}
+        centered = client.get(reel_url + '/carousel-source.jpg').content
+        response = client.post(reel_url + '/carousel-crop', data={**fields, 'focus_x': '.5', 'focus_y': '0'})
+        assert response.status_code == 200
+        assert not uploaded and not linked
+        assert reels.get_draft(draft.id) == draft
+        path = reels.candidate_image_path(draft)
+        expected = prepare_carousel_source(path, (.5, 0)).data
+        preview = client.get(reel_url + '/carousel-source.jpg')
+        assert preview.status_code == 200 and preview.content == expected and expected != centered
+        page = client.get(reel_url)
+        assert 'Ausschnitt lokal gespeichert.' in page.text and 'data-carousel-crop' in page.text
+        assert 'Dieses Bild für Zitat-Carousels vorbereiten' in page.text
+        assert client.post(reel_url + '/carousel-source', data=fields).status_code == 409
+        assert not uploaded
+        for value in ['nan', 'inf', '-.1', '1.1']:
+            assert client.post(reel_url + '/carousel-crop', data={**fields, 'crop_revision': '1',
+                                                               'focus_x': '.5', 'focus_y': value}).status_code == 422
+        assert client.post(reel_url + '/carousel-crop', data={**fields, 'crop_revision': '1',
+                         'focus_x': '.5', 'focus_y': '.8'}, headers={'Origin': 'https://foreign.example'}).status_code == 403
+        assert client.post(reel_url + '/carousel-source', data={**fields, 'crop_revision': '1'}).status_code == 200
+        assert len(uploaded) == len(linked) == 1
+        assert uploaded[0][1] == preview.content
+        assert linked[0][0] == 'quote' and linked[0][2]['width'] == 1080
+        uploads.delete_book(book.id)
+        with reels.connection() as connection:
+            assert connection.execute('select count(*) from local_carousel_crops').fetchone()[0] == 0
 
 
 def test_read_does_not_create_management_tables(setup):
@@ -56,7 +115,7 @@ def test_usable_quote_opens_reel_workshop_and_saves_reviewed_copy(setup):
         headers={"Accept": "application/json"},
     ) as client:
         chapter = client.get(base, headers={"Accept": "text/html"})
-        assert chapter.status_code == 200 and "Reel erzeugen" in chapter.text
+        assert chapter.status_code == 200 and "Medien-Werkstatt öffnen" in chapter.text
         workshop = client.get(reel_url, headers={"Accept": "text/html"})
         assert workshop.status_code == 200
         assert "Instagram-Text und Bildprompt" in workshop.text

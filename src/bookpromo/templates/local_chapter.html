@@ -3,7 +3,17 @@
 {% block content %}
   <p class="breadcrumb"><a href="{{ url_for('local_book', book_id=book.id) }}">← {{ book.title }}</a></p>
   <div class="page-heading"><h1>{{ chapter.title }}</h1><span class="badge">{{ record.status }}</span></div>
+  {% set workspace_active = 'content' %}{% include 'workspace_nav.html' %}
   <p class="intro">Originalzitate prüfen und für die spätere Promotion sperren. Der Zitattext bleibt unverändert.</p>
+  <div class="quote-layout">
+  <aside class="chapter-sidebar" aria-label="Kapitel dieses Buches">
+    <h2>{{ chapters|length }} Kapitel</h2>
+    <nav aria-label="Kapitelnavigation">{% for entry in chapters %}
+      <a href="{{ url_for('local_chapter', book_id=book.id, chapter_id=entry.id) }}" {% if entry.id == chapter.id %}aria-current="page"{% endif %}><span class="chapter-number">{{ entry.position }}</span><span><strong>{{ entry.title }}</strong><small>{% if analysis and analysis.result %}{{ chapter_quote_counts.get(entry.id, 0) }} nutzbar · {{ chapter_blocked_counts.get(entry.id, 0) }} gesperrt{% else %}Noch nicht analysiert{% endif %}</small></span></a>
+    {% endfor %}</nav>
+    <a href="{{ url_for('local_book', book_id=book.id) }}#analysis" class="sidebar-action">KI-Analyse öffnen →</a>
+  </aside>
+  <div class="quote-workspace">
   <section class="panel next-settings" aria-labelledby="quotes-title">
     <h2 id="quotes-title">Zitate</h2>
     <nav class="quote-filters" aria-label="Zitatfilter">
@@ -16,11 +26,14 @@
         <article class="quote-card" data-page-position-anchor="quote-{{ quote.id }}">
           <p><span class="badge">{{ 'Gesperrt' if item.blocked else 'Nutzbar' if item.usable else 'Nicht geeignet' }}</span> <span class="muted small">Bewertung {{ '%.2f' | format(quote.scores.average) }}/5 · Spoiler: {{ {'none':'keine','low':'gering','high':'hoch'}[quote.spoiler] }}</span></p>
           <blockquote class="book-text">{{ quote.text }}</blockquote>
+          {% if quote.spoiler == 'high' %}<p class="notice quote-spoiler">Hohe Spoiler-Einstufung · vor der Nutzung prüfen.</p>{% endif %}
+          <details class="quote-evidence"><summary>Bewertung, Fundstelle &amp; Veröffentlichung</summary>
           <p>{{ quote.reason }}</p>
           <p class="muted small">Letzter Post: {% if item.usage %}{{ item.usage.last_published_at | berlin_time }}{% if item.usage.reserved %} · Aktuell für einen Post reserviert{% endif %}{% else %}Noch nicht synchronisiert oder Status nicht erreichbar{% endif %}</p>
           <p class="muted small">Verständlichkeit {{ quote.scores.clarity }} · Neugier {{ quote.scores.curiosity }} · Emotion {{ quote.scores.emotion }} · Bildpotenzial {{ quote.scores.imagery }}</p>
           <p class="muted small">Originalabsatz {{ quote.paragraph_ids[0][1:] | int }} · Zeichen {{ quote.source_start }}–{{ quote.source_end }} · Wortgetreu geprüft</p>
           <details><summary>Originalkontext</summary><p class="book-text">{{ quote.context_before }}<mark>{{ quote.text }}</mark>{{ quote.context_after }}</p></details>
+          </details>
           <form method="post" action="{{ url_for('set_quote_block', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" class="form-actions">
             <input type="hidden" name="run_id" value="{{ management.suggestion_id }}">
             <input type="hidden" name="revision" value="{{ item.revision }}">
@@ -30,10 +43,11 @@
             <button type="submit">{{ 'Sperre aufheben' if item.blocked else 'Zitat sperren' }}</button>
             {% if item.usable %}
               {% set reel = item.reel if item.reel is defined else none %}
-              <button type="button" class="secondary-button" data-reel-open
+              <a class="button-link quote-produce" href="{{ url_for('reel_workshop', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-open
                       data-reel-url="{{ url_for('reel_workshop', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}">
-                {{ 'Reel weiterbearbeiten' if reel else 'Reel erzeugen' }}
-              </button>
+                Medien-Werkstatt öffnen
+              </a>
+              <span class="muted small">Auch Bild für Zitat-Carousels vorbereiten</span>
               {% if reel %}<span class="badge {% if reel.state in ('ready', 'stocked') %}badge-ready{% endif %}">{{ reel.label }}</span>{% endif %}
             {% endif %}
           </form>
@@ -51,15 +65,18 @@
   <dialog id="reel-dialog" class="reel-dialog" aria-labelledby="reel-dialog-title">
     <div class="reel-dialog-frame">
       <div class="reel-dialog-heading">
-        <div><span class="badge">Reel-Werkstatt</span><h2 id="reel-dialog-title">Reel erzeugen</h2></div>
-        <button type="button" class="secondary-button reel-dialog-close" data-reel-close aria-label="Reel-Werkstatt schließen">Schließen</button>
+        <div><span class="badge">Bilder · Carousels · Reels</span><h2 id="reel-dialog-title">Medien-Werkstatt</h2></div>
+        <button type="button" class="secondary-button reel-dialog-close" data-reel-close aria-label="Medien-Werkstatt schließen">Schließen</button>
       </div>
       <div data-reel-content><p class="muted">Reel-Daten werden geladen …</p></div>
     </div>
   </dialog>
-  <section class="panel next-settings" aria-label="Kapiteltext">
+  <details class="panel next-settings" aria-label="Kapiteltext">
+    <summary>Vollständigen Kapiteltext lesen</summary>
     {% for paragraph in chapter.paragraphs %}
       <div class="source-paragraph"><span class="muted small">Absatz {{ paragraph.id[1:] | int }}</span><p class="book-text">{{ chapter.source_text[paragraph.start:paragraph.end] }}</p></div>
     {% endfor %}
-  </section>
+  </details>
+  </div>
+  </div>
 {% endblock %}

@@ -9,8 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
 
 from .extraction import Chapter, Extraction
 from .openwebui import OpenWebUIError
+from .scene_plan import ScenePlan, SCENE_PLAN_INSTRUCTION, describe_scene_direction, scene_plan_data
+from .text_ai import TextAIError
 
-PROMPT_VERSION = "book-analysis-v2-characters"
+PROMPT_VERSION = "book-analysis-v4-scene-plan"
 Short = Annotated[str, Field(min_length=1, max_length=200)]
 Score = Annotated[int, Field(ge=1, le=5)]
 SYSTEM = """Du analysierst ein Buch für literarische Promotion. Antworte auf Deutsch.
@@ -87,6 +89,14 @@ class Quote(StrictModel):
     reason: str
     spoiler: Literal["none", "low", "high"]
     usable: bool
+    # Old saved analyses/checkpoints remain readable without invented staging.
+    scene_direction: str = Field(default="", max_length=2000)
+    scene_plan: ScenePlan | None = None
+
+    @field_validator("scene_direction")
+    @classmethod
+    def clean_scene_direction(cls, value):
+        return value.strip()
 
 
 class RejectedCandidate(StrictModel):
@@ -271,7 +281,7 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
                 value = transform(raw) if transform else raw
                 checkpoints.put(key, value)
                 return value
-            except OpenWebUIError as exc:
+            except (OpenWebUIError, TextAIError) as exc:
                 if exc.code not in {"structured", "truncated"} or attempt: raise
             except AnalysisError:
                 if attempt: raise
@@ -356,7 +366,22 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
                 stage=f"Kapitel {position} von {len(extraction.chapters)}: Zitate auswählen, Abschnitt {index+1} von {len(chapter_chunks[chapter.id])}")
             quotes.extend(batch.quotes)
             rejected_candidates.extend(batch.rejected_candidates)
+    selected_quotes = select_distinct(quotes, options)
+    for index, quote in enumerate(selected_quotes, 1):
+        if not quote.usable:
+            continue
+        plan = await step(
+            f"scene-plan:{quote.id}", ScenePlan, SCENE_PLAN_INSTRUCTION,
+            scene_plan_data(
+                quote=quote.text, context_before=quote.context_before, context_after=quote.context_after,
+                art_direction=profile.image_prompt_base, characters=characters,
+            ), tokens=2400,
+            stage=f"Szenenplan für ausgewählte Zitate erstellen: {index} von {len(selected_quotes)}",
+        )
+        selected_quotes[index - 1] = quote.model_copy(update={
+            "scene_direction": describe_scene_direction(plan), "scene_plan": plan,
+        })
     checkpoints.progress("Fundstellen zusammenführen und Ergebnis speichern")
     return AnalysisResult(profile=profile, chapter_summaries=chapter_summaries,
-        quotes=select_distinct(quotes, options), rejected_candidates=rejected_candidates,
+        quotes=selected_quotes, rejected_candidates=rejected_candidates,
         character_suggestions=characters)

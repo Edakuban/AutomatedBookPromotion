@@ -7,10 +7,14 @@
     {% if render_job and render_job.active %}<span class="badge">Langer Export läuft</span>
     {% elif project %}<span class="badge{% if project.state == 'ready' %} badge-ready{% endif %}">{{ 'Fertig' if project.state == 'ready' else 'Fehlgeschlagen' if project.state == 'failed' else 'Schnitt gespeichert' }}</span>{% endif %}
   </div>
+  {% set workspace_active = 'production' %}{% include 'workspace_nav.html' %}
   <p class="intro">Vom vollständigen Kapitel zum eigenen Reel: Szene analysieren, Bilder prüfen, optional Buchcharaktere optimieren und Videos erzeugen. Anschließend alle Kapitel mit einem durchgehenden Buchsong zum Teaser verbinden.</p>
-  <ol class="teaser-workflow" aria-label="Ablauf für den Book-Teaser">
-    <li>Song wählen</li><li>Analyse und Bilder</li><li>Charaktere &amp; Bildauswahl</li><li>Kapitelvideos</li><li>Gesamter Teaser &amp; Queue</li>
-  </ol>
+  <div data-settings-group data-settings-default="{{ 'song' if not tracks else 'export' if project and project.state == 'ready' else 'chapters' }}">
+  <nav class="settings-nav production-nav" aria-label="Ablauf für den Book-Teaser">
+    <a href="#teaser-song" data-settings-link>1 · Song wählen{% if tracks %} · {{ tracks|length }} gespeichert{% endif %}</a>
+    <a href="#chapter-production" data-settings-link>2–4 · Analyse, Bilder &amp; Kapitelvideos{% if chapter_run %} · {{ chapter_run.label }}{% endif %}</a>
+    <a href="#teaser-export" data-settings-link>5 · Gesamter Teaser &amp; Queue</a>
+  </nav>
 
   {% if saved %}<p class="notice success">Der Book-Teaser-Schnitt wurde gespeichert.</p>{% endif %}
   {% if rendered %}<p class="notice success">Der Book-Teaser-Export wurde vorgemerkt.</p>{% endif %}
@@ -32,7 +36,7 @@
     </section>
   {% endif %}
 
-  <section class="panel next-settings" aria-labelledby="teaser-song-title">
+  <section id="teaser-song" data-settings-section="song" class="panel next-settings" aria-labelledby="teaser-song-title">
     <h2 id="teaser-song-title">Buchsong</h2>
     <p>PCM-WAV hochladen oder einen bereits für dieses Buch gespeicherten Song verwenden.</p>
     <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_teaser_audio', book_id=book.id) }}" class="teaser-audio-upload">
@@ -42,7 +46,7 @@
     </form>
   </section>
 
-  <section class="panel next-settings chapter-production" aria-labelledby="chapter-production-title"
+  <section id="chapter-production" data-settings-section="chapters" class="panel next-settings chapter-production" aria-labelledby="chapter-production-title"
     {% if chapter_run and chapter_production_active %}data-chapter-production data-status-url="{{ url_for('chapter_teaser_status', book_id=book.id) }}" data-initial-state="{{ chapter_run.state }}"{% endif %}>
     <div class="panel-heading promotion-heading">
       <div>
@@ -51,7 +55,7 @@
       </div>
       {% if chapter_run %}<span class="badge{% if chapter_run.state == 'done' %} badge-ready{% endif %}" data-chapter-production-label>{{ chapter_run.label }}</span>{% endif %}
     </div>
-    <p>Die KI wählt eine belegte, spoilerarme Szene und erzeugt zunächst für jedes Kapitel ein Szenenbild. Danach kannst du passende Charakterreferenzen einzeln oder gesammelt anwenden, zwischen Rohbild und optimiertem Bild wählen und erst anschließend die Videos starten.</p>
+    <p>Die KI wählt für jedes Kapitel eine belegte, spoilerarme Szene. Danach erzeugst du Bilder mit Beschreibungen oder deinen Referenzfiguren, wählst eine Variante und startest die Videos.</p>
     {% if not chapter_teaser_configured %}
       <p class="notice error">Für diesen Ablauf müssen mindestens ein Text-KI-Provider und der Szenenbild-Workflow eingerichtet sein.</p>
     {% elif not tracks %}
@@ -67,14 +71,7 @@
       {% if chapter_run.error %}<p class="notice error" data-chapter-production-error>{{ chapter_run.error }}</p>{% endif %}
     {% endif %}
     <form method="post" action="{{ url_for('start_chapter_teasers', book_id=book.id) }}" class="chapter-production-form">
-      <label>Text-KI für die Kapitelanalyse
-        <select name="ai_provider" required {% if not chapter_teaser_providers or chapter_production_active %}disabled{% endif %}>
-          {% for provider in chapter_teaser_providers %}
-            {% set selected_provider = chapter_run.provider if chapter_run else 'openwebui' %}
-            <option value="{{ provider.id }}" {% if selected_provider == provider.id or (not selected_provider and loop.first) %}selected{% endif %}>{{ provider.label }} · {{ provider.model }}</option>
-          {% endfor %}
-        </select>
-      </label>
+      {% include 'global_text_ai.html' %}
       <label>Song und zeitliche Basis
         <select name="audio_track_id" required {% if not tracks or chapter_production_active %}disabled{% endif %}>
           <option value="">Song auswählen</option>
@@ -92,9 +89,22 @@
     <p class="small muted">Die spätere Reellänge wird aus Songlänge, Kapitelanzahl und Überblendung berechnet (4–60 s je Kapitel). Die einzelnen Reels nutzen fortlaufende Ausschnitte desselben Songs. Wechselst du bei einem Retry den Text-KI-Provider, entsteht ein neuer Lauf; vorhandene fertige Reels bleiben als Schnittquellen erhalten.</p>
 
       <div class="chapter-phase-actions" aria-label="Nächste Produktionsschritte">
-        <form method="post" action="{{ url_for('optimize_all_chapter_teaser_images', book_id=book.id) }}">
-          <button type="submit" {% if not optimizable_count or not reference_workflow_configured %}disabled{% endif %}>Charaktere für alle Kapitel optimieren{% if optimizable_count %} ({{ optimizable_count }}){% endif %}</button>
+        <details class="simple-image-advanced"><summary>Erweiterte Sammelaktionen · Szenenpläne &amp; bisherige Optimierung</summary>
+        {% if chapter_run and plans_to_update_count is defined %}
+        <form method="post" action="{{ url_for('generate_all_chapter_teaser_plans', book_id=book.id) }}">
+          <input type="hidden" name="run_id" value="{{ chapter_run.id }}">
+          {% include 'global_text_ai.html' %}
+          <button type="submit" {% if not plans_to_update_count or not chapter_teaser_providers %}disabled{% endif %}>Szenenpläne aktualisieren{% if plans_to_update_count %} ({{ plans_to_update_count }}){% endif %}</button>
+          <p class="small muted">Expliziter Text-KI-Aufruf für fehlende oder veraltete Pläne. Erzeugt keine Bilder.</p>
         </form>
+        {% endif %}
+        {% set bulk_planned_ready = optimizable_count > 0 and planned_optimizable_count|default(0) == optimizable_count and reference_workflow_configured %}
+        <form method="post" action="{{ url_for('optimize_all_chapter_teaser_images', book_id=book.id) }}" data-chapter-image-method data-plan-ready="{{ 'true' if bulk_planned_ready else 'false' }}" data-legacy-ready="{{ 'true' if optimizable_count and reference_workflow_configured else 'false' }}">
+          <label>Charakteroptimierung <select name="strategy" data-chapter-method><option value="planned_scene" {% if planned_optimizable_count is defined %}selected{% endif %}>Szenenplan · neu inszenieren{% if planned_optimizable_count|default(0) %} ({{ planned_optimizable_count }}){% endif %}</option><option value="masked" {% if planned_optimizable_count is not defined %}selected{% endif %}>Bisherige Maskenoptimierung{% if optimizable_count %} ({{ optimizable_count }}){% endif %}</option></select></label>
+          <button type="submit" data-chapter-method-render {% if not reference_workflow_configured or (not bulk_planned_ready if planned_optimizable_count is defined else not optimizable_count) %}disabled{% endif %}>Charaktere für alle Kapitel optimieren{% if optimizable_count %} ({{ optimizable_count }}){% endif %}</button>
+          <p class="small muted" data-chapter-method-message {% if bulk_planned_ready or planned_optimizable_count is not defined %}hidden{% endif %}>Für alle zu optimierenden Kapitel aktuelle Szenenpläne und Referenzbilder für alle ausgewählten Figuren hinterlegen.</p>
+        </form>
+        </details>
         <form method="post" action="{{ url_for('start_chapter_teaser_videos', book_id=book.id) }}">
           <button type="submit" {% if not can_start_chapter_videos %}disabled{% endif %}>Videos aus ausgewählten Bildern erzeugen</button>
         </form>
@@ -104,20 +114,7 @@
       {% if chapter_media_active %}<p class="notice small">Kapitelbilder oder Videos werden gerade im Hintergrund erzeugt. Danach wird die Seite automatisch aktualisiert.</p>{% endif %}
       {% if not chapter_run %}<p class="small muted">Nach der Analyse kannst du hier alle erkannten Buchcharaktere optimieren und danach Videos aus den ausgewählten Bildern erzeugen.</p>{% elif not can_start_chapter_videos and not chapter_media_active %}<p class="small muted">Videoerzeugung wird freigegeben, sobald die benötigten Bilder vorliegen und ausgewählt sind. Fehlerhafte Kapitel kannst du unten einzeln korrigieren.</p>{% endif %}
 
-    <form method="post" action="{{ url_for('render_complete_book_teaser', book_id=book.id) }}" class="teaser-complete-form">
-      <input type="hidden" name="revision" value="{{ project.revision if project else 0 }}">
-      <input type="hidden" name="audio_track_id" value="{{ chapter_run.audio_track_id if chapter_run else (project.audio_track_id if project else '') }}">
-      <input type="hidden" name="transition_seconds" value="{{ '%.1f'|format((chapter_run.transition_ms if chapter_run else (project.transition_ms if project else 500)) / 1000) }}">
-      <label>Format für den ganzen Teaser
-        <select name="aspect" required>
-          <option value="vertical" {% if not project or project.aspect == 'vertical' %}selected{% endif %}>9:16 Hochformat</option>
-          <option value="horizontal_crop" {% if project and project.aspect == 'horizontal_crop' %}selected{% endif %}>16:9 Crop mit Fokus</option>
-          <option value="horizontal_fit" {% if project and project.aspect == 'horizontal_fit' %}selected{% endif %}>16:9 Fit mit Hintergrund</option>
-        </select>
-      </label>
-      <button type="submit" {% if not complete_teaser_ready or (render_job and render_job.active) %}disabled{% endif %}>Alle Kapitel zum Book-Teaser verbinden</button>
-      <span class="small muted">{% if complete_teaser_ready %}Alle aktuellen Kapitelvideos sind bereit.{% else %}Verfügbar, sobald für jedes Kapitel ein aktuelles Video vorliegt.{% endif %}</span>
-    </form>
+    <p><a href="#teaser-export" class="button-link secondary-button" data-settings-link>5 · Gesamten Teaser verbinden →</a></p>
 
     {% if chapter_run and chapter_run.plans %}
       <div class="table-scroll chapter-production-table"><table>
@@ -125,7 +122,7 @@
         <tbody>
           {% for plan in chapter_run.plans %}
           {% set chapter = record.result.chapters[plan.position - 1] %}
-          <tr data-page-position-anchor="chapter-{{ plan.chapter_id }}">
+          <tr data-page-position-anchor="chapter-{{ plan.chapter_id }}" data-chapter-plan-row>
             <td><strong>{{ chapter.position }}. {{ chapter.title }}</strong></td>
             <td>
               {% if plan.suggestion %}
@@ -133,13 +130,13 @@
                 <small>Teasertext: {{ plan.draft.caption_addition if plan.draft else plan.suggestion.teaser_text }}</small>
               {% else %}<span class="muted small">Wird nach der vollständigen Kapitelanalyse angezeigt.</span>{% endif %}
               {% if plan.draft %}
-                <button type="button" class="secondary-button chapter-prompt-open" data-teaser-dialog-open="chapter-prompt-{{ plan.chapter_id }}">Prompt &amp; Teasertext bearbeiten</button>
+                <details class="simple-image-advanced"><summary>Teasertext &amp; erweiterte Prompts</summary><button type="button" class="secondary-button chapter-prompt-open" data-teaser-dialog-open="chapter-prompt-{{ plan.chapter_id }}">Prompt &amp; Teasertext bearbeiten</button></details>
                 <dialog id="chapter-prompt-{{ plan.chapter_id }}" class="teaser-dialog chapter-prompt-dialog" aria-labelledby="chapter-prompt-title-{{ plan.chapter_id }}">
                   <div class="teaser-dialog-heading">
                     <h2 id="chapter-prompt-title-{{ plan.chapter_id }}">{{ chapter.position }}. {{ chapter.title }}</h2>
                     <button type="button" class="secondary-button" data-teaser-dialog-close aria-label="Prompteditor schließen">Schließen</button>
                   </div>
-                  <form method="post" action="{{ url_for('save_chapter_teaser_prompt', book_id=book.id, chapter_id=plan.chapter_id) }}" class="settings-fields">
+                  <form method="post" action="{{ url_for('save_chapter_teaser_prompt', book_id=book.id, chapter_id=plan.chapter_id) }}" class="settings-fields" data-unsaved-form>
                     <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
                     <p class="small muted">Speichern startet keinen KI-Lauf. Bei geändertem Bildprompt danach das Bild neu erzeugen; bei geändertem Teasertext die Textfassung des Videos aktualisieren.</p>
                     <label>Bildprompt <textarea name="image_prompt" rows="9" maxlength="4000" required {% if not plan.can_edit_prompt %}disabled{% endif %}>{{ plan.draft.image_prompt }}</textarea></label>
@@ -150,9 +147,46 @@
                     <div class="dialog-actions"><button type="button" class="secondary-button" data-teaser-dialog-close>Abbrechen</button><button type="submit" {% if not plan.can_edit_prompt %}disabled{% endif %}>Änderungen speichern</button></div>
                   </form>
                 </dialog>
+                {% if plan.scene_plan_current is defined %}
+                <details class="simple-image-advanced"><summary>Szenenplan manuell bearbeiten</summary><button type="button" class="secondary-button chapter-prompt-open" data-teaser-dialog-open="chapter-plan-{{ plan.chapter_id }}">Szenenplan · Figuren &amp; Pose{% if not plan.scene_plan_current %} aktualisieren{% endif %}</button></details>
+                <dialog id="chapter-plan-{{ plan.chapter_id }}" class="teaser-dialog chapter-prompt-dialog" aria-labelledby="chapter-plan-title-{{ plan.chapter_id }}" data-chapter-plan-editor>
+                  <div class="teaser-dialog-heading"><h2 id="chapter-plan-title-{{ plan.chapter_id }}">Szenenplan · {{ chapter.position }}. {{ chapter.title }}</h2><button type="button" class="secondary-button" data-teaser-dialog-close aria-label="Szenenplan schließen">Schließen</button></div>
+                  <p class="small muted">Gespeicherte Figuren und Regie bestimmen den nächsten Szenenplan. Nach Änderungen erst speichern, dann den Plan mit Text-KI aktualisieren.</p>
+                  <form method="post" action="{{ url_for('save_chapter_teaser_plan', book_id=book.id, chapter_id=plan.chapter_id) }}" class="settings-fields" data-unsaved-form data-chapter-plan-inputs>
+                    <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
+                    <fieldset><legend>Gespeicherte Charakterauswahl · höchstens vier Figuren</legend>
+                      {% for character in plan.plan_character_options|default(plan.character_options) %}<label class="checkbox-label"><input type="checkbox" name="character_id" value="{{ character.id }}" {% if character.selected %}checked{% endif %} {% if not plan.can_edit_prompt %}disabled{% endif %}> {{ character.name }}{% if character.has_reference is defined and not character.has_reference %} · ohne Referenzbild{% endif %}</label>{% else %}<p class="small muted">Eine Umgebungsszene kann ohne Charakterreferenzen geplant werden.</p>{% endfor %}
+                    </fieldset>
+                    <label>Pose und Szenenregie <textarea name="scene_direction" rows="5" maxlength="2000" {% if not plan.can_edit_prompt %}disabled{% endif %}>{{ plan.draft.scene_direction }}</textarea></label>
+                    <button type="submit" {% if not plan.can_edit_prompt %}disabled{% endif %}>Figuren und Regie speichern</button>
+                  </form>
+                  <form method="post" action="{{ url_for('generate_chapter_teaser_plan', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form" data-chapter-plan-generate>
+                    <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
+                    {% include 'global_text_ai.html' %}
+                    <button type="submit" {% if not chapter_teaser_providers or not plan.can_edit_prompt %}disabled{% endif %}>Szenenplan aktualisieren</button>
+                    <p class="small muted" data-chapter-plan-pending hidden>Die geänderte Auswahl oder Regie zuerst speichern.</p>
+                  </form>
+                  {% if plan.scene_plan %}
+                    <p><span class="badge{% if plan.scene_plan_current %} badge-ready{% endif %}">{{ 'Szenenplan aktuell' if plan.scene_plan_current else 'Szenenplan veraltet' }}</span></p>
+                    <details {% if not plan.scene_plan_current %}open{% endif %}><summary>Gespeicherten Plan ansehen</summary>
+                      <p class="small">{{ plan.scene_plan.setting }} · {{ plan.scene_plan.composition }}</p>
+                      {% for actor in plan.scene_plan.actors %}<p class="small"><strong>{{ actor.name }}</strong>: {{ actor.pose }}{% if actor.free_parts %}<br>Freie Gliedmaßen: {{ actor.free_parts|join(', ') }}{% endif %}{% for contact in actor.contacts %}<br>{{ contact.part }} · {{ contact.action }} · {{ contact.object_id }}{% endfor %}</p>{% else %}<p class="small muted">Umgebungsszene ohne Figuren.</p>{% endfor %}
+                      {% for prop in plan.scene_plan.props %}<p class="small">{{ prop.count }} × {{ prop.label }}</p>{% endfor %}
+                      <p class="small muted">Stil: {{ plan.scene_plan.art_direction }}</p>
+                    </details>
+                  {% else %}<p class="notice small">Noch kein Szenenplan gespeichert. Die Text-KI erstellt ihn mit der gespeicherten Auswahl und Regie.</p>{% endif %}
+                  <div class="dialog-actions"><button type="button" class="secondary-button" data-teaser-dialog-close>Schließen</button></div>
+                </dialog>
+                {% endif %}
               {% endif %}
             </td>
             <td>
+              {% if plan.draft and plan.suggestion %}
+                {% with simple_image_action=url_for('create_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id), simple_image_draft=plan.draft, simple_image_characters=plan.plan_character_options|default(plan.character_options), simple_image_busy=(not plan.can_edit_prompt), simple_image_is_quote=false, simple_image_providers=chapter_teaser_providers %}
+                  {% include 'simple_image_actions.html' %}
+                {% endwith %}
+              {% endif %}
+              {% if plan.image_job and plan.image_job.state in ['queued', 'running'] and plan.image_job.image_stage %}<p class="notice small" aria-busy="true">{{ plan.image_job.image_stage }}</p>{% endif %}
               {% if plan.image_sources %}
                 <div class="chapter-image-variants">
                   {% for image in plan.image_sources %}
@@ -182,11 +216,23 @@
                 {% endif %}
                 <small class="muted">Zuerst die Kapitelanalyse wiederholen; danach wird das Szenenbild automatisch erzeugt. Andere Kapitel bleiben erhalten.</small>
               {% endif %}
+              {% if plan.draft %}<details class="simple-image-advanced"><summary>Erweiterte Einstellungen · Szenenplan &amp; bisherige Verfahren</summary>{% endif %}
               {% if (plan.draft and plan.suggestion) or plan.can_regenerate_image %}
-                <form method="post" action="{{ url_for('regenerate_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form"><button type="submit" {% if not plan.can_regenerate_image %}disabled{% endif %}>Bild neu erzeugen</button></form>
+                {% if plan.scene_plan_current is defined %}
+                <div class="chapter-plan-shortcut">
+                  <button type="button" class="secondary-button" data-teaser-dialog-open="chapter-plan-{{ plan.chapter_id }}">{{ 'Szenenplan ansehen / bearbeiten' if plan.scene_plan_current else 'Szenenplan mit KI erstellen / aktualisieren' }}</button>
+                  <p class="small muted">{% if plan.scene_plan_current %}Plan aktuell · Figuren, Pose und Requisiten gespeichert.{% else %}Szenenplan fehlt oder ist veraltet. Für die neue Charakteroptimierung zuerst den Plan erstellen; vorhandene Bilder bleiben erhalten.{% endif %}</p>
+                </div>
+                {% endif %}
+                <form method="post" action="{{ url_for('regenerate_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form" data-chapter-image-method data-plan-ready="{{ 'true' if plan.scene_plan_current|default(false) and plan.can_regenerate_image else 'false' }}" data-legacy-ready="{{ 'true' if plan.can_regenerate_image else 'false' }}">
+                  <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
+                  <label>Bild neu erzeugen <select name="strategy" data-chapter-method><option value="scene_plan" {% if plan.scene_plan_current|default(false) %}selected{% endif %}>Mit aktuellem Szenenplan</option><option value="masked" {% if not plan.scene_plan_current|default(false) %}selected{% endif %}>Bisheriger Bildprompt</option></select></label>
+                  <button type="submit" data-chapter-method-render {% if not plan.can_regenerate_image %}disabled{% endif %}>Bild neu erzeugen</button>
+                  <p class="small muted" data-chapter-method-message hidden>Für diesen Bildlauf zuerst den Szenenplan aktualisieren.</p>
+                </form>
               {% endif %}
               {% if (plan.draft and plan.draft.scene_image_path) or plan.can_configure_characters %}
-                <form method="post" action="{{ url_for('optimize_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form">
+                <form method="post" action="{{ url_for('optimize_chapter_teaser_image', book_id=book.id, chapter_id=plan.chapter_id) }}" class="chapter-optimize-form" data-chapter-image-method data-chapter-cast-source data-plan-ready="{{ 'true' if plan.can_planned_optimize|default(false) else 'false' }}" data-legacy-ready="{{ 'true' if plan.can_configure_characters else 'false' }}">
                   <input type="hidden" name="revision" value="{{ plan.draft.revision }}">
                   <details {% if not plan.has_character_references %}open{% endif %}>
                     <summary>Charaktere für dieses Bild auswählen</summary>
@@ -197,9 +243,12 @@
                       <p class="muted small">Bitte zuerst Charakterreferenzen in den Bucheinstellungen hinterlegen.</p>
                     {% endfor %}
                   </details>
-                  <button type="submit" {% if not plan.can_configure_characters %}disabled{% endif %}>{{ 'Charakteroptimierung erneut versuchen' if plan.image_job and plan.image_job.state == 'failed' else 'Charaktere optimieren' }}</button>
+                  <label>Verfahren <select name="strategy" data-chapter-method><option value="planned_scene" {% if plan.can_planned_optimize is defined %}selected{% endif %}>Szenenplan · neu inszenieren</option><option value="masked" {% if plan.can_planned_optimize is not defined %}selected{% endif %}>Bisherige Maskenoptimierung</option></select></label>
+                  <button type="submit" data-chapter-method-render {% if not plan.can_configure_characters or (plan.can_planned_optimize is defined and not plan.can_planned_optimize) %}disabled{% endif %}>{{ 'Charakteroptimierung erneut versuchen' if plan.image_job and plan.image_job.state == 'failed' else 'Charaktere optimieren' }}</button>
+                  <p class="small muted" data-chapter-method-message {% if plan.can_planned_optimize|default(false) or plan.can_planned_optimize is not defined %}hidden{% endif %}>Für die Neuinszenierung einen aktuellen Plan und Referenzbilder für alle gespeicherten Figuren hinterlegen.</p>
                 </form>
               {% endif %}
+              {% if plan.draft %}</details>{% endif %}
               {% if plan.image_actions_disabled_reason %}<small class="muted">{{ plan.image_actions_disabled_reason }}</small>{% endif %}
               {% if plan.draft and plan.draft.selected_image_path and not plan.draft.image_stale %}
                 <details class="chapter-publish">
@@ -283,10 +332,27 @@
     {% endif %}
   </section>
 
+  <div id="teaser-export" data-settings-section="export">
+  <section class="panel next-settings"><h2>Gesamten Teaser fertigstellen</h2><p>Verbinde alle aktuellen Kapitelvideos mit einem durchgehenden Buchsong.</p>
+    <form method="post" action="{{ url_for('render_complete_book_teaser', book_id=book.id) }}" class="teaser-complete-form">
+      <input type="hidden" name="revision" value="{{ project.revision if project else 0 }}">
+      <input type="hidden" name="audio_track_id" value="{{ chapter_run.audio_track_id if chapter_run else (project.audio_track_id if project else '') }}">
+      <input type="hidden" name="transition_seconds" value="{{ '%.1f'|format((chapter_run.transition_ms if chapter_run else (project.transition_ms if project else 500)) / 1000) }}">
+      <label>Format für den ganzen Teaser
+        <select name="aspect" required>
+          <option value="vertical" {% if not project or project.aspect == 'vertical' %}selected{% endif %}>9:16 Hochformat</option>
+          <option value="horizontal_crop" {% if project and project.aspect == 'horizontal_crop' %}selected{% endif %}>16:9 Crop mit Fokus</option>
+          <option value="horizontal_fit" {% if project and project.aspect == 'horizontal_fit' %}selected{% endif %}>16:9 Fit mit Hintergrund</option>
+        </select>
+      </label>
+      <button type="submit" {% if not complete_teaser_ready or (render_job and render_job.active) %}disabled{% endif %}>Alle Kapitel zum Book-Teaser verbinden</button>
+      <span class="small muted">{% if complete_teaser_ready %}Alle aktuellen Kapitelvideos sind bereit.{% else %}Verfügbar, sobald für jedes Kapitel ein aktuelles Video vorliegt.{% endif %}</span>
+    </form>
+  </section>
   <details class="panel teaser-advanced next-settings">
     <summary>Erweiterter Schnitt: Zitat-Reels, Ausschnitte und Fokus</summary>
     <p class="small muted">Optional: andere fertige Zitat-Reels auswählen oder einzelne Kapitel ausschließen. Der Button oben nutzt stattdessen alle aktuellen Kapitel-Teaser.</p>
-  <form method="post" class="teaser-editor">
+  <form method="post" class="teaser-editor" data-unsaved-form>
     <input type="hidden" name="revision" value="{{ project.revision if project else 0 }}">
     <section class="panel next-settings" aria-labelledby="teaser-settings-title">
       <h2 id="teaser-settings-title">Ausgabe</h2>
@@ -379,6 +445,8 @@
       </details>
     </section>
   {% endif %}
+  </div>
+  </div>
   <dialog id="chapter-image-lightbox" class="teaser-dialog chapter-image-lightbox" aria-labelledby="chapter-image-lightbox-title">
     <div class="teaser-dialog-heading"><h2 id="chapter-image-lightbox-title">Kapitelbild</h2><button type="button" class="secondary-button" data-teaser-dialog-close aria-label="Bildansicht schließen">Schließen</button></div>
     <img data-teaser-lightbox-image alt="">

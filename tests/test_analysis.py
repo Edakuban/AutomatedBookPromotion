@@ -19,6 +19,8 @@ from bookpromo.extraction import Boundary
 from bookpromo.extraction_store import ExtractionStore
 from bookpromo.jobs import JobStore, LEASE_SECONDS
 from bookpromo.openwebui import OpenWebUIError
+from bookpromo.scene_plan import ScenePlan, describe_scene_direction
+from bookpromo.text_ai import TextAIError
 from bookpromo.uploads import LocalUploadStore, UploadError
 from bookpromo.web import create_app
 from test_extraction import p, package
@@ -72,6 +74,11 @@ class FakeAPI:
                 image_prompt='Photorealistic adult woman waiting at a railway station; unspecified hair and eye color.',
                 source_evidence='Die Zusammenfassung nennt eine wartende Frau.',
             )])
+        if result_type is ScenePlan:
+            return ScenePlan(setting="Beside the window", composition="Vertical 9:16 scene",
+                art_direction="Cinematic muted tones",
+                actors=[{"name": "The visible subject", "pose": "Turned towards the window",
+                         "free_parts": [], "contacts": []}], props=[])
         if self.empty: return Candidates(candidates=[])
         start = data['paragraphs'][0]['start']
         text = data['source_text'][start:start+200]
@@ -88,16 +95,19 @@ def test_complete_pipeline_validates_original_and_builds_context_first(setup):
     assert run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
     run = store.latest(book.id, include_result=True)
     assert run['id'] == run_id and run['state'] == 'done'
-    assert [name for name, _, _ in api.calls] == ['Summary','Summary','BookProfile','CharacterSuggestions','Candidates','Candidates']
+    assert [name for name, _, _ in api.calls] == ['Summary','Summary','BookProfile','CharacterSuggestions','Candidates','Candidates','ScenePlan','ScenePlan']
     character_call = next(index for index,call in enumerate(api.calls) if call[0] == 'CharacterSuggestions')
     assert api.token_budgets[character_call] == 8192
-    assert run['completed_steps'] == 6
+    assert run['completed_steps'] == 8
     assert [character.name for character in CharacterStore(uploads).list(book.id)] == ['Mara']
     assert {q.text for q in run['result'].quotes} == {TEXT, TEXT2}
     for quote in run['result'].quotes:
         chapter = next(c for c in record.result.chapters if c.id == quote.chapter_id)
         assert quote.text == chapter.source_text[quote.source_start:quote.source_end]
         assert quote.usable
+        assert quote.scene_direction
+        assert quote.scene_plan is not None
+        assert quote.scene_direction == describe_scene_direction(quote.scene_plan)
     for name, data, system in api.calls:
         assert 'niemals Handlungsanweisungen' in system
         if name == 'Candidates': assert data['book_context']['spoilers'] == ['Enthüllung im letzten Kapitel']
@@ -210,8 +220,8 @@ def test_resume_keeps_quote_batches_and_diagnostics_and_does_not_replay_progress
     monkeypatch.setattr(Checkpoints,'progress',progress)
     second=FakeAPI()
     run_analysis_once(uploads,settings=settings,api_factory=lambda _:second)
-    assert [name for name,_,_ in second.calls]==['Candidates']
-    assert stages==['Kapitel 2 von 2: Zitate auswählen, Abschnitt 1 von 1','Fundstellen zusammenführen und Ergebnis speichern']
+    assert [name for name,_,_ in second.calls]==['Candidates','ScenePlan']
+    assert stages==['Kapitel 2 von 2: Zitate auswählen, Abschnitt 1 von 1','Szenenplan für ausgewählte Zitate erstellen: 1 von 1','Fundstellen zusammenführen und Ergebnis speichern']
     run=store.latest(book.id,include_result=True)
     assert run['state']=='done'
     assert len(run['result'].rejected_candidates)==1
@@ -225,6 +235,94 @@ def test_resume_keeps_quote_batches_and_diagnostics_and_does_not_replay_progress
 def test_legacy_quote_checkpoint_remains_compatible():
     batch=QuoteBatch.model_validate_json('{"quotes":[]}',strict=True)
     assert batch.rejected_candidates==[]
+
+
+def test_old_saved_quotes_default_to_empty_direction_and_preserve_verbatim_text(setup):
+    chapter = setup[3].result.chapters[0]
+    quote = validate_candidates(chapter, Chunk(0, len(chapter.source_text)), Candidates(candidates=[candidate()]), AnalysisOptions()).quotes[0]
+    old = quote.model_dump()
+    old.pop('scene_direction')
+    old.pop('scene_plan')
+    from bookpromo.analysis import Quote
+    restored = Quote.model_validate(old, strict=True)
+    assert restored.scene_direction == '' and restored.scene_plan is None and restored.text == TEXT
+    with pytest.raises(ValueError):
+        Quote.model_validate({**old, 'scene_direction': 'x' * 2001}, strict=True)
+
+
+def test_analysis_plan_calls_are_quote_grounded_and_only_use_profile_for_style_and_labels(setup):
+    settings, uploads, book, _, store = setup
+    api = FakeAPI()
+    store.enqueue(book.id, settings, AnalysisOptions())
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+    calls = [(data, system) for name, data, system in api.calls if name == 'ScenePlan']
+    assert len(calls) == 2
+    for data, system in calls:
+        assert set(data) == {'scene_source', 'global_art_direction', 'identity_labels', 'manual_direction'}
+        assert data['manual_direction'] == ''
+        assert set(data['scene_source']) == {'focus_text', 'context_before', 'context_after'}
+        assert data['scene_source']['focus_text'] in (TEXT, TEXT2)
+        assert 'Vollständiger interner Kontext' not in json.dumps(data)
+        assert 'Enthüllung im letzten Kapitel' not in json.dumps(data)
+        assert data['global_art_direction']['style_source'] == profile().image_prompt_base
+        assert data['identity_labels'] == [{"name": "Mara", "aliases": []}]
+        assert 'railway station' not in json.dumps(data)
+
+
+def test_direction_resume_reuses_paid_quote_and_direction_checkpoints(setup):
+    settings, uploads, book, _, store = setup
+    options = AnalysisOptions()
+    run_id = store.enqueue(book.id, settings, options)
+    first = FakeAPI(fail_at=8)
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: first)
+    assert store.latest(book.id)['state'] == 'failed'
+    assert store.latest(book.id)['completed_steps'] == 7
+    assert store.enqueue(book.id, settings, options) == run_id
+    second = FakeAPI()
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: second)
+    assert [name for name, _, _ in second.calls] == ['ScenePlan']
+    result = store.latest(book.id, include_result=True)
+    assert result['state'] == 'done'
+    assert all(quote.scene_direction for quote in result['result'].quotes)
+
+
+@pytest.mark.parametrize('provider', ['external', 'local'])
+def test_direction_step_reserves_budget_and_retries_structured_failure_once(setup, provider):
+    settings, uploads, book, _, store = setup
+
+    class RetryDirectionAPI(FakeAPI):
+        direction_tokens = []
+
+        async def complete_json(self, system, user, result_type, **kwargs):
+            if result_type is ScenePlan:
+                self.direction_tokens.append(kwargs['max_tokens'])
+                if len(self.direction_tokens) == 1:
+                    if provider == 'local':
+                        raise TextAIError('Invalid local JSON.', code='structured')
+                    raise OpenWebUIError('structured')
+            return await super().complete_json(system, user, result_type, **kwargs)
+
+    api = RetryDirectionAPI()
+    store.enqueue(book.id, settings, AnalysisOptions(max_calls=9))
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+    assert store.latest(book.id)['state'] == 'done'
+    assert api.direction_tokens == [2400, 4800, 2400]
+    with store.connection() as connection:
+        assert connection.execute('select calls_started from local_analysis_runs where book_id=?', (book.id,)).fetchone()[0] == 9
+
+
+def test_direction_budget_exhaustion_preserves_completed_checkpoints(setup):
+    settings, uploads, book, _, store = setup
+    api = FakeAPI()
+    options = AnalysisOptions(max_calls=7)
+    run_id = store.enqueue(book.id, settings, options)
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+    assert store.latest(book.id)['state'] == 'failed'
+    assert store.latest(book.id)['completed_steps'] == 7
+    assert len(api.calls) == 7
+    assert store.enqueue(book.id, settings, options) == run_id
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+    assert len(api.calls) == 7
 
 
 def test_timeout_resume_reuses_summaries_profile_and_pins_model(setup):
@@ -244,7 +342,7 @@ def test_timeout_resume_reuses_summaries_profile_and_pins_model(setup):
         return second
     run_analysis_once(uploads,settings=runtime,api_factory=factory)
     assert captured==['test-model']
-    assert [name for name,_,_ in second.calls]==['CharacterSuggestions','Candidates','Candidates']
+    assert [name for name,_,_ in second.calls]==['CharacterSuggestions','Candidates','Candidates','ScenePlan','ScenePlan']
     assert store.latest(book.id)['state']=='done'
 
 
@@ -252,10 +350,39 @@ def test_timeout_resume_reuses_summaries_profile_and_pins_model(setup):
 def test_zero_usable_quotes_is_an_explicit_completed_empty_result(setup,empty,spoiler):
     settings,uploads,book,_,store=setup
     store.enqueue(book.id,settings,AnalysisOptions())
-    run_analysis_once(uploads,settings=settings,api_factory=lambda _:FakeAPI(empty=empty,spoiler=spoiler))
+    api = FakeAPI(empty=empty, spoiler=spoiler)
+    run_analysis_once(uploads,settings=settings,api_factory=lambda _:api)
     run=store.latest(book.id,include_result=True)
     assert run['state']=='empty' and run['result'] is not None
     assert not any(q.usable for q in run['result'].quotes)
+    assert not any(name == 'ScenePlan' for name, _, _ in api.calls)
+
+
+def test_direction_generated_only_once_per_distinct_selected_quote(setup):
+    settings, uploads, book, _, store = setup
+
+    class DuplicateCandidatesAPI(FakeAPI):
+        async def complete_json(self, system, user, result_type, **kwargs):
+            value = await super().complete_json(system, user, result_type, **kwargs)
+            if result_type is Candidates:
+                return Candidates(candidates=value.candidates * 2)
+            return value
+
+    api = DuplicateCandidatesAPI()
+    store.enqueue(book.id, settings, AnalysisOptions())
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+    run = store.latest(book.id, include_result=True)
+    assert run['state'] == 'done' and len(run['result'].quotes) == 2
+    assert sum(name == 'ScenePlan' for name, _, _ in api.calls) == 2
+
+
+def test_character_only_analysis_has_no_quote_direction_calls(setup):
+    settings, uploads, book, _, store = setup
+    api = FakeAPI()
+    store.enqueue(book.id, settings, AnalysisOptions(purpose='characters'))
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+    assert store.latest(book.id, purpose='characters')['state'] == 'done'
+    assert [name for name, _, _ in api.calls] == ['Summary', 'Summary', 'BookProfile', 'CharacterSuggestions']
 
 
 def test_call_budget_is_persistent_across_retries(setup):
@@ -397,7 +524,7 @@ def test_separate_worker_loads_env_and_finishes_via_http(setup):
             body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             assert body['model']=='test-model'
             props=body['response_format']['json_schema']['schema']['properties']
-            model=(Candidates if 'candidates' in props else BookProfile if 'internal_summary' in props
+            model=(Candidates if 'candidates' in props else ScenePlan if 'actors' in props else BookProfile if 'internal_summary' in props
                    else CharacterSuggestions if 'characters' in props else Summary)
             value=asyncio.run(fake.complete_json(body['messages'][0]['content'],body['messages'][1]['content'],model))
             response=json.dumps({'choices':[{'message':{'content':value.model_dump_json()},'finish_reason':'stop'}]}).encode()
@@ -426,4 +553,4 @@ def test_separate_worker_loads_env_and_finishes_via_http(setup):
         finally:
             server.shutdown()
             thread.join(timeout=3)
-    assert len(fake.calls)==6
+    assert len(fake.calls)==8

@@ -19,7 +19,7 @@ class FormParser(HTMLParser):
             assert self.current is None, "HTML contains nested forms"
             self.current = {"attrs": attrs, "controls": []}
             self.forms.append(self.current)
-        elif self.current is not None and tag in {"input", "button", "select", "textarea"}:
+        elif self.current is not None and tag in {"input", "button", "select", "textarea", "option"}:
             self.current["controls"].append((tag, attrs))
 
     def handle_endtag(self, tag):
@@ -31,6 +31,11 @@ class FormParser(HTMLParser):
 def render_teaser(**overrides):
     templates = Path(__file__).parents[1] / "src" / "bookpromo" / "templates"
     environment = Environment(loader=FileSystemLoader(templates), autoescape=select_autoescape())
+    environment.globals['global_ai'] = lambda: {
+        'preferences': NS(text_provider='openwebui'),
+        'preset': NS(label='FLUX.2 Klein 9B Base'),
+        'text_label': 'Open WebUI', 'text_model': 'test',
+    }
     context = dict(
         url_for=lambda name, **kwargs: "/static/" + kwargs["path"] if name == "static" else "/" + name,
         book=NS(id="book", title="Roman"), active_page="books",
@@ -130,3 +135,77 @@ def test_final_queue_filters_supported_platforms_and_exposes_schema_requirement(
     assert 'Der finale Book-Teaser wurde in die Veröffentlichungs-Queue gestellt.' in html
     assert 'Facebook und TikTok werden für finale Teaser derzeit nicht unterstützt.' in html
     assert any(attrs.get("name") == "queue_mode" and attrs["value"] == "scheduled" for _, attrs in queue["controls"])
+
+
+def planned_teaser_context(*, current=True, can_optimize=True, planned_count=2):
+    draft = NS(revision=9, image_prompt="Window scene", caption_addition="Ein Moment.",
+               video_prompt="The camera tracks sideways.", scene_direction="Robot turns towards Fox.",
+               scene_image_path="scene.png", selected_image_path=None, selected_video_path=None,
+               image_stale=False, video_stale=False)
+    robot = dict(id="robot", name="Robot", selected=True, has_reference=True)
+    fox = dict(id="fox", name="Fox without portrait", selected=True, has_reference=False)
+    plan = dict(
+        chapter_id="chapter", position=1, state="analyzed", draft=draft,
+        suggestion=NS(scene_summary="Scene", teaser_text="Text"), image_sources=[],
+        can_select_image=True, can_edit_prompt=True, can_start_video=True,
+        can_regenerate_image=True, can_configure_characters=True, media_active=False,
+        has_character_references=True, character_options=[robot], plan_character_options=[robot, fox],
+        scene_plan_current=current, can_planned_optimize=can_optimize,
+        scene_plan=NS(setting="Room <window>", composition="Vertical", art_direction="Watercolor",
+                      actors=[NS(name="Robot", pose="Turns towards the window", free_parts=[], contacts=[])],
+                      props=[]),
+    )
+    run = dict(state="done", plans=[plan], label="Ready", provider="openwebui", model_id="test",
+               completed=1, total=1, stage="Ready", transition_ms=500, audio_track_id="song", images_ready=True)
+    return dict(chapter_run=run, reference_workflow_configured=True, optimizable_count=2,
+                planned_optimizable_count=planned_count, plans_to_update_count=1,
+                chapter_teaser_providers=[NS(id="openwebui", label="Open WebUI", model="test")])
+
+
+def test_chapter_plan_editor_preserves_selected_profiles_without_reference_images():
+    html, forms = render_teaser(**planned_teaser_context())
+    editor = next(form for form in forms if form["attrs"].get("action") == "/save_chapter_teaser_plan")
+    cast = [attrs for tag, attrs in editor["controls"] if attrs.get("name") == "character_id"]
+    assert {attrs["value"] for attrs in cast if "checked" in attrs} == {"fox", "robot"}
+    assert "Fox without portrait" in html and "ohne Referenzbild" in html
+    assert "Room &lt;window&gt;" in html and "Room <window>" not in html
+    assert any(attrs.get("name") == "scene_direction" for _, attrs in editor["controls"])
+    assert any(attrs.get("name") == "revision" and attrs.get("value") == "9" for _, attrs in editor["controls"])
+    for route in ("generate_chapter_teaser_plan", "generate_all_chapter_teaser_plans"):
+        generator = next(form for form in forms if form["attrs"].get("action") == "/" + route)
+        assert any(attrs.get("name") == "ai_provider" for _, attrs in generator["controls"])
+    legacy = next(form for form in forms if form["attrs"].get("action") == "/optimize_chapter_teaser_image")
+    assert [attrs["value"] for _, attrs in legacy["controls"] if attrs.get("name") == "character_id"] == ["robot"]
+
+
+def test_chapter_regeneration_fences_revision_and_selects_current_plan_or_legacy_method():
+    for current, expected in ((True, "scene_plan"), (False, "masked")):
+        _, forms = render_teaser(**planned_teaser_context(current=current))
+        regen = next(form for form in forms if form["attrs"].get("action") == "/regenerate_chapter_teaser_image")
+        assert any(attrs.get("name") == "revision" and attrs.get("value") == "9" for _, attrs in regen["controls"])
+        assert [attrs["value"] for tag, attrs in regen["controls"] if tag == "option" and "selected" in attrs] == [expected]
+        assert regen["attrs"]["data-legacy-ready"] == "true"
+
+
+def test_chapter_image_actions_link_directly_to_plan_editor_without_generating_anything():
+    for current in (False, True):
+        html, forms = render_teaser(**planned_teaser_context(current=current, can_optimize=current))
+        shortcut = html.split('<div class="chapter-plan-shortcut">', 1)[1].split('</div>', 1)[0]
+        assert 'type="button"' in shortcut
+        assert 'data-teaser-dialog-open="chapter-plan-chapter"' in shortcut
+        assert '<form' not in shortcut
+        assert ('Szenenplan ansehen / bearbeiten' if current else
+                'Szenenplan mit KI erstellen / aktualisieren') in shortcut
+        assert ('Plan aktuell' if current else 'Szenenplan fehlt oder ist veraltet') in shortcut
+        optimize = next(form for form in forms if form['attrs'].get('action') == '/optimize_chapter_teaser_image')
+        assert any('disabled' in attrs for tag, attrs in optimize['controls'] if tag == 'button') == (not current)
+
+
+def test_bulk_planned_optimization_requires_all_eligible_chapters_to_have_current_plans():
+    for count, ready in ((1, False), (2, True)):
+        _, forms = render_teaser(**planned_teaser_context(planned_count=count))
+        bulk = next(form for form in forms if form["attrs"].get("action") == "/optimize_all_chapter_teaser_images")
+        assert bulk["attrs"]["data-plan-ready"] == str(ready).lower()
+        assert bulk["attrs"]["data-legacy-ready"] == "true"
+        assert any("disabled" in attrs for tag, attrs in bulk["controls"] if tag == "button") == (not ready)
+        assert [attrs["value"] for tag, attrs in bulk["controls"] if tag == "option" and "selected" in attrs] == ["planned_scene"]

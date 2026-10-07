@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
+import math
 from pathlib import Path
 from typing import Literal
 
@@ -29,8 +30,10 @@ class PreparedCarouselSource:
         return len(self.data)
 
 
-def prepare_carousel_source(path: Path) -> PreparedCarouselSource:
+def prepare_carousel_source(path: Path, centering: tuple[float, float] = (0.5, 0.5)) -> PreparedCarouselSource:
     """Normalize a local reviewed image to the exact Instagram 4:5 source contract."""
+    if len(centering) != 2 or any(not math.isfinite(value) or not 0 <= value <= 1 for value in centering):
+        raise UploadError("Bitte einen gültigen Bildausschnitt auswählen.", 422)
     try:
         with Image.open(path) as opened:
             opened.load()
@@ -44,7 +47,7 @@ def prepare_carousel_source(path: Path) -> PreparedCarouselSource:
                 image = image.convert("RGB")
             normalized = ImageOps.fit(
                 image, CAROUSEL_SOURCE_SIZE, method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.5),
+                centering=centering,
             )
             output = BytesIO()
             normalized.save(output, format="JPEG", quality=92, optimize=True, progressive=False,

@@ -2,7 +2,10 @@
 
 from pathlib import Path
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import asyncio
+import hashlib
+import json
 from datetime import datetime
 import re
 import sqlite3
@@ -28,6 +31,8 @@ from .jobs import JobStore
 from .worker import worker_lifespan
 from .openwebui import OpenWebUIClient, OpenWebUIError
 from .model_settings import save_model
+from .ai_settings import AISettingsStore
+from .image_presets import PRESETS, preset_snapshot, check_preset_available
 from .analysis import AnalysisOptions
 from .analysis_store import AnalysisStore
 from .management import BookDetails, FILTERS, ManagementStore, quote_key
@@ -43,6 +48,11 @@ from .reel_content import (
     compose_caption, compose_image_generation_prompt, generate_motion_prompt, generate_reel_copy,
 )
 from .reel_prompts import validate_video_prompt
+from .scene_direction import generate_scene_direction
+from .scene_plan import (
+    compile_scene_plan, decode_saved_plan, encode_saved_plan, generate_scene_plan,
+    scene_plan_fingerprint, validate_reference_bindings,
+)
 from .reel_generation import ReelGenerator, split_audio_segment, wav_waveform
 from .book_teasers import BookTeaserStore, TeaserSegment, chapter_video_ready, complete_chapter_segments
 from .chapter_teasers import ChapterTeaserStore
@@ -51,7 +61,8 @@ from .teaser_publication import book_teaser_platforms
 from .comfy import ComfyClient
 from .characters import CharacterStore, character_mention_index, order_scene_characters
 from .text_ai import (
-    TextAIError, configured_providers, create_text_client, provider_missing,
+    TextAIError, configured_providers as all_configured_providers, create_text_client, provider_missing,
+    provider_endpoint_hash, provider_model_id,
 )
 from pydantic import ValidationError
 
@@ -127,11 +138,24 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     chapter_teaser_store = ChapterTeaserStore(local_store)
     teaser_job_store = BookTeaserJobStore(local_store)
     character_store = CharacterStore(local_store)
+    ai_settings_store = AISettingsStore(local_store)
+
+    def configured_providers(current_settings):
+        selected = ai_settings_store.get(current_settings).text_provider
+        return [p for p in all_configured_providers(current_settings) if p["id"] == selected]
+
+    def global_ai():
+        from .text_ai import PROVIDER_LABELS
+        preferences = ai_settings_store.get(settings)
+        return {"preferences": preferences, "preset": preset_snapshot(preferences.image_preset),
+                "text_label": PROVIDER_LABELS[preferences.text_provider],
+                "text_model": provider_model_id(settings, preferences.text_provider)}
     sync_lock = asyncio.Lock()
     webui_lock = asyncio.Lock()
     reel_ai_lock = asyncio.Lock()
     comfy_lock = asyncio.Lock()
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
+    templates.env.globals["global_ai"] = global_ai
     templates.env.filters["berlin_time"] = lambda value: (
         value.astimezone(ZoneInfo("Europe/Berlin")).strftime("%d.%m.%Y, %H:%M") if value else "Noch nie"
     )
@@ -157,11 +181,21 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         local_books, local_more, local_error = [], False, None
         local_jobs = {}
         local_management = {}
+        local_sync = {}
+        local_covers = {}
         try:
             local_books, local_more = await run_in_threadpool(local_store.list_books, local_page)
             local_jobs = await run_in_threadpool(job_store.statuses, [b.id for b in local_books])
             for book in local_books:
                 local_management[book.id] = await run_in_threadpool(management_store.get, book.id)
+                local_sync[book.id] = await run_in_threadpool(sync_store.receipt, book.id)
+                try:
+                    cover = await run_in_threadpool(asset_store.get, book.id, "cover_front")
+                    if cover and await run_in_threadpool(asset_store.path(cover).is_file):
+                        local_covers[book.id] = cover
+                except (OSError, sqlite3.Error, UploadError):
+                    # A missing/unreadable cover must not hide the book itself.
+                    pass
         except (OSError, sqlite3.Error):
             local_error = "Die lokale Buchablage konnte nicht gelesen werden. Bitte Datenverzeichnis und Zugriffsrechte prüfen."
         items, more, error, connected = [], False, None, False
@@ -179,6 +213,10 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 "local_books": local_books, "local_has_more": local_more, "local_page": local_page,
                 "local_jobs": local_jobs,
                 "local_management": local_management,
+                "local_sync": local_sync,
+                "local_covers": local_covers,
+                "local_remote": {str(item.id): item for item in items},
+                "local_ids": [str(book.id) for book in local_books] if not local_error else [],
                 "local_error": local_error, "max_upload_mb": settings.app_max_upload_mb,
                 "local_deleted": deleted,
                 "show_remote": settings.supabase_enabled or repository is not None,
@@ -218,8 +256,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         return db
 
     async def store_carousel_source(scope: Literal["quote", "chapter"], book_id: UUID,
-                                    owner_id: UUID, path: Path):
-        prepared = await run_in_threadpool(prepare_carousel_source, path)
+                                    owner_id: UUID, path: Path, centering=(0.5, 0.5)):
+        prepared = await run_in_threadpool(prepare_carousel_source, path, centering)
         key = carousel_source_path(scope, str(book_id), str(owner_id), prepared.sha256)
         db = await require_carousel_repository(book_id)
         defaults = await run_in_threadpool(
@@ -297,6 +335,11 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 reel_store.get_or_create_draft,
                 str(book_id), source_key, management["suggestion_id"],
                 item["quote"].id, item["quote"].text,
+                scene_direction=item["quote"].scene_direction,
+                scene_plan_json=encode_saved_plan(item["quote"].scene_plan, scene_plan_fingerprint(
+                    quote=item["quote"].text, image_prompt="", scene_direction=item["quote"].scene_direction,
+                    art_direction=management["details"].image_prompt_base, characters=(),
+                )) if item["quote"].scene_plan else "",
             )
         else:
             draft = await run_in_threadpool(
@@ -309,6 +352,100 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             "reel_workshop", book_id=book_id, chapter_id=chapter_id, quote_id=quote_id,
         ))
 
+    def plan_fingerprint(draft, management, characters):
+        return scene_plan_fingerprint(
+            quote=draft.quote_text, image_prompt=draft.image_prompt,
+            scene_direction=draft.scene_direction, art_direction=management["details"].image_prompt_base,
+            characters=[character for character in characters if character.id in draft.character_ids],
+        )
+
+    def current_scene_plan(draft, management, characters):
+        if not draft.scene_plan_json:
+            return None, False
+        try:
+            saved = decode_saved_plan(draft.scene_plan_json)
+            validate_reference_bindings(saved.plan, [
+                character for character in characters if character.id in draft.character_ids
+            ])
+            compile_scene_plan(saved.plan)
+            current = (saved.fingerprint == plan_fingerprint(draft, management, characters)
+                       and set(draft.character_ids) <= {character.id for character in characters})
+            return saved.plan, current
+        except (ValueError, TypeError):
+            return None, False
+
+    async def simple_image_inputs(request, book_id, draft, management, source_context):
+        """Validate the whole user action before queueing; never call text AI here."""
+        try:
+            async with request.form(max_files=0, max_fields=10) as form:
+                required = {"revision", "image_prompt", "scene_direction", "mode"}
+                if (set(form) - (required | {"character_ids", "ai_provider"}) or required - set(form)
+                        or any(len(form.getlist(key)) != 1 or not isinstance(form[key], str)
+                               for key in required)):
+                    raise ValueError()
+                revision = int(form["revision"])
+                # Browser form textareas submit CRLF; pasted/legacy text may
+                # also contain lone CR. Canonicalize before rejecting controls.
+                image_prompt = form["image_prompt"].replace("\r\n", "\n").replace("\r", "\n").strip()
+                scene_direction = form["scene_direction"].replace("\r\n", "\n").replace("\r", "\n").strip()
+                mode = form["mode"]
+                if "ai_provider" in form and (len(form.getlist("ai_provider")) != 1
+                        or form["ai_provider"] not in {"", "openwebui", "comfyui_qwen"}):
+                    raise ValueError()
+                preferences = ai_settings_store.get(settings)
+                provider = preferences.text_provider
+                character_ids = [str(UUID(str(value))) for value in form.getlist("character_ids")]
+                if (not image_prompt or len(image_prompt) > 8000 or len(scene_direction) > 2000
+                        or mode not in {"plain", "text", "references"} or len(character_ids) > 4
+                        or len(set(character_ids)) != len(character_ids)
+                        or (mode == "references" and not character_ids)
+                        or any(ord(char) < 32 and char not in "\n\t"
+                               for char in image_prompt + scene_direction)):
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte eine Szene, bis zu vier Figuren und ein gültiges Bildverfahren auswählen.") from None
+        if revision != draft.revision:
+            raise UploadError("Der Entwurf wurde geändert. Bitte neu laden.", 409)
+        if any(item["state"] in {"queued", "running"}
+               for item in await run_in_threadpool(reel_jobs.status, draft.id)):
+            raise UploadError("Für dieses Bild läuft bereits ein Auftrag. Bitte kurz warten.", 409)
+        characters = await run_in_threadpool(character_store.list, str(book_id))
+        selected = [character for character in characters if character.id in character_ids]
+        if len(selected) != len(character_ids):
+            raise UploadError("Die Charakterauswahl gehört nicht mehr zu diesem Buch. Bitte neu laden.", 409)
+        if mode == "references":
+            def check_references():
+                for character in selected:
+                    path = character_store.reference_path(character)
+                    if not character.has_reference or path is None:
+                        raise UploadError(f"Für {character.name} fehlt ein gespeichertes Referenzbild.", 409)
+                    with path.open("rb") as image:
+                        if hashlib.file_digest(image, "sha256").hexdigest() != character.reference_image_sha256:
+                            raise UploadError(f"Das Referenzbild von {character.name} ist beschädigt. Bitte erneuern.", 409)
+            await run_in_threadpool(check_references)
+        proposed = replace(draft, image_prompt=image_prompt, scene_direction=scene_direction,
+                           character_ids_json=json.dumps(character_ids))
+        _, plan_current = current_scene_plan(proposed, management, characters)
+        if provider not in {"", "openwebui", "comfyui_qwen"}:
+            raise UploadError("Bitte einen gültigen Text-KI-Provider auswählen.")
+        if not plan_current and (not provider or provider_missing(settings, provider)):
+            raise UploadError("Für die automatische Szenenplanung einen eingerichteten Text-KI-Provider auswählen.", 409)
+        if len(source_context["quote"]) > 14000:
+            raise UploadError("Der ausgewählte Szenenmoment ist für die Planung zu lang.", 409)
+        payload = {
+            "source_context": source_context,
+            "art_direction": management["details"].image_prompt_base,
+            "input_fingerprint": plan_fingerprint(proposed, management, characters),
+            "image_preset": preset_snapshot(preferences.image_preset),
+        }
+        if plan_current:
+            payload["scene_plan_json"] = draft.scene_plan_json
+        if provider:
+            payload.update(ai_provider=provider, ai_model_id=provider_model_id(settings, provider),
+                           ai_endpoint_hash=provider_endpoint_hash(settings, provider))
+        return {"revision": revision, "image_prompt": image_prompt, "scene_direction": scene_direction,
+                "character_ids": character_ids, "mode": mode, "payload": payload}
+
     async def workshop_response(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         book, chapter, quote, management, draft = await reel_context(
             book_id, chapter_id, quote_id, create=True,
@@ -316,6 +453,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         tracks = await run_in_threadpool(reel_store.list_audio, str(book_id))
         characters = await run_in_threadpool(character_store.list, str(book_id))
         selected_character_ids = set(draft.character_ids)
+        scene_plan, scene_plan_current = current_scene_plan(draft, management, characters)
         publication_defaults = await run_in_threadpool(
             reel_store.get_publication_defaults, settings.reel_storage_provider,
         )
@@ -332,20 +470,30 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             state = latest["state"]
             latest.update(
                 active=state in {"queued", "running"},
-                stage=f"{kind} {'wartet' if state == 'queued' else 'wird erzeugt' if state == 'running' else 'ist fehlgeschlagen' if state == 'failed' else 'ist fertig'}",
+                stage=(latest.get("image_stage") if state == "running" and latest.get("image_stage") else
+                       f"{kind} {'wartet' if state == 'queued' else 'wird erzeugt' if state == 'running' else 'ist fehlgeschlagen' if state == 'failed' else 'ist fertig'}"),
             )
+            if state == "stale":
+                latest["stage"] = f"{kind} ist veraltet · Vorgaben wurden geändert"
         return templates.TemplateResponse(
             request=request,
             name="reel_workshop.html",
             context={
                 "book": book, "chapter": chapter, "quote": quote, "management": management,
                 "draft": draft, "tracks": tracks, "characters": characters,
+                "scene_plan": scene_plan, "scene_plan_current": scene_plan_current,
                 "has_selected_references": any(
                     character.id in selected_character_ids and character.has_reference
                     for character in characters
                 ),
+                "has_complete_selected_references": bool(selected_character_ids) and all(
+                    any(character.id == item and character.has_reference for character in characters)
+                    for item in selected_character_ids
+                ),
                 "job": latest, "message": None,
                 "text_ai_providers": configured_providers(settings),
+                "simple_image_provider": ("comfyui_qwen" if not provider_missing(settings, "comfyui_qwen")
+                                          else "openwebui"),
                 "default_duration": settings.reel_default_duration_seconds,
                 "publication_defaults": publication_defaults,
                 "can_queue": draft.state in {"ready", "stocked"} and bool(publication_defaults.values.selected())
@@ -355,6 +503,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 "carousel_schema_ready": carousel_schema_ready,
                 "carousel_source_error": carousel_source_error,
                 "quote_carousel_source": quote_carousel_source,
+                "carousel_crop": await run_in_threadpool(reel_store.carousel_crop, draft),
                 "chapter_carousel_source": chapter_carousel_source,
                 "effective_carousel_source": quote_carousel_source or chapter_carousel_source,
             },
@@ -367,7 +516,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         try:
             async with request.form(max_files=0, max_fields=1) as form:
                 if not form:
-                    provider = "openwebui"
+                    provider = ai_settings_store.get(settings).text_provider
                 elif set(form) == {"ai_provider"} and len(form.getlist("ai_provider")) == 1:
                     provider = str(form["ai_provider"])
                 else:
@@ -376,6 +525,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 raise ValueError()
         except (TypeError, ValueError):
             raise UploadError("Bitte einen gültigen Text-KI-Provider auswählen.") from None
+        provider = ai_settings_store.get(settings).text_provider
         if provider_missing(settings, provider):
             raise UploadError("Der ausgewählte Text-KI-Provider ist nicht eingerichtet.", 409)
         return provider
@@ -464,6 +614,11 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                  "selected": bool(draft and character.id in draft.character_ids)}
                 for character in characters if character.has_reference
             ]
+            plan["plan_character_options"] = [
+                {"id": character.id, "name": character.name, "has_reference": character.has_reference,
+                 "selected": bool(draft and character.id in draft.character_ids)}
+                for character in characters
+            ]
             plan["image_sources"] = [
                 {"id": source, "label": label, "selected": (
                     draft.selected_image_source == source and draft.selected_image_path == path
@@ -486,6 +641,14 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 and draft.image_prompt and settings.reel_image_workflow.is_file()
             )
             plan["can_edit_prompt"] = bool(draft and plan["can_select_image"] and plan.get("suggestion"))
+            plan["scene_plan"], plan["scene_plan_current"] = (
+                current_scene_plan(draft, management, characters) if draft else (None, False)
+            )
+            plan["can_planned_optimize"] = bool(
+                plan["can_optimize"] and plan["scene_plan_current"] and draft.character_ids
+                and len(selected_characters) == len(draft.character_ids)
+                and all(character.has_reference for character in selected_characters)
+            )
             plan["can_start_video"] = bool(
                 draft and plan["can_select_image"] and draft.selected_image_path
                 and not draft.image_stale and any(option["selected"] for option in plan["image_sources"])
@@ -629,6 +792,14 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             ),
             "chapter_media_active": chapter_media_active,
             "optimizable_count": optimizable_count,
+            "planned_optimizable_count": sum(
+                bool(plan["can_bulk_optimize"] and plan["can_planned_optimize"])
+                for plan in (chapter_run or {}).get("plans", [])
+            ),
+            "plans_to_update_count": sum(
+                bool(plan["can_edit_prompt"] and not plan["scene_plan_current"])
+                for plan in (chapter_run or {}).get("plans", [])
+            ),
             "can_start_chapter_videos": can_start_chapter_videos,
             "complete_teaser_ready": complete_teaser_ready,
             "book_teaser_queue_platforms": final_platforms,
@@ -641,6 +812,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             "chapter_video_configured": chapter_video_configured,
             "reference_workflow_configured": settings.reel_reference_workflow.is_file(),
             "chapter_teaser_providers": chapter_teaser_providers,
+            "simple_image_provider": ((chapter_run or {}).get("provider") or
+                                      ("comfyui_qwen" if not provider_missing(settings, "comfyui_qwen") else "openwebui")),
             "publication_defaults": publication_defaults,
             "supabase_enabled": settings.supabase_enabled or repository is not None,
             "book_synced": sync_receipt is not None,
@@ -649,7 +822,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 and (settings.supabase_enabled or repository is not None)
                 and sync_receipt is not None and chapter_queue_schema_ready,
             "chapter_teaser_configured": bool(chapter_teaser_providers)
-                and settings.reel_image_workflow.is_file(),
+                and bool(ai_settings_store.get(settings).image_preset),
             "carousel_schema_ready": carousel_schema_ready,
             "carousel_source_error": carousel_source_error,
         }
@@ -840,8 +1013,6 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     )
     async def start_chapter_teasers(request: Request, book_id: UUID):
         require_local_origin(request)
-        if not settings.reel_image_workflow.is_file():
-            raise UploadError("Bitte zuerst den ComfyUI-Szenenbild-Workflow einrichten.", 409)
         context = await teaser_context(book_id)
         try:
             async with request.form(max_files=0, max_fields=3) as form:
@@ -856,6 +1027,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise UploadError(
                 "Bitte Text-KI, Song und Überblendung für die Kapitel-Reels auswählen."
             ) from None
+        provider = ai_settings_store.get(settings).text_provider
         if provider_missing(settings, provider):
             raise UploadError("Der ausgewählte Text-KI-Provider ist nicht eingerichtet.", 409)
         details = context["management"]["details"]
@@ -871,6 +1043,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 "spoilers": details.spoilers,
                 "image_prompt_base": details.image_prompt_base,
                 "caption_guidelines": details.caption_guidelines,
+                "image_preset": preset_snapshot(ai_settings_store.get(settings).image_preset),
             },
         )
         return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
@@ -931,6 +1104,27 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
         prepared = await run_in_threadpool(prepare_carousel_source, path)
         return Response(prepared.data, media_type="image/jpeg")
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/carousel-crop",
+        name="save_quote_carousel_crop",
+    )
+    async def save_quote_carousel_crop(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        try:
+            async with request.form(max_files=0, max_fields=5) as form:
+                required = {"revision", "image_sha256", "crop_revision", "focus_x", "focus_y"}
+                if set(form) != required or any(len(form.getlist(key)) != 1 for key in required):
+                    raise ValueError()
+                revision, crop_revision = int(str(form["revision"])), int(str(form["crop_revision"]))
+                image_sha256 = str(form["image_sha256"])
+                x, y = float(str(form["focus_x"])), float(str(form["focus_y"]))
+        except (TypeError, ValueError):
+            raise UploadError("Bitte einen gültigen Bildausschnitt auswählen.", 422) from None
+        await run_in_threadpool(reel_store.save_carousel_crop, draft.id, revision,
+                                image_sha256, crop_revision, x, y)
+        return action_response(request, book_id, chapter_id, quote_id)
 
     @app.post(
         "/books/local/{book_id}/teaser/chapters/{chapter_id}/carousel-source",
@@ -1005,6 +1199,168 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         )
         return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
 
+    def chapter_plan_in_context(context, chapter_id):
+        plan = next((item for item in (context["chapter_run"] or {}).get("plans", [])
+                     if item["chapter_id"] == str(chapter_id)), None)
+        if plan is None or not plan.get("can_edit_prompt"):
+            raise UploadError("Der Kapitel-Szenenplan kann jetzt nicht bearbeitet werden.", 409)
+        return plan
+
+    async def chapter_plan_provider(form):
+        provider = str(form["ai_provider"])
+        if provider not in {"openwebui", "comfyui_qwen"}:
+            raise UploadError("Bitte einen gültigen Text-KI-Provider auswählen.")
+        provider = ai_settings_store.get(settings).text_provider
+        if provider_missing(settings, provider):
+            raise UploadError("Der ausgewählte Text-KI-Provider ist nicht eingerichtet.", 409)
+        return provider
+
+    async def build_chapter_plan(book_id, context, checkpoint, revision, provider):
+        draft = checkpoint["draft"]
+        if revision != draft.revision:
+            raise UploadError("Der Kapitel-Entwurf wurde geändert. Bitte neu laden.", 409)
+        characters = await run_in_threadpool(character_store.list, str(book_id))
+        selected = [character for character in characters if character.id in draft.character_ids]
+        if len(selected) != len(draft.character_ids):
+            raise UploadError("Die Charakterauswahl wurde geändert. Bitte neu speichern.", 409)
+        fingerprint = plan_fingerprint(draft, context["management"], characters)
+        # Batch checkpoints may have changed while a preceding chapter was
+        # planned. Reject known-stale work before spending another AI request.
+        await run_in_threadpool(
+            chapter_teaser_store.check_scene_plan_inputs, str(book_id), context["chapter_run"]["id"],
+            draft.id, revision, fingerprint,
+        )
+        # Only the chosen moment and its immediate source context, not every scene
+        # of the chapter or old image details, define the action to stage.
+        chapter = next((item for item in context["record"].result.chapters
+                        if item.id == checkpoint["chapter_id"]), None)
+        source = chapter.source_text if chapter else ""
+        offset = source.find(draft.quote_text)
+        before = source[max(0, offset - 1200):offset] if offset >= 0 else ""
+        after = source[offset + len(draft.quote_text):offset + len(draft.quote_text) + 1200] if offset >= 0 else ""
+        plan = await generate_scene_plan(
+            create_text_client(settings, provider), quote=draft.quote_text,
+            context_before=before, context_after=after, image_prompt=draft.image_prompt,
+            scene_direction=draft.scene_direction,
+            art_direction=context["management"]["details"].image_prompt_base,
+            characters=tuple({"name": character.name, "aliases": list(character.aliases)}
+                             for character in selected),
+        )
+        try:
+            validate_reference_bindings(plan, selected)
+            compile_scene_plan(plan)
+        except ValueError:
+            raise UploadError("Der KI-Szenenplan passt nicht zur Charakterauswahl. Bitte Auswahl prüfen und erneut planen.", 409) from None
+        latest_management = await run_in_threadpool(management_store.get, str(book_id))
+        latest_characters = await run_in_threadpool(character_store.list, str(book_id))
+        if fingerprint != plan_fingerprint(draft, latest_management, latest_characters):
+            raise UploadError("Buchstil oder Referenzen wurden während der Planung geändert. Bitte erneut planen.", 409)
+        await run_in_threadpool(
+            chapter_teaser_store.save_scene_plan, str(book_id), context["chapter_run"]["id"],
+            draft.id, revision, encode_saved_plan(plan, fingerprint),
+        )
+
+    @app.post("/books/local/{book_id}/teaser/chapters/{chapter_id}/image/create",
+              name="create_chapter_teaser_image")
+    async def create_chapter_teaser_image(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        checkpoint = chapter_plan_in_context(context, chapter_id)
+        draft = checkpoint["draft"]
+        chapter = next((item for item in context["record"].result.chapters
+                        if item.id == str(chapter_id)), None)
+        source = chapter.source_text if chapter else ""
+        offset = source.find(draft.quote_text)
+        if not draft.quote_text or offset < 0:
+            raise UploadError("Der gewählte Szenenmoment passt nicht mehr zum Kapitel. Bitte die Analyse aktualisieren.", 409)
+        source_context = {
+            "quote": draft.quote_text,
+            "context_before": source[max(0, offset - 1200):offset],
+            "context_after": source[offset + len(draft.quote_text):offset + len(draft.quote_text) + 1200],
+        }
+        inputs = await simple_image_inputs(request, book_id, draft, context["management"], source_context)
+        inputs["payload"]["source_snapshot"] = {
+            "extraction_revision": context["record"].revision, "chapter_id": str(chapter_id),
+            "chapter_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        }
+        await run_in_threadpool(
+            chapter_teaser_store.enqueue_simple_image, str(book_id), context["chapter_run"]["id"],
+            draft.id, **inputs,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post("/books/local/{book_id}/teaser/chapters/{chapter_id}/plan/save",
+              name="save_chapter_teaser_plan")
+    async def save_chapter_teaser_plan(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        checkpoint = chapter_plan_in_context(context, chapter_id)
+        try:
+            async with request.form(max_files=0, max_fields=6) as form:
+                if (set(form) - {"revision", "scene_direction", "character_id"}
+                        or not {"revision", "scene_direction"} <= set(form)
+                        or any(len(form.getlist(key)) != 1 for key in {"revision", "scene_direction"})):
+                    raise ValueError()
+                revision = int(str(form["revision"]))
+                direction = str(form["scene_direction"])
+                selected = [str(UUID(str(value))) for value in form.getlist("character_id")]
+                if len(direction) > 2000 or len(selected) > 4 or len(set(selected)) != len(selected):
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte eine Regie mit höchstens 2000 Zeichen und bis zu vier Figuren angeben.") from None
+        draft = checkpoint["draft"]
+        await run_in_threadpool(
+            chapter_teaser_store.save_prompt, str(book_id), context["chapter_run"]["id"], draft.id,
+            revision, image_prompt=draft.image_prompt, teaser_text=draft.caption_addition,
+            scene_direction=direction, character_ids=selected,
+        )
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post("/books/local/{book_id}/teaser/chapters/{chapter_id}/plan/generate",
+              name="generate_chapter_teaser_plan")
+    async def generate_chapter_teaser_plan(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        try:
+            async with request.form(max_files=0, max_fields=2) as form:
+                if (set(form) != {"revision", "ai_provider"}
+                        or any(len(form.getlist(key)) != 1 for key in form)):
+                    raise ValueError()
+                revision = int(str(form["revision"]))
+                provider = await chapter_plan_provider(form)
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte einen gültigen Text-KI-Provider und Entwurfsstand auswählen.") from None
+        context = await teaser_context(book_id)
+        checkpoint = chapter_plan_in_context(context, chapter_id)
+        if reel_ai_lock.locked():
+            raise UploadError("Eine KI-Planung läuft bereits. Bitte kurz warten.", 409)
+        async with reel_ai_lock:
+            await build_chapter_plan(book_id, context, checkpoint, revision, provider)
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
+    @app.post("/books/local/{book_id}/teaser/chapters/plans/generate",
+              name="generate_all_chapter_teaser_plans")
+    async def generate_all_chapter_teaser_plans(request: Request, book_id: UUID):
+        require_local_origin(request)
+        context = await teaser_context(book_id)
+        async with request.form(max_files=0, max_fields=2) as form:
+            if (set(form) != {"run_id", "ai_provider"}
+                    or any(len(form.getlist(key)) != 1 for key in form)
+                    or form["run_id"] != (context["chapter_run"] or {}).get("id")):
+                raise UploadError("Bitte den aktuellen Kapitel-Lauf und Text-KI-Provider auswählen.")
+            provider = await chapter_plan_provider(form)
+        checkpoints = [item for item in context["chapter_run"]["plans"]
+                       if item["can_edit_prompt"] and not item["scene_plan_current"]]
+        if not checkpoints:
+            raise UploadError("Alle bearbeitbaren Kapitel haben bereits einen aktuellen Szenenplan.", 409)
+        if reel_ai_lock.locked():
+            raise UploadError("Eine KI-Planung läuft bereits. Bitte kurz warten.", 409)
+        # Explicit batch: one request per missing/stale plan, no image jobs.
+        # Each result commits independently; failures retain earlier valid plans.
+        async with reel_ai_lock:
+            for checkpoint in checkpoints:
+                await build_chapter_plan(book_id, context, checkpoint, checkpoint["draft"].revision, provider)
+        return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
+
     @app.post(
         "/books/local/{book_id}/teaser/chapters/{chapter_id}/video/start",
         name="start_chapter_teaser_video",
@@ -1047,9 +1403,23 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         )
         if plan is None or not plan.get("can_regenerate_image"):
             raise UploadError("Das Kapitelbild kann jetzt nicht neu erzeugt werden.", 409)
+        try:
+            async with request.form(max_files=0, max_fields=2) as form:
+                if (set(form) - {"revision", "strategy"}
+                        or any(len(form.getlist(key)) != 1 for key in form)):
+                    raise ValueError()
+                strategy = str(form.get("strategy", "masked"))
+                revision = int(str(form["revision"])) if "revision" in form else None
+                if strategy not in {"masked", "scene_plan"} or (strategy == "scene_plan" and revision is None):
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte ein gültiges Bildverfahren und den aktuellen Entwurfsstand auswählen.") from None
+        if strategy == "scene_plan" and not plan["scene_plan_current"]:
+            raise UploadError("Bitte zuerst den Szenenplan aktualisieren.", 409)
         await run_in_threadpool(
             chapter_teaser_store.reopen_image_review, str(book_id),
             context["chapter_run"]["id"], [plan["draft"].id], regenerate=True,
+            strategy=strategy, revision=revision,
         )
         return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
 
@@ -1091,24 +1461,31 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise UploadError(
                 "Für dieses Kapitel sind Szenenbild und Charakterreferenzen nicht bereit.", 409,
             )
-        revision, selected = None, None
+        revision, selected, strategy = None, None, "masked"
         try:
             async with request.form(max_files=0, max_fields=6) as form:
                 if form:
-                    if set(form) - {"revision", "character_id"} or "revision" not in form:
+                    if (set(form) - {"revision", "character_id", "strategy"} or "revision" not in form
+                            or any(len(form.getlist(key)) != 1 for key in form if key != "character_id")):
                         raise ValueError()
                     revision = int(str(form["revision"]))
-                    selected = [str(UUID(str(value))) for value in form.getlist("character_id")]
-                    if not 1 <= len(selected) <= 4 or len(selected) != len(set(selected)):
+                    strategy = str(form.get("strategy", "masked"))
+                    selected = ([str(UUID(str(value))) for value in form.getlist("character_id")]
+                                if "character_id" in form else None)
+                    if (strategy not in {"masked", "planned_scene"}
+                            or (selected is None and strategy == "masked")
+                            or (selected is not None and (not 1 <= len(selected) <= 4 or len(selected) != len(set(selected))))):
                         raise ValueError()
                 elif not plan.get("can_optimize"):
                     raise ValueError()
         except (KeyError, TypeError, ValueError):
             raise UploadError("Bitte ein bis vier Charakterreferenzen für dieses Bild auswählen.") from None
+        if strategy == "planned_scene" and not plan["can_planned_optimize"]:
+            raise UploadError("Bitte den Szenenplan und die gespeicherten Charakterreferenzen aktualisieren.", 409)
         await run_in_threadpool(
             chapter_teaser_store.reopen_image_review, str(book_id),
             context["chapter_run"]["id"], [plan["draft"].id], optimize=True,
-            character_ids=selected, revision=revision,
+            character_ids=selected, revision=revision, strategy=strategy,
         )
         return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
 
@@ -1119,6 +1496,11 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     async def optimize_all_chapter_teaser_images(request: Request, book_id: UUID):
         require_local_origin(request)
         context = await teaser_context(book_id)
+        async with request.form(max_files=0, max_fields=1) as form:
+            if (set(form) - {"strategy"} or any(len(form.getlist(key)) != 1 for key in form)
+                    or str(form.get("strategy", "masked")) not in {"masked", "planned_scene"}):
+                raise UploadError("Bitte ein gültiges Charakterbild-Verfahren auswählen.")
+            strategy = str(form.get("strategy", "masked"))
         plans = [
             plan for plan in (context["chapter_run"] or {}).get("plans", [])
             if plan.get("can_bulk_optimize")
@@ -1127,9 +1509,12 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise UploadError(
                 "Es gibt derzeit keine Kapitelbilder mit nutzbaren Charakterreferenzen.", 409,
             )
+        if strategy == "planned_scene" and any(not plan["can_planned_optimize"] for plan in plans):
+            raise UploadError("Mindestens ein Kapitel braucht einen aktuellen Szenenplan oder vollständige Referenzen. Bitte zuerst aktualisieren.", 409)
         await run_in_threadpool(
             chapter_teaser_store.reopen_image_review, str(book_id),
             context["chapter_run"]["id"], [plan["draft"].id for plan in plans], optimize=True,
+            strategy=strategy,
         )
         return RedirectResponse(request.url_for("book_teaser", book_id=book_id), status_code=303)
 
@@ -1687,6 +2072,9 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         return templates.TemplateResponse(request=request, name="local_chapter.html",
             context={"active_page": "books", "book": book, "chapter": chapter, "record": record,
                      "analysis": analysis, "management": management, "quote_items": filtered[(quote_page-1)*20:quote_page*20],
+                     "chapters": record.result.chapters,
+                     "chapter_quote_counts": {c.id: sum(q["usable"] and q["quote"].chapter_id == c.id for q in management["quotes"]) for c in record.result.chapters},
+                     "chapter_blocked_counts": {c.id: sum(q["blocked"] and q["quote"].chapter_id == c.id for q in management["quotes"]) for c in record.result.chapters},
                      "usage_error":usage_error,
                      "filters": FILTERS, "filter": filter, "filter_counts": counts, "quote_page": quote_page, "quote_more": len(filtered)>quote_page*20,
                      "summary": analysis["result"].chapter_summaries.get(chapter.id) if analysis and analysis["result"] else None})
@@ -1709,7 +2097,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     async def generate_reel_copy_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         require_local_origin(request)
         provider = await requested_text_provider(request)
-        _, _, quote, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        _, chapter, quote, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
         characters = await run_in_threadpool(character_store.list, str(book_id))
         if reel_ai_lock.locked():
             raise UploadError("Eine Reel-KI-Anfrage läuft bereits. Bitte kurz warten.", 409)
@@ -1719,15 +2107,29 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 book_profile=management["details"].model_dump(),
                 context_before=quote.context_before,
                 context_after=quote.context_after,
+                characters=tuple({"name": character.name, "aliases": list(character.aliases)}
+                                 for character in characters),
+                scene_direction=draft.scene_direction,
             )
         selected_ids = _detected_character_ids(
             characters, quote, generated_prompt=result.image_prompt,
         )
-        await run_in_threadpool(
+        updated = await run_in_threadpool(
             reel_store.update_draft, draft.id, draft.revision,
             caption_addition=result.addition, final_caption=result.caption, image_prompt=result.image_prompt,
             character_ids=selected_ids,
+            scene_direction=draft.scene_direction or result.scene_direction,
         )
+        if result.scene_plan is not None:
+            try:
+                validate_reference_bindings(result.scene_plan, [
+                    character for character in characters if character.id in selected_ids
+                ])
+            except ValueError:
+                pass  # A manually corrected cast can explicitly re-plan before rendering.
+            else:
+                await run_in_threadpool(reel_store.save_scene_plan, updated.id, updated.revision,
+                    encode_saved_plan(result.scene_plan, plan_fingerprint(updated, management, characters)))
         return action_response(request, book_id, chapter_id, quote_id)
 
     @app.post(
@@ -1774,13 +2176,177 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         await run_in_threadpool(reel_jobs.enqueue, draft.id, "image", {"operation": "scene"})
         return action_response(request, book_id, chapter_id, quote_id)
 
+    @app.post("/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image/create",
+              name="create_reel_image_route")
+    async def create_reel_image_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        _, chapter, quote, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        inputs = await simple_image_inputs(request, book_id, draft, management, {
+            "quote": quote.text, "context_before": quote.context_before[-4000:],
+            "context_after": quote.context_after[:4000],
+        })
+        record = await run_in_threadpool(extraction_store.get, str(book_id))
+        inputs["payload"]["source_snapshot"] = {
+            "extraction_revision": record.revision, "chapter_id": str(chapter_id),
+            "chapter_sha256": hashlib.sha256(chapter.source_text.encode("utf-8")).hexdigest(),
+        }
+        await run_in_threadpool(reel_jobs.enqueue_simple_image, draft.id, **inputs)
+        return action_response(request, book_id, chapter_id, quote_id)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/direction/save",
+        name="save_reel_direction_route",
+    )
+    async def save_reel_direction_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        try:
+            async with request.form(max_files=0, max_fields=3) as form:
+                required = {"revision", "scene_direction"}
+                if (required - set(form) or set(form) - (required | {"strategy"})
+                        or any(len(form.getlist(key)) != 1 or not isinstance(form[key], str) for key in form)):
+                    raise ValueError()
+                if "strategy" in form and form["strategy"] not in {"reference_scene", "masked", "planned_scene"}:
+                    raise ValueError()
+                revision = int(form["revision"])
+                direction = form["scene_direction"]
+                if len(direction) > 2000:
+                    raise ValueError()
+        except (TypeError, ValueError):
+            raise UploadError("Bitte eine einzelne Pose-/Requisiten-Vorgabe mit höchstens 2000 Zeichen angeben.") from None
+        await run_in_threadpool(reel_store.update_draft, draft.id, revision, scene_direction=direction)
+        return action_response(request, book_id, chapter_id, quote_id)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/direction/generate",
+        name="generate_reel_direction_route",
+    )
+    async def generate_reel_direction_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        try:
+            async with request.form(max_files=0, max_fields=2) as form:
+                if (set(form) != {"revision", "ai_provider"}
+                        or any(len(form.getlist(key)) != 1 or not isinstance(form[key], str) for key in form)):
+                    raise ValueError()
+                revision = int(form["revision"])
+                provider = form["ai_provider"]
+                if provider not in {"openwebui", "comfyui_qwen"}:
+                    raise ValueError()
+        except (TypeError, ValueError):
+            raise UploadError("Bitte einen gültigen Text-KI-Provider auswählen.") from None
+        provider = ai_settings_store.get(settings).text_provider
+        if provider_missing(settings, provider):
+            raise UploadError("Der ausgewählte Text-KI-Provider ist nicht eingerichtet.", 409)
+        _, _, quote, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        if draft.revision != revision:
+            raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+        if any(item["state"] in {"queued", "running"} for item in await run_in_threadpool(reel_jobs.status, draft.id)):
+            raise UploadError("Für dieses Zitat läuft noch ein Verarbeitungsschritt. Bitte kurz warten.", 409)
+        characters = await run_in_threadpool(character_store.list, str(book_id))
+        if reel_ai_lock.locked():
+            raise UploadError("Eine Reel-KI-Anfrage läuft bereits. Bitte kurz warten.", 409)
+        async with reel_ai_lock:
+            direction = await generate_scene_direction(
+                create_text_client(settings, provider), quote=quote.text,
+                context_before=quote.context_before, context_after=quote.context_after,
+                image_prompt=draft.image_prompt,
+                characters=tuple({"name": character.name, "aliases": list(character.aliases)}
+                                 for character in characters if character.id in draft.character_ids),
+            )
+        await run_in_threadpool(reel_store.update_draft, draft.id, revision, scene_direction=direction)
+        return action_response(request, book_id, chapter_id, quote_id)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/plan/generate",
+        name="generate_reel_plan_route",
+    )
+    async def generate_reel_plan_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        try:
+            async with request.form(max_files=0, max_fields=2) as form:
+                if (set(form) != {"revision", "ai_provider"}
+                        or any(len(form.getlist(key)) != 1 or not isinstance(form[key], str) for key in form)):
+                    raise ValueError()
+                revision, provider = int(form["revision"]), form["ai_provider"]
+                if provider not in {"openwebui", "comfyui_qwen"}:
+                    raise ValueError()
+        except (TypeError, ValueError):
+            raise UploadError("Bitte einen gültigen Text-KI-Provider und Entwurfsstand auswählen.") from None
+        provider = ai_settings_store.get(settings).text_provider
+        if provider_missing(settings, provider):
+            raise UploadError("Der ausgewählte Text-KI-Provider ist nicht eingerichtet.", 409)
+        _, _, quote, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        if revision != draft.revision:
+            raise UploadError("Der Reel-Entwurf wurde geändert. Bitte neu laden.", 409)
+        if any(item["state"] in {"queued", "running"} for item in await run_in_threadpool(reel_jobs.status, draft.id)):
+            raise UploadError("Für dieses Zitat läuft noch ein Verarbeitungsschritt.", 409)
+        characters = await run_in_threadpool(character_store.list, str(book_id))
+        selected = [character for character in characters if character.id in draft.character_ids]
+        if len(selected) != len(draft.character_ids):
+            raise UploadError("Die Charakterauswahl wurde geändert. Bitte neu speichern.", 409)
+        fingerprint = plan_fingerprint(draft, management, characters)
+        if reel_ai_lock.locked():
+            raise UploadError("Eine Reel-KI-Anfrage läuft bereits. Bitte kurz warten.", 409)
+        async with reel_ai_lock:
+            plan = await generate_scene_plan(
+                create_text_client(settings, provider), quote=quote.text,
+                context_before=quote.context_before, context_after=quote.context_after,
+                image_prompt=draft.image_prompt, scene_direction=draft.scene_direction,
+                art_direction=management["details"].image_prompt_base,
+                characters=tuple({"name": character.name, "aliases": list(character.aliases)}
+                                 for character in selected),
+            )
+        try:
+            validate_reference_bindings(plan, selected)
+            compile_scene_plan(plan)
+        except ValueError:
+            raise UploadError("Der KI-Szenenplan passt nicht zur Charakterauswahl. Bitte Auswahl prüfen und erneut planen.", 409) from None
+        latest_management = await run_in_threadpool(management_store.get, str(book_id))
+        latest_characters = await run_in_threadpool(character_store.list, str(book_id))
+        if fingerprint != plan_fingerprint(draft, latest_management, latest_characters):
+            raise UploadError("Buchstil oder Referenzen wurden während der Planung geändert. Bitte erneut planen.", 409)
+        await run_in_threadpool(reel_store.save_scene_plan, draft.id, revision, encode_saved_plan(plan, fingerprint))
+        return action_response(request, book_id, chapter_id, quote_id)
+
     @app.post(
         "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image/optimize",
         name="optimize_reel_image_route",
     )
     async def optimize_reel_image_route(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         require_local_origin(request)
-        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type not in {"application/x-www-form-urlencoded", "multipart/form-data"} and await request.body():
+            raise UploadError("Bitte die Charakteroptimierung über das Formular auswählen.", 415)
+        async with request.form(max_files=0, max_fields=3) as form:
+            scene_direction = ""
+            direction_revision = None
+            if not form:
+                strategy = "masked"  # Preserve legacy callers and durable/bulk jobs.
+            elif (set(form) <= {"strategy", "scene_direction", "revision"} and "strategy" in form
+                  and len(form.getlist("strategy")) == 1
+                  and isinstance(form["strategy"], str)
+                  and form["strategy"] in {"masked", "reference_scene", "planned_scene"}):
+                strategy = form["strategy"]
+                if "revision" in form:
+                    try:
+                        if len(form.getlist("revision")) != 1 or not isinstance(form["revision"], str):
+                            raise ValueError()
+                        direction_revision = int(form["revision"])
+                    except (TypeError, ValueError):
+                        raise UploadError("Der Reel-Entwurf ist veraltet. Bitte neu laden.", 409) from None
+                if "scene_direction" in form:
+                    if (len(form.getlist("scene_direction")) != 1
+                            or not isinstance(form["scene_direction"], str)
+                            or len(form["scene_direction"]) > 2000):
+                        raise UploadError("Bitte eine einzelne Pose-/Requisiten-Vorgabe mit höchstens 2000 Zeichen angeben.")
+                    scene_direction = form["scene_direction"].strip()
+                if scene_direction and strategy not in {"reference_scene", "planned_scene"} and direction_revision is None:
+                    raise UploadError("Pose und Requisiten lassen sich nur bei der Neuinszenierung präzisieren.")
+                if strategy == "masked":
+                    scene_direction = ""  # A versioned UI form may submit its saved field without JS.
+            else:
+                raise UploadError("Bitte eine gültige Methode für die Charakteroptimierung auswählen.")
+        _, _, _, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
         selected = {
             character.id: character for character in await run_in_threadpool(
                 character_store.list, str(book_id)
@@ -1788,7 +2354,32 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         }
         if not any(selected.get(item) and selected[item].has_reference for item in draft.character_ids):
             raise UploadError("Für die ausgewählten Charaktere fehlt ein Referenzbild.", 409)
-        await run_in_threadpool(reel_jobs.enqueue, draft.id, "image", {"operation": "optimize"})
+        if strategy in {"reference_scene", "planned_scene"} and not all(
+            selected.get(item) and selected[item].has_reference for item in draft.character_ids
+        ):
+            raise UploadError(
+                "Für die Neuinszenierung braucht jeder ausgewählte Charakter ein Referenzbild.", 409,
+            )
+        if strategy == "planned_scene":
+            plan, current = current_scene_plan(draft, management, list(selected.values()))
+            if (direction_revision is None or not current
+                    or ("scene_direction" in form and scene_direction != draft.scene_direction)):
+                raise UploadError("Bitte Änderungen zuerst speichern und den Szenenplan aktualisieren.", 409)
+            await run_in_threadpool(reel_jobs.enqueue_planned_scene, draft.id, direction_revision,
+                                   expected_fingerprint=plan_fingerprint(draft, management, list(selected.values())))
+            return action_response(request, book_id, chapter_id, quote_id)
+        payload = {"operation": "optimize"}
+        if form:
+            payload["strategy"] = strategy
+        if scene_direction:
+            payload["scene_direction"] = scene_direction
+        if direction_revision is not None:
+            await run_in_threadpool(
+                reel_jobs.enqueue_with_direction, draft.id, direction_revision, payload,
+                scene_direction=scene_direction if strategy == "reference_scene" and "scene_direction" in form else None,
+            )
+        else:
+            await run_in_threadpool(reel_jobs.enqueue, draft.id, "image", payload)
         return action_response(request, book_id, chapter_id, quote_id)
 
     @app.post(
@@ -1896,9 +2487,11 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if reel_ai_lock.locked():
             raise UploadError("Eine Reel-KI-Anfrage läuft bereits. Bitte kurz warten.", 409)
         details = management["details"]
+        selected_generation = await run_in_threadpool(reel_store.selected_image_generation, draft)
+        selected_prompt = selected_generation.get("effective_image_prompt") or draft.image_prompt
         async with reel_ai_lock:
             prompt = await generate_motion_prompt(
-                create_text_client(settings, provider), image_prompt=draft.image_prompt,
+                create_text_client(settings, provider), image_prompt=selected_prompt,
                 quote=quote.text,
                 genre=details.genre, mood=details.mood,
                 duration_seconds=draft.duration_ms / 1000,
@@ -1977,7 +2570,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         if draft is None or not draft.selected_image_path or draft.image_stale:
             raise HTTPException(404)
         path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
-        prepared = await run_in_threadpool(prepare_carousel_source, path)
+        crop = await run_in_threadpool(reel_store.carousel_crop, draft)
+        prepared = await run_in_threadpool(prepare_carousel_source, path, crop[:2])
         return Response(prepared.data, media_type="image/jpeg")
 
     @app.post(
@@ -1990,8 +2584,20 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
         if not draft.selected_image_path or draft.image_stale:
             raise UploadError("Bitte zuerst ein aktuelles Zitatbild auswählen.", 409)
+        crop = await run_in_threadpool(reel_store.carousel_crop, draft)
+        async with request.form(max_files=0, max_fields=3) as form:
+            if form:
+                try:
+                    required = {"revision", "image_sha256", "crop_revision"}
+                    if (set(form) != required or any(len(form.getlist(key)) != 1 for key in required)
+                            or int(str(form["revision"])) != draft.revision
+                            or str(form["image_sha256"]) != draft.selected_image_sha256
+                            or int(str(form["crop_revision"])) != crop[2]):
+                        raise ValueError()
+                except (TypeError, ValueError):
+                    raise UploadError("Bild oder Ausschnitt haben sich geändert. Bitte die Werkstatt neu öffnen.", 409) from None
         path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
-        await store_carousel_source("quote", book_id, quote_id, path)
+        await store_carousel_source("quote", book_id, quote_id, path, crop[:2])
         return action_response(request, book_id, chapter_id, quote_id)
 
     @app.post(
@@ -2601,7 +3207,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         )
 
     async def settings_context(*, promotion_saved=False, promotion_form=None, promotion_form_error=None,
-                               reel_saved=False, reel_form_error=None):
+                               reel_saved=False, reel_form_error=None, ai_saved=False, ai_form_error=None):
         # Only safe presence flags cross the template boundary. Never pass Settings.
         services = [
             {
@@ -2661,14 +3267,45 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             "reel_defaults": reel_defaults, "reel_saved": reel_saved,
             "reel_form_error": reel_form_error,
             "r2_public_url": bool(settings.r2_public_base_url),
+            "ai_preferences": ai_settings_store.get(settings), "image_presets": list(PRESETS.values()),
+            "ai_saved": ai_saved, "ai_form_error": ai_form_error,
+            "all_text_ai_providers": all_configured_providers(settings),
         }
 
     @app.get("/settings", response_class=HTMLResponse, name="settings")
-    async def settings_page(request: Request, promotion_saved: bool = False, reel_saved: bool = False):
+    async def settings_page(request: Request, promotion_saved: bool = False, reel_saved: bool = False, ai_saved: bool = False):
         return templates.TemplateResponse(
             request=request, name="settings.html",
-            context=await settings_context(promotion_saved=promotion_saved, reel_saved=reel_saved),
+            context=await settings_context(promotion_saved=promotion_saved, reel_saved=reel_saved, ai_saved=ai_saved),
         )
+
+    @app.post("/settings/ai", name="save_ai_settings")
+    async def save_ai_settings(request: Request):
+        require_local_origin(request)
+        try:
+            async with request.form(max_files=0, max_fields=3) as form:
+                if (set(form) != {"revision", "image_preset", "text_provider"}
+                        or any(len(form.getlist(k)) != 1 or not isinstance(form[k], str) for k in form)):
+                    raise ValueError()
+                revision, preset, provider = int(form["revision"]), form["image_preset"], form["text_provider"]
+            await run_in_threadpool(ai_settings_store.save, settings, revision, preset, provider)
+        except (ValueError, UploadError) as exc:
+            return templates.TemplateResponse(request=request, name="settings.html",
+                context=await settings_context(ai_form_error=str(exc) or "Bitte gültige KI-Einstellungen auswählen."),
+                status_code=exc.status if isinstance(exc, UploadError) else 400)
+        return RedirectResponse(str(request.url_for("settings")) + "?ai_saved=true#ai", status_code=303)
+
+    @app.post("/settings/ai/check", name="check_image_presets")
+    async def check_image_presets(request: Request):
+        require_local_origin(request)
+        results = []
+        for preset in PRESETS.values():
+            try:
+                await run_in_threadpool(check_preset_available, ComfyClient(str(settings.comfyui_url)), preset_snapshot(preset.id))
+                results.append(f"{preset.label}: alle Modelldateien vorhanden.")
+            except (ValueError, OSError) as exc:
+                results.append(str(exc) if isinstance(exc, ValueError) else f"{preset.label}: ComfyUI nicht erreichbar.")
+        return JSONResponse({"message": "\n".join(results)})
 
     @app.post("/settings/reels", response_class=HTMLResponse, name="save_reel_settings")
     async def save_reel_settings(request: Request):
