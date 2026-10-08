@@ -4,11 +4,14 @@ import json
 import pytest
 
 from bookpromo.reel_content import (
-    compose_caption, compose_image_generation_prompt, generate_motion_prompt, generate_reel_copy, generate_scene_direction,
+    ReelCopySuggestion, _normalize_local_copy_json, compose_caption,
+    compose_image_generation_prompt, generate_motion_prompt, generate_reel_copy,
+    generate_scene_direction,
 )
 from bookpromo.scene_direction import SceneDirectionSuggestion
 from bookpromo.scene_plan import ScenePlan, describe_scene_direction
 from bookpromo.openwebui import OpenWebUIError
+from bookpromo.text_ai import ComfyQwenClient, TextAIError
 
 
 class FakeClient:
@@ -19,6 +22,19 @@ class FakeClient:
     async def complete_json(self, system, user, result_type, **kwargs):
         self.calls.append((system, user, result_type, kwargs))
         return result_type.model_validate(self.values.pop(0))
+
+
+class FakeLocalQwen(ComfyQwenClient):
+    def __init__(self, values):
+        self.values = list(values)
+        self.calls = []
+
+    async def complete_json(self, system, user, result_type, **kwargs):
+        self.calls.append((system, user, result_type, kwargs))
+        value = self.values.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return result_type.model_validate(value)
 
 
 def test_caption_keeps_quote_exact_and_builds_existing_n8n_shape():
@@ -84,6 +100,71 @@ def test_copy_generation_returns_one_quote_grounded_plan_with_existing_copy_call
     for excluded in ("Geheimes Ende", "Eine fremde Stadt", "Eine weitere Person", "Der Täter",
                      "https://example.org", "Secret identity"):
         assert excluded not in serialized
+
+
+def test_local_copy_generation_repairs_one_schema_failure_with_specific_feedback():
+    plan = {
+        "setting": "A server room", "composition": "Vertical wide shot",
+        "art_direction": "Cinematic photorealism", "actors": [],
+        "props": [{"id": "rack-row", "label": "row of server racks", "count": 1}],
+    }
+    client = FakeLocalQwen([
+        TextAIError(
+            "invalid", code="structured",
+            validation_issues=("scene_plan.props.0.count: Input should be less than or equal to 8",),
+        ),
+        {"addition": "Was verbirgt sich zwischen all diesen Maschinen?",
+         "image_prompt": "A vast server room", "scene_plan": plan},
+    ])
+
+    result = asyncio.run(generate_reel_copy(
+        client, quote="Die Stahltür öffnet sich.", book_profile={"title": "Buch"},
+    ))
+
+    assert result.addition.startswith("Was verbirgt")
+    assert len(client.calls) == 2
+    repair_system = client.calls[1][0]
+    assert "scene_plan.props.0.count" in repair_system
+    assert "zwischen 1 und 8" in repair_system
+    assert "Ich/mich/mein" in repair_system
+
+
+def test_local_copy_generation_repairs_quote_repeated_as_addition():
+    quote = "Die Stahltür öffnet sich und dahinter blinken tausend kleine Lichter."
+    plan = {"setting": "A server room", "composition": "Vertical shot",
+            "art_direction": "Cinematic", "actors": [], "props": []}
+    client = FakeLocalQwen([
+        {"addition": quote, "image_prompt": "A server room", "scene_plan": plan},
+        {"addition": "Ein Ort, der mehr verbirgt als bloße Technik.",
+         "image_prompt": "A server room", "scene_plan": plan},
+    ])
+
+    result = asyncio.run(generate_reel_copy(
+        client, quote=quote, book_profile={"title": "Buch"},
+    ))
+
+    assert result.addition == "Ein Ort, der mehr verbirgt als bloße Technik."
+    assert len(client.calls) == 2
+    assert "kopiert den Quelltext" in client.calls[1][0]
+
+
+def test_local_copy_generation_groups_large_ambient_counts_before_strict_validation():
+    raw = {
+        "addition": "Welche Macht pulsiert hinter all diesen Lichtern?",
+        "image_prompt": "A server room",
+        "scene_plan": {
+            "setting": "A server room", "composition": "Vertical shot",
+            "art_direction": "Cinematic", "actors": [],
+            "props": [{"id": "leds", "label": "blinking LED lights", "count": 1000}],
+        },
+    }
+
+    normalized = _normalize_local_copy_json(raw)
+    result = ReelCopySuggestion.model_validate(normalized, strict=True)
+
+    assert result.scene_plan.props[0].count == 1
+    assert result.scene_plan.props[0].label == "dense group of many blinking LED lights"
+    assert raw["scene_plan"]["props"][0]["count"] == 1000
 
 
 def test_global_art_direction_is_bound_to_scene_without_becoming_scene_content():

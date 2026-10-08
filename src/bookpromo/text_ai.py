@@ -6,7 +6,8 @@ import asyncio
 import copy
 import hashlib
 import json
-from typing import TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -127,6 +128,7 @@ class ComfyQwenClient:
         result_type: type[T],
         *,
         max_tokens: int = 2048,
+        json_normalizer: Callable[[Any], Any] | None = None,
     ) -> T:
         if (
             not system.strip() or not user.strip()
@@ -184,11 +186,19 @@ class ComfyQwenClient:
                 lines = lines[:-1]
             content = "\n".join(lines).strip()
         try:
-            return result_type.model_validate_json(content, strict=True)
+            if json_normalizer is None:
+                return result_type.model_validate_json(content, strict=True)
+            return result_type.model_validate(json_normalizer(json.loads(content)), strict=True)
         except ValidationError as exc:
             raise TextAIError(
                 "Qwen hat kein Ergebnis im angeforderten JSON-Schema geliefert.",
                 code="structured",
                 validation_issues=_validation_issues(exc),
+            ) from None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise TextAIError(
+                "Qwen hat kein Ergebnis im angeforderten JSON-Schema geliefert.",
+                code="structured",
+                validation_issues=("JSON: Die Antwort konnte nicht sicher normalisiert werden.",),
             ) from None
 

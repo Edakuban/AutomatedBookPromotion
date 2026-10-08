@@ -80,6 +80,26 @@ def test_local_qwen_schema_diagnostics_do_not_echo_model_values(tmp_path):
     assert "PRIVATE_VALUE" not in " ".join(error.value.validation_issues)
 
 
+def test_local_qwen_validates_normalized_json_strictly(tmp_path):
+    client = ComfyQwenClient(
+        configured(tmp_path), client=FakeComfy('{"ok":true,"provider":"before"}'),
+    )
+    result = asyncio.run(client.complete_json(
+        "System", "Daten", Result,
+        json_normalizer=lambda value: {**value, "provider": "after"},
+    ))
+    assert result == Result(ok=True, provider="after")
+
+    with pytest.raises(TextAIError) as error:
+        asyncio.run(ComfyQwenClient(
+            configured(tmp_path), client=FakeComfy('{"ok":true,"provider":"before"}'),
+        ).complete_json(
+            "System", "Daten", Result,
+            json_normalizer=lambda value: {**value, "ok": "still-not-a-bool"},
+        ))
+    assert error.value.code == "structured"
+
+
 def test_local_qwen_client_accepts_comfy_preview_json_fence(tmp_path):
     fake = FakeComfy('```json\n{"ok":true,"provider":"local"}\n```')
     result = asyncio.run(

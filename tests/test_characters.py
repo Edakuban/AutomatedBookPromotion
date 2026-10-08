@@ -13,6 +13,7 @@ from bookpromo.characters import (
     character_scene_prompt, order_scene_characters, stitch_character_references,
 )
 from bookpromo.reel_generation import build_reference_edit_prompt
+from bookpromo.scene_plan import ScenePlan
 from bookpromo.uploads import LocalUploadStore, UploadError
 from bookpromo.web import _detected_character_ids, create_app
 from test_analysis import FakeAPI, setup
@@ -165,6 +166,29 @@ def test_character_preselection_and_render_order_follow_first_scene_mention():
     )
     assert _detected_character_ids(characters, quote) == ["kira", "clara"]
     assert [item.id for item in order_scene_characters(characters, quote.text)] == ["kira", "clara"]
+
+
+def test_scene_plan_actor_names_override_opponent_mentions_during_preselection():
+    characters = [
+        SimpleNamespace(id="samuel", name="Samuel", aliases=("Sam",)),
+        SimpleNamespace(id="belphegor", name="Belphegor", aliases=()),
+        SimpleNamespace(id="faye", name="Faye", aliases=()),
+    ]
+    quote = SimpleNamespace(
+        context_before="Wir schaden Belphegor.", text="Ich zerstöre den Server.",
+        context_after="Faye antwortet.",
+    )
+    plan = ScenePlan(
+        setting="Server room", composition="Vertical action shot", art_direction="Cinematic",
+        actors=[
+            {"name": "Samuel", "pose": "Punches the server rack"},
+            {"name": "Faye", "pose": "Watches from the left"},
+        ],
+    )
+
+    assert _detected_character_ids(
+        characters, quote, generated_prompt="A dark warrior and a witch", scene_plan=plan,
+    ) == ["samuel", "faye"]
 
 
 @pytest.fixture

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Iterable
 from typing import Literal
@@ -12,6 +13,7 @@ from .openwebui import OpenWebUIClient
 from .scene_context import build_scene_context
 from .scene_direction import generate_scene_direction
 from .scene_plan import SCENE_PLAN_INSTRUCTION, ScenePlan, describe_scene_direction, scene_plan_data
+from .text_ai import ComfyQwenClient, TextAIError
 
 
 class _StrictModel(BaseModel):
@@ -63,6 +65,58 @@ strukturierten Plan. image_prompt muss ausschließlich dieselbe festgelegte Szen
 Figuren, Körperhaltung, Anzahl der Gegenstände und Kontakte müssen dem Plan entsprechen.
 Antworte ausschließlich im geforderten JSON-Format.
 """ + SCENE_PLAN_INSTRUCTION
+
+
+def _copy_repair_system(validation_feedback: tuple[str, ...]) -> str:
+    feedback = "\n".join(f"- {issue}" for issue in validation_feedback[:8])
+    return COPY_SYSTEM + (
+        "\nKORREKTURLAUF: Die vorige Antwort war ungültig. Erzeuge das gesamte JSON neu und "
+        "behebe insbesondere diese lokal ermittelten Fehler:\n" + feedback
+        + "\naddition ist genau eine neue, neugierig machende Frage mit höchstens 120 Zeichen und "
+          "endet mit einem Fragezeichen. Kopiere oder paraphrasiere dort weder focus_text noch "
+          "context_before/context_after. Jeder props.count-Wert liegt zwischen 1 "
+          "und 8. Fasse große Mengen wie Funken, LEDs, Kabel oder Schrankreihen als ein sichtbares "
+          "Feld beziehungsweise eine Gruppe zusammen, statt ihre Elemente einzeln zu zählen. "
+          "Löse Ich/mich/mein ausschließlich aus dem unmittelbaren Textkontext auf; eine als Gegner "
+          "oder Ziel erwähnte Figur ist nicht automatisch der Sprecher. global_art_direction bleibt "
+          "reiner Stil und liefert niemals Figuren, Ort, Gegenstände oder Handlung. image_prompt und "
+          "scene_plan beschreiben anschließend exakt dieselbe korrigierte Szene."
+    )
+
+
+def _normalize_local_copy_json(value):
+    """Group large ambient quantities, then let the strict result model validate everything."""
+    normalized = copy.deepcopy(value)
+    if not isinstance(normalized, dict):
+        return normalized
+    plan = normalized.get("scene_plan")
+    props = plan.get("props") if isinstance(plan, dict) else None
+    if not isinstance(props, list):
+        return normalized
+    for prop in props:
+        if not isinstance(prop, dict) or type(prop.get("count")) is not int or prop["count"] <= 8:
+            continue
+        label = prop.get("label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        prop["label"] = ("dense group of many " + label.strip())[:160].rstrip()
+        prop["count"] = 1
+    return normalized
+
+
+def _copy_contract_issues(
+    suggestion: ReelCopySuggestion,
+    quote: str,
+    context_before: str,
+    context_after: str,
+) -> tuple[str, ...]:
+    normalize = lambda value: " ".join(value.casefold().split())
+    addition = normalize(suggestion.addition)
+    for source_value in (quote, context_before, context_after):
+        source = normalize(source_value)
+        if addition == source or (len(addition) >= 40 and addition in source):
+            return ("addition: Der Begleittext kopiert den Quelltext statt ihn zu ergänzen.",)
+    return ()
 
 
 MOTION_SYSTEM = """Create one concise image-to-video motion prompt for a book-promotion reel.
@@ -145,12 +199,38 @@ async def generate_reel_copy(
         scene_context["manual_direction"] = scene_plan_data(
             quote=quote, scene_direction=scene_direction,
         )["manual_direction"]
-    suggestion = await client.complete_json(
-        COPY_SYSTEM,
-        json.dumps(scene_context, ensure_ascii=False),
-        ReelCopySuggestion,
-        max_tokens=4096,
-    )
+    user = json.dumps(scene_context, ensure_ascii=False)
+    feedback: tuple[str, ...] = ()
+    local_qwen = isinstance(client, ComfyQwenClient)
+    for attempt in range(2 if local_qwen else 1):
+        try:
+            request_options = {"max_tokens": 4096}
+            if local_qwen:
+                request_options["json_normalizer"] = _normalize_local_copy_json
+            suggestion = await client.complete_json(
+                _copy_repair_system(feedback) if feedback else COPY_SYSTEM,
+                user,
+                ReelCopySuggestion,
+                **request_options,
+            )
+        except TextAIError as exc:
+            if not local_qwen or exc.code != "structured" or attempt:
+                raise
+            feedback = exc.validation_issues or (
+                "Die Antwort erfüllt mindestens eine Schema- oder Konsistenzregel nicht.",
+            )
+            continue
+        issues = _copy_contract_issues(suggestion, quote, context_before, context_after)
+        if not issues:
+            break
+        if not local_qwen or attempt:
+            raise TextAIError(
+                "Qwen hat kein verwendbares Ergebnis für Begleittext und Bildprompt geliefert.",
+                code="structured", validation_issues=issues,
+            )
+        feedback = issues
+    else:  # pragma: no cover - every loop path returns, breaks or raises
+        raise TextAIError("Qwen hat kein verwendbares Ergebnis geliefert.", code="structured")
     caption = compose_caption(
         quote=quote,
         addition=suggestion.addition,

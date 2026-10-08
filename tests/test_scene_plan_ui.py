@@ -152,6 +152,10 @@ def test_copy_can_save_generated_plan_without_extra_ai_request(setup, monkeypatc
     app, url, reels, _, _, before = prepare(setup)
     before = reels.update_draft(before.id, before.revision, scene_direction="")
     async def copy(client, **kwargs):
+        assert len(kwargs["context_before"]) >= len(
+            next(item["quote"] for item in ManagementStore(reels.uploads).get(before.book_id)["quotes"]
+                 if item["quote"].id == before.quote_id).context_before
+        )
         return ReelCopy(addition="Text", caption="Caption", image_prompt="Aster crouches near stream",
                         scene_direction=describe_scene_direction(example_plan()), scene_plan=example_plan())
     monkeypatch.setattr(web, "generate_reel_copy", copy)

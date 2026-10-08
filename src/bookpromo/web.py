@@ -69,7 +69,24 @@ from pydantic import ValidationError
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 
-def _detected_character_ids(characters, quote, *, generated_prompt: str = "") -> list[str]:
+def _detected_character_ids(
+    characters, quote, *, generated_prompt: str = "", scene_plan=None,
+) -> list[str]:
+    if scene_plan is not None:
+        planned = []
+        for actor in scene_plan.actors:
+            actor_key = " ".join(actor.name.casefold().split())
+            matches = [
+                character for character in characters
+                if actor_key in {
+                    " ".join(label.casefold().split())
+                    for label in (character.name, *character.aliases)
+                }
+            ]
+            if len(matches) == 1 and matches[0].id not in planned:
+                planned.append(matches[0].id)
+        if planned:
+            return planned[:4]
     context = " ".join(
         (quote.context_before, quote.text, quote.context_after, generated_prompt)
     ).casefold()
@@ -2099,20 +2116,30 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         provider = await requested_text_provider(request)
         _, chapter, quote, management, draft = await reel_context(book_id, chapter_id, quote_id, create=True)
         characters = await run_in_threadpool(character_store.list, str(book_id))
+        source = chapter.source_text
+        offset = source.find(quote.text)
+        context_before = (
+            source[max(0, offset - 1200):offset] if offset >= 0 else quote.context_before
+        )
+        context_after = (
+            source[offset + len(quote.text):offset + len(quote.text) + 1200]
+            if offset >= 0 else quote.context_after
+        )
         if reel_ai_lock.locked():
             raise UploadError("Eine Reel-KI-Anfrage läuft bereits. Bitte kurz warten.", 409)
         async with reel_ai_lock:
             result = await generate_reel_copy(
                 create_text_client(settings, provider), quote=quote.text,
                 book_profile=management["details"].model_dump(),
-                context_before=quote.context_before,
-                context_after=quote.context_after,
+                context_before=context_before,
+                context_after=context_after,
                 characters=tuple({"name": character.name, "aliases": list(character.aliases)}
                                  for character in characters),
                 scene_direction=draft.scene_direction,
             )
         selected_ids = _detected_character_ids(
             characters, quote, generated_prompt=result.image_prompt,
+            scene_plan=result.scene_plan,
         )
         updated = await run_in_threadpool(
             reel_store.update_draft, draft.id, draft.revision,
