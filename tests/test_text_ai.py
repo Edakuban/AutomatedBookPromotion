@@ -64,8 +64,20 @@ def test_local_qwen_client_injects_schema_prompt_model_and_token_limit(tmp_path)
 
 def test_local_qwen_client_rejects_non_schema_output(tmp_path):
     client = ComfyQwenClient(configured(tmp_path), client=FakeComfy("kein json"))
-    with pytest.raises(TextAIError, match="JSON-Schema"):
+    with pytest.raises(TextAIError, match="JSON-Schema") as error:
         asyncio.run(client.complete_json("System", "Daten", Result))
+    assert error.value.validation_issues
+    assert "JSON" in error.value.validation_issues[0]
+
+
+def test_local_qwen_schema_diagnostics_do_not_echo_model_values(tmp_path):
+    client = ComfyQwenClient(
+        configured(tmp_path), client=FakeComfy('{"ok":"PRIVATE_VALUE","provider":"local"}'),
+    )
+    with pytest.raises(TextAIError) as error:
+        asyncio.run(client.complete_json("System", "Daten", Result))
+    assert error.value.code == "structured"
+    assert "PRIVATE_VALUE" not in " ".join(error.value.validation_issues)
 
 
 def test_local_qwen_client_accepts_comfy_preview_json_fence(tmp_path):

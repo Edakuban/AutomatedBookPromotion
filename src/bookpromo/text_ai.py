@@ -23,9 +23,26 @@ PROVIDER_LABELS: dict[TextAIProvider, str] = {
 
 
 class TextAIError(RuntimeError):
-    def __init__(self, message: str, *, code: str = "request"):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "request",
+        validation_issues: tuple[str, ...] = (),
+    ):
         self.code = code
+        self.validation_issues = validation_issues
         super().__init__(message)
+
+
+def _validation_issues(exc: ValidationError) -> tuple[str, ...]:
+    """Return bounded schema diagnostics without echoing model-provided values."""
+    issues = []
+    for error in exc.errors(include_url=False, include_input=False)[:8]:
+        location = ".".join(str(part) for part in error.get("loc", ())) or "JSON"
+        message = " ".join(str(error.get("msg") or "ungültig").split())[:240]
+        issues.append(f"{location}: {message}")
+    return tuple(issues)
 
 
 def provider_model_id(settings: Settings, provider: TextAIProvider) -> str:
@@ -168,9 +185,10 @@ class ComfyQwenClient:
             content = "\n".join(lines).strip()
         try:
             return result_type.model_validate_json(content, strict=True)
-        except ValidationError:
+        except ValidationError as exc:
             raise TextAIError(
                 "Qwen hat kein Ergebnis im angeforderten JSON-Schema geliefert.",
                 code="structured",
+                validation_issues=_validation_issues(exc),
             ) from None
 

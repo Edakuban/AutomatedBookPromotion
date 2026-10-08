@@ -8,7 +8,9 @@ from .scene_plan import (
     compile_scene_plan, decode_saved_plan, encode_saved_plan, generate_scene_plan,
     validate_reference_bindings,
 )
-from .text_ai import create_text_client, provider_endpoint_hash, provider_missing, provider_model_id
+from .text_ai import (
+    TextAIError, create_text_client, provider_endpoint_hash, provider_missing, provider_model_id,
+)
 
 
 def description_scene_prompt(plan, characters) -> str:
@@ -55,11 +57,26 @@ def prepare_simple_plan(settings, payload, draft, characters, fingerprint):
             or len(context["context_before"]) > 4000 or len(context["context_after"]) > 4000):
         raise ValueError("Der Buchkontext für den Szenenauftrag fehlt oder ist ungültig.")
     client = create_text_client(settings, provider, model_id=payload["ai_model_id"])
-    plan = asyncio.run(generate_scene_plan(
-        client, **context, image_prompt=draft.image_prompt, scene_direction=draft.scene_direction,
+    plan_kwargs = dict(
+        **context, image_prompt=draft.image_prompt, scene_direction=draft.scene_direction,
         art_direction=payload["art_direction"],
         selected_cast=True,
         characters=tuple({"name": character.name, "aliases": list(character.aliases)} for character in characters),
-    ))
+    )
+    try:
+        plan = asyncio.run(generate_scene_plan(client, **plan_kwargs))
+    except TextAIError as exc:
+        if provider != "comfyui_qwen" or exc.code != "structured":
+            raise
+        # The local 4B model occasionally returns valid JSON with one semantic
+        # schema violation. One explicit correction is cheaper and more useful
+        # than accepting/coercing invalid data or retrying the identical prompt.
+        plan = asyncio.run(generate_scene_plan(
+            client,
+            validation_feedback=exc.validation_issues or (
+                "Die Antwort erfüllt mindestens eine Schema- oder Konsistenzregel nicht.",
+            ),
+            **plan_kwargs,
+        ))
     validate_reference_bindings(plan, characters)
     return decode_saved_plan(encode_saved_plan(plan, fingerprint))

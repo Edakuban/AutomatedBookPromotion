@@ -222,9 +222,21 @@ def scene_plan_data(*, quote: str, context_before: str = "", context_after: str 
     return data
 
 
-async def generate_scene_plan(client, **kwargs) -> ScenePlan:
+async def generate_scene_plan(client, *, validation_feedback: tuple[str, ...] = (), **kwargs) -> ScenePlan:
     data = scene_plan_data(**kwargs)
-    result = await client.complete_json(SCENE_PLAN_SYSTEM, json.dumps(data, ensure_ascii=False),
+    system = SCENE_PLAN_SYSTEM
+    if validation_feedback:
+        feedback = "\n".join(f"- {issue}" for issue in validation_feedback[:8])
+        system += (
+            "\nKORREKTURLAUF: Die vorige Antwort war ungültig. Erzeuge das gesamte JSON neu und "
+            "behebe insbesondere diese lokal ermittelten Schemafehler:\n" + feedback
+            + "\ncontacts beschreibt ausschließlich Kontakte zu Einträgen in props. "
+              "Berührungen zwischen Figuren gehören nur in pose, nicht in contacts. "
+              "Prüfe zugleich die Quellenbindung erneut: global_art_direction.style_source ist "
+              "kein Beleg für Ort, Figuren, Gegenstände oder Handlung. Entferne daraus übernommene "
+              "Szenenmotive; wenn die Textquelle den Ort nicht nennt, beschreibe ihn neutral."
+        )
+    result = await client.complete_json(system, json.dumps(data, ensure_ascii=False),
                                         ScenePlan, max_tokens=2400)
     plan = ScenePlan.model_validate(result.model_dump())
     compile_scene_plan(plan)

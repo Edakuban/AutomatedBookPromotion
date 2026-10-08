@@ -10,7 +10,7 @@ from bookpromo.config import Settings
 from bookpromo.image_flow import description_scene_prompt
 from bookpromo.reel_worker import run_reel_once
 from bookpromo.scene_plan import ScenePlan, encode_saved_plan, scene_plan_fingerprint
-from bookpromo.text_ai import provider_endpoint_hash, provider_model_id
+from bookpromo.text_ai import TextAIError, provider_endpoint_hash, provider_model_id
 from bookpromo.uploads import UploadError
 from test_reels import setup, new_draft, png_bytes
 
@@ -125,6 +125,37 @@ def test_one_auto_plan_is_durable_and_shared_between_buttons(setup, monkeypatch,
     assert final.optimized_image_path
     assert final.selected_image_path == after.selected_image_path
     assert final.selected_image_source == "scene"
+
+
+def test_local_qwen_scene_plan_gets_one_feedback_correction(setup, monkeypatch, tmp_path):
+    uploads, _, reels, jobs = setup
+    draft, _, settings, scene, inputs = prepare(setup, plan=False)
+    settings.comfyui_qwen_model = "qwen-local.safetensors"
+    inputs["payload"].update(
+        ai_provider="comfyui_qwen",
+        ai_model_id=provider_model_id(settings, "comfyui_qwen"),
+        ai_endpoint_hash=provider_endpoint_hash(settings, "comfyui_qwen"),
+    )
+    calls = []
+
+    async def generate(client, *, validation_feedback=(), **kwargs):
+        calls.append(validation_feedback)
+        if len(calls) == 1:
+            raise TextAIError(
+                "invalid plan", code="structured",
+                validation_issues=("actors.1: contact refers to no prop",),
+            )
+        return scene
+
+    monkeypatch.setattr("bookpromo.image_flow.generate_scene_plan", generate)
+    monkeypatch.setattr("bookpromo.image_flow.create_text_client", lambda *args, **kwargs: object())
+    fake_generator(monkeypatch, tmp_path)
+    jobs.enqueue_simple_image(draft.id, draft.revision, mode="text", **inputs)
+
+    assert run_reel_once(uploads, settings)
+    assert calls == [(), ("actors.1: contact refers to no prop",)]
+    assert jobs.status(draft.id)[0]["state"] == "done"
+    assert reels.get_draft(draft.id).scene_plan_json
 
 
 @pytest.mark.parametrize("failure", ["fingerprint", "source", "duplicate", "provider_changed"])
