@@ -152,15 +152,24 @@ class Workflow:
 
 
 def callback_expression(action):
+    if action not in {"t", "i", "rt", "ri", "d"}:
+        raise ValueError(f"Unsupported Telegram callback action: {action}")
+    # The current n8n runtime rejects the former block-bodied IIFE when it is
+    # nested inside Telegram parameters. Current draft builds and validates
+    # the compact strings; Telegram parameters only read a plain field.
+    return f"={{{{ $json.callback_{action} }}}}"
+
+
+def callback_context(source="$input.first().json"):
     # UUIDs become 22 base64url chars, so post, revision, action-token and
     # action still fit Telegram's 64-byte callback-data limit.
-    return (
-        "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';"
-        "for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));"
-        "return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};"
-        f"return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'"
-        f"+e($json.action_token)+':{action}';}})() }}"
-    )
+    return f"""const d={source};
+const encodeUuid=value=>{{if(typeof value!=='string'||!/^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[1-5][0-9a-f]{{3}}-[89ab][0-9a-f]{{3}}-[0-9a-f]{{12}}$/i.test(value))throw new Error('Invalid Telegram callback UUID');const h=value.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');}};
+if(!Number.isSafeInteger(d.revision)||d.revision<0)throw new Error('Invalid Telegram callback revision');
+const base='bp:'+encodeUuid(d.id)+':'+d.revision.toString(36)+':'+encodeUuid(d.action_token)+':';
+const callbacks={{callback_t:base+'t',callback_i:base+'i',callback_rt:base+'rt',callback_ri:base+'ri',callback_d:base+'d'}};
+if(Object.values(callbacks).some(value=>value.length>64))throw new Error('Telegram callback data is too long');
+return [{{json:{{...d,...callbacks}}}}];"""
 
 
 def add_config(workflow):
@@ -226,10 +235,11 @@ if(r.outcome!=='no_quote')return [];return [{json:{telegram_chat_id:$('Config').
     workflow.link("Draft available?", "No quote context", 1)
     workflow.telegram("No quote available", "Für heute wurde kein verfügbares Zitat gefunden.")
     workflow.link("No quote context", "No quote available")
+    current_draft_output = callback_context("r.post") if mode == "review" else "return [{json:r.post}];"
     workflow.code("Current draft", """const r=$input.first().json;
 if(!['created','updated','existing'].includes(r.outcome)||!r.post)return [];
 if(r.outcome==='existing'&&['generating_text','generating_image'].includes(r.post.status)&&!r.resumed)return [];
-return [{json:r.post}];""")
+""" + current_draft_output)
     states = [
         ("Generate text?", "generating_text"), ("Generate carousel?", "generating_image"),
         ("Text preview?", "awaiting_text_approval"), ("Carousel preview?", "awaiting_image_approval"),

@@ -298,7 +298,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const r=$input.first().json;\nif(!['created','updated','existing'].includes(r.outcome)||!r.post)return [];\nif(r.outcome==='existing'&&['generating_text','generating_image'].includes(r.post.status)&&!r.resumed)return [];\nreturn [{json:r.post}];"
+        "jsCode": "const r=$input.first().json;\nif(!['created','updated','existing'].includes(r.outcome)||!r.post)return [];\nif(r.outcome==='existing'&&['generating_text','generating_image'].includes(r.post.status)&&!r.resumed)return [];\nconst d=r.post;\nconst encodeUuid=value=>{if(typeof value!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))throw new Error('Invalid Telegram callback UUID');const h=value.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};\nif(!Number.isSafeInteger(d.revision)||d.revision<0)throw new Error('Invalid Telegram callback revision');\nconst base='bp:'+encodeUuid(d.id)+':'+d.revision.toString(36)+':'+encodeUuid(d.action_token)+':';\nconst callbacks={callback_t:base+'t',callback_i:base+'i',callback_rt:base+'rt',callback_ri:base+'ri',callback_d:base+'d'};\nif(Object.values(callbacks).some(value=>value.length>64))throw new Error('Telegram callback data is too long');\nreturn [{json:{...d,...callbacks}}];"
       }
     },
     {
@@ -748,19 +748,19 @@
                   {
                     "text": "Text freigeben",
                     "additionalFields": {
-                      "callback_data": "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'+e($json.action_token)+':t';})() }"
+                      "callback_data": "={{ $json.callback_t }}"
                     }
                   },
                   {
                     "text": "Text neu",
                     "additionalFields": {
-                      "callback_data": "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'+e($json.action_token)+':rt';})() }"
+                      "callback_data": "={{ $json.callback_rt }}"
                     }
                   },
                   {
                     "text": "Verwerfen",
                     "additionalFields": {
-                      "callback_data": "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'+e($json.action_token)+':d';})() }"
+                      "callback_data": "={{ $json.callback_d }}"
                     }
                   }
                 ]
@@ -1884,25 +1884,25 @@
                   {
                     "text": "Freigeben und posten",
                     "additionalFields": {
-                      "callback_data": "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'+e($json.action_token)+':i';})() }"
+                      "callback_data": "={{ $json.callback_i }}"
                     }
                   },
                   {
                     "text": "Bild neu",
                     "additionalFields": {
-                      "callback_data": "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'+e($json.action_token)+':ri';})() }"
+                      "callback_data": "={{ $json.callback_ri }}"
                     }
                   },
                   {
                     "text": "Text + Bild neu",
                     "additionalFields": {
-                      "callback_data": "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'+e($json.action_token)+':rt';})() }"
+                      "callback_data": "={{ $json.callback_rt }}"
                     }
                   },
                   {
                     "text": "Verwerfen",
                     "additionalFields": {
-                      "callback_data": "={{ (()=>{const e=s=>{const h=s.replace(/-/g,'');let b='';for(let i=0;i<h.length;i+=2)b+=String.fromCharCode(parseInt(h.slice(i,i+2),16));return btoa(b).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');};return 'bp:'+e($json.id)+':'+Number($json.revision).toString(36)+':'+e($json.action_token)+':d';})() }"
+                      "callback_data": "={{ $json.callback_d }}"
                     }
                   }
                 ]

@@ -62,6 +62,7 @@ def test_review_has_hitl_and_auto_has_no_waiting_approval_nodes():
         "Approve text",
         "Show carousel album",
         "Approve carousel",
+        "Carousel approval context",
         "Parse callback",
         "Save decision",
     ):
@@ -69,6 +70,23 @@ def test_review_has_hitl_and_auto_has_no_waiting_approval_nodes():
         assert name not in auto
     assert review["Show carousel album"]["parameters"]["operation"] == "sendMediaGroup"
     assert "telegram_media" in review["Show carousel album"]["parameters"]["media"]
+
+
+def test_review_builds_telegram_callbacks_in_code_nodes_not_parameter_expressions():
+    workflow = build("review")
+    by_name = nodes(workflow)
+    assert targets(workflow, "Text preview?") == ["Approve text"]
+    assert targets(workflow, "Carousel approval context") == ["Approve carousel"]
+    code = by_name["Current draft"]["parameters"]["jsCode"]
+    assert "encodeUuid" in code
+    assert "value.length>64" in code
+    for approval in ("Approve text", "Approve carousel"):
+        buttons = by_name[approval]["parameters"]["inlineKeyboard"]["rows"][0]["row"]["buttons"]
+        for button in buttons:
+            expression = button["additionalFields"]["callback_data"]
+            assert expression.startswith("={{ $json.callback_")
+            assert "=>" not in expression
+            assert "btoa" not in expression
 
 
 @pytest.mark.parametrize("mode", MODES)

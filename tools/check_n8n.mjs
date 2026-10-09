@@ -54,6 +54,28 @@ for(const name of ['Telegram decisions','Approve text','Show carousel album','Ap
 }
 assert.equal(review.nodes.get('Show carousel album').parameters.operation,'sendMediaGroup');
 
+const callbackDraft={
+ id:'12345678-1234-4234-8234-123456789012',revision:35,
+ action_token:'abcdefab-cdef-4abc-8def-abcdefabcdef',caption:'Test',telegram_media:[],
+};
+const callbackCode=review.nodes.get('Current draft').parameters.jsCode;
+const callbackFn=new AsyncFunction('$input','$','$execution',callbackCode);
+const callbackResult=await callbackFn.call({},
+ {first:()=>({json:{outcome:'existing',post:callbackDraft,resumed:true}})},()=>{},{});
+for(const action of ['t','i','rt','ri','d']){
+ const value=callbackResult[0].json[`callback_${action}`];
+ assert.match(value,new RegExp(`^bp:[A-Za-z0-9_-]{22}:z:[A-Za-z0-9_-]{22}:${action}$`));
+ assert.ok(value.length<=64,'Telegram callback exceeds 64 bytes');
+}
+for(const approvalName of ['Approve text','Approve carousel']){
+ const buttons=review.nodes.get(approvalName).parameters.inlineKeyboard.rows[0].row.buttons;
+ for(const button of buttons){
+  const expression=button.additionalFields.callback_data;
+  assert.match(expression,/^=\{\{ \$json\.callback_(?:t|i|rt|ri|d) \}\}$/);
+  assert.ok(!expression.includes('=>')&&!expression.includes('btoa'));
+ }
+}
+
 for(const {file,nodes} of workflows){
  const split=nodes.get('Split quote into slides').parameters.jsCode;
  assert.ok(split.includes("new Intl.Segmenter('de',{granularity:'sentence'})"));
