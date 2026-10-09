@@ -9,6 +9,7 @@ import json
 from datetime import datetime
 import re
 import sqlite3
+import tempfile
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 from typing import Literal
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException
+from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 from starlette.concurrency import run_in_threadpool
 
@@ -60,6 +62,7 @@ from .book_teaser_worker import BookTeaserJobStore
 from .teaser_publication import book_teaser_platforms
 from .comfy import ComfyClient
 from .characters import CharacterStore, character_mention_index, order_scene_characters
+from .media_export import path_slug, write_book_media_zip
 from .text_ai import (
     TextAIError, configured_providers as all_configured_providers, create_text_client, provider_missing,
     provider_endpoint_hash, provider_model_id,
@@ -995,6 +998,46 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                      "chapter_quote_counts": {c.id: sum(q["usable"] and q["quote"].chapter_id == c.id for q in management["quotes"])
                          for c in record.result.chapters} if analysis and analysis["result"] and record and record.result else {},
                      "result": record.result if record else None})
+
+    @app.get("/books/local/{book_id}/media.zip", name="download_book_media")
+    async def download_book_media(book_id: UUID):
+        try:
+            book = await run_in_threadpool(local_store.get_book, book_id)
+            if book is None:
+                raise HTTPException(404)
+            record = await run_in_threadpool(extraction_store.get, str(book_id))
+            management = await run_in_threadpool(management_store.get, str(book_id))
+            drafts = await run_in_threadpool(reel_store.list_drafts, str(book_id))
+        except (OSError, sqlite3.Error):
+            raise UploadError("Die Medien des Buchs konnten nicht gelesen werden.", 503) from None
+        if not record or not record.result or not management["suggestion_id"]:
+            raise UploadError("Für dieses Buch gibt es noch keine analysierten Zitate.", 409)
+
+        temporary = tempfile.NamedTemporaryFile(prefix="bookpromo-", suffix=".zip", delete=False)
+        archive_path = Path(temporary.name)
+        temporary.close()
+        try:
+            count = await run_in_threadpool(
+                write_book_media_zip,
+                archive_path,
+                chapters=record.result.chapters,
+                quote_items=management["quotes"],
+                drafts=drafts,
+                analysis_run_id=management["suggestion_id"],
+                reels=reel_store,
+            )
+            if not count:
+                archive_path.unlink(missing_ok=True)
+                raise UploadError("Für dieses Buch wurden noch keine Bilder oder Reels erzeugt.", 409)
+        except Exception:
+            archive_path.unlink(missing_ok=True)
+            raise
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=f"{path_slug(book.title, max_length=80)}-medien.zip",
+            background=BackgroundTask(archive_path.unlink, missing_ok=True),
+        )
 
     @app.get(
         "/books/local/{book_id}/teaser", response_class=HTMLResponse, name="book_teaser",
