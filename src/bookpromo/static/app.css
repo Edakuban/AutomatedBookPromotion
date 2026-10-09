@@ -354,6 +354,12 @@ a.button-link.secondary-button:hover { background: #edf2ff; }
 .quote-filters a[aria-current="page"] { background: white; box-shadow: 0 2px 7px rgb(30 46 80 / 8%); }
 .quote-card { border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem 1.4rem; margin-top: .85rem; background: white; box-shadow: 0 4px 15px rgb(30 46 80 / 3%); }
 .quote-card blockquote { font-family: Georgia, serif; font-size: 1.16rem; line-height: 1.65; border-left: 0; padding: 0; }
+.quote-card-main.has-image { display: grid; grid-template-columns: minmax(96px, 140px) minmax(0, 1fr); gap: 1.1rem; align-items: start; }
+.quote-card-copy { min-width: 0; }
+.quote-image-preview { display: block; overflow: hidden; border-radius: 8px; background: #111923; cursor: zoom-in; box-shadow: 0 2px 8px rgb(30 46 80 / 14%); }
+.quote-image-preview img { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: cover; }
+.quote-image-preview:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.quote-image-preview:hover img { opacity: .9; }
 .quote-card .form-actions { border-top: 1px solid var(--border); padding-top: .9rem; align-items: center; justify-content: flex-end; margin-bottom: 0; }
 .quote-card .form-actions button { background: white; color: var(--muted); border-color: var(--border); }
 .quote-card .form-actions button:hover { background: #f4f6fa; }
@@ -368,10 +374,6 @@ a.button-link.secondary-button:hover { background: #edf2ff; }
 .quote-production-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; }
 .quote-production-actions form, .quote-production-actions button { width: 100%; height: 100%; margin: 0; }
 .quote-media-status { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
-.quote-image-review { display: grid; grid-template-columns: minmax(120px, 180px) 1fr; gap: 1rem; align-items: center; margin-top: 1rem; padding: .8rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft, #f7f9fd); }
-.quote-image-review img { display: block; width: 100%; max-height: 230px; object-fit: cover; border-radius: 8px; }
-.quote-image-review p { margin: 0 0 .55rem; }
-.quote-image-review form { margin: 0; }
 .quote-evidence > summary { color: var(--muted); font-size: .8rem; }
 .quote-spoiler { font-size: .8rem; background: #fff5e7; border-color: #c88630; }
 .quote-workspace .next-settings { margin-top: 1.3rem; }
@@ -406,7 +408,7 @@ a.button-link.secondary-button:hover { background: #edf2ff; }
   .settings-savebar { bottom: .4rem; padding: .8rem; }
   .quote-card { padding: 1rem; }
   .quote-production-progress, .quote-production-actions { grid-template-columns: 1fr 1fr; }
-  .quote-image-review { grid-template-columns: 1fr; }
+  .quote-card-main.has-image { grid-template-columns: 88px minmax(0, 1fr); gap: .8rem; }
   .quote-filters { overflow-x: auto; flex-wrap: nowrap; min-height: 0; }
   .quote-filters a { white-space: nowrap; }
   .settings-nav { min-height: 0; }

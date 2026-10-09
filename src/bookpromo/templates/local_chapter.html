@@ -44,7 +44,7 @@
             <button type="submit" {% if production_summary.active or not production_summary.approved %}disabled{% endif %}>4 · Freigegebene Reels erstellen</button>
           </form>
         </div>
-        <p class="small muted">Bestehende Ergebnisse bleiben erhalten. Bilder zuerst unten prüfen und einzeln freigeben; der Reel-Lauf verarbeitet ausschließlich diese freigegebenen Bildversionen.</p>
+        <p class="small muted">Bestehende Ergebnisse bleiben erhalten. Bilder direkt in den Zitat-Kacheln prüfen; zum Neu-Erzeugen oder Freigeben die Medien-Werkstatt öffnen. Der Reel-Lauf verarbeitet ausschließlich freigegebene Bildversionen.</p>
         {% if batch_notice %}<p class="notice success" role="status">{{ batch_notice }}</p>{% endif %}
       </section>
     {% endif %}
@@ -57,15 +57,25 @@
         {% set quote = item.quote %}
         <article class="quote-card" data-page-position-anchor="quote-{{ quote.id }}">
           <p><span class="badge">{{ 'Gesperrt' if item.blocked else 'Nutzbar' if item.usable else 'Nicht geeignet' }}</span> <span class="muted small">Bewertung {{ '%.2f' | format(quote.scores.average) }}/5 · Spoiler: {{ {'none':'keine','low':'gering','high':'hoch'}[quote.spoiler] }}</span></p>
-          <blockquote class="book-text">{{ quote.text }}</blockquote>
-          {% if quote.spoiler == 'high' %}<p class="notice quote-spoiler">Hohe Spoiler-Einstufung · vor der Nutzung prüfen.</p>{% endif %}
-          <details class="quote-evidence"><summary>Bewertung, Fundstelle &amp; Veröffentlichung</summary>
-          <p>{{ quote.reason }}</p>
-          <p class="muted small">Letzter Post: {% if item.usage %}{{ item.usage.last_published_at | berlin_time }}{% if item.usage.reserved %} · Aktuell für einen Post reserviert{% endif %}{% else %}Noch nicht synchronisiert oder Status nicht erreichbar{% endif %}</p>
-          <p class="muted small">Verständlichkeit {{ quote.scores.clarity }} · Neugier {{ quote.scores.curiosity }} · Emotion {{ quote.scores.emotion }} · Bildpotenzial {{ quote.scores.imagery }}</p>
-          <p class="muted small">Originalabsatz {{ quote.paragraph_ids[0][1:] | int }} · Zeichen {{ quote.source_start }}–{{ quote.source_end }} · Wortgetreu geprüft</p>
-          <details><summary>Originalkontext</summary><p class="book-text">{{ quote.context_before }}<mark>{{ quote.text }}</mark>{{ quote.context_after }}</p></details>
-          </details>
+          {% set reel = item.reel if item.reel is defined else none %}
+          <div class="quote-card-main{% if item.usable and reel and reel.image_ready %} has-image{% endif %}">
+            {% if item.usable and reel and reel.image_ready %}
+              <a class="quote-image-preview" href="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?source=selected&amp;revision={{ reel.draft.revision }}&amp;sha256={{ reel.draft.selected_image_sha256 }}" data-teaser-image-open aria-label="Bild für dieses Zitat vergrößern">
+                <img loading="lazy" src="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?source=selected&amp;revision={{ reel.draft.revision }}&amp;sha256={{ reel.draft.selected_image_sha256 }}" alt="Bild für dieses Zitat">
+              </a>
+            {% endif %}
+            <div class="quote-card-copy">
+              <blockquote class="book-text">{{ quote.text }}</blockquote>
+              {% if quote.spoiler == 'high' %}<p class="notice quote-spoiler">Hohe Spoiler-Einstufung · vor der Nutzung prüfen.</p>{% endif %}
+              <details class="quote-evidence"><summary>Bewertung, Fundstelle &amp; Veröffentlichung</summary>
+              <p>{{ quote.reason }}</p>
+              <p class="muted small">Letzter Post: {% if item.usage %}{{ item.usage.last_published_at | berlin_time }}{% if item.usage.reserved %} · Aktuell für einen Post reserviert{% endif %}{% else %}Noch nicht synchronisiert oder Status nicht erreichbar{% endif %}</p>
+              <p class="muted small">Verständlichkeit {{ quote.scores.clarity }} · Neugier {{ quote.scores.curiosity }} · Emotion {{ quote.scores.emotion }} · Bildpotenzial {{ quote.scores.imagery }}</p>
+              <p class="muted small">Originalabsatz {{ quote.paragraph_ids[0][1:] | int }} · Zeichen {{ quote.source_start }}–{{ quote.source_end }} · Wortgetreu geprüft</p>
+              <details><summary>Originalkontext</summary><p class="book-text">{{ quote.context_before }}<mark>{{ quote.text }}</mark>{{ quote.context_after }}</p></details>
+              </details>
+            </div>
+          </div>
           <form method="post" action="{{ url_for('set_quote_block', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" class="form-actions">
             <input type="hidden" name="run_id" value="{{ management.suggestion_id }}">
             <input type="hidden" name="revision" value="{{ item.revision }}">
@@ -74,7 +84,6 @@
             <input type="hidden" name="quote_page" value="{{ quote_page }}">
             <button type="submit">{{ 'Sperre aufheben' if item.blocked else 'Zitat sperren' }}</button>
             {% if item.usable %}
-              {% set reel = item.reel if item.reel is defined else none %}
               <a class="button-link quote-produce" href="{{ url_for('reel_workshop', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-open
                       data-reel-url="{{ url_for('reel_workshop', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}">
                 Medien-Werkstatt öffnen
@@ -90,25 +99,6 @@
               {% endif %}
             {% endif %}
           </form>
-          {% if item.usable and reel and reel.image_ready %}
-            <div class="quote-image-review">
-              <img src="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?source=selected&amp;revision={{ reel.draft.revision }}&amp;sha256={{ reel.draft.selected_image_sha256 }}" alt="Ausgewähltes Bild für dieses Zitat">
-              <div>
-                {% if reel.image_approved %}
-                  <p><span class="badge badge-ready">Für Reel freigegeben</span></p>
-                  <p class="small muted">Genau diese Bildversion wird vom kapitelweiten Reel-Lauf verwendet.</p>
-                {% else %}
-                  <p><strong>Bild manuell prüfen</strong></p>
-                  <p class="small muted">Bei Bedarf die Medien-Werkstatt öffnen, neu erzeugen oder eine andere Variante wählen.</p>
-                  <form method="post" action="{{ url_for('approve_quote_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}">
-                    <input type="hidden" name="revision" value="{{ reel.draft.revision }}">
-                    <input type="hidden" name="image_sha256" value="{{ reel.draft.selected_image_sha256 }}">
-                    <button type="submit">Bild freigeben</button>
-                  </form>
-                {% endif %}
-              </div>
-            </div>
-          {% endif %}
           {% if not quote.usable %}<p class="muted small">Die KI stuft dieses Zitat als nicht geeignet ein. Eine aufgehobene manuelle Sperre ändert diese Einstufung nicht.</p>{% endif %}
         </article>
       {% else %}<p>Keine Zitate für diesen Filter auf dieser Seite.</p>{% endfor %}
@@ -128,6 +118,10 @@
       </div>
       <div data-reel-content><p class="muted">Reel-Daten werden geladen …</p></div>
     </div>
+  </dialog>
+  <dialog id="chapter-image-lightbox" class="teaser-dialog chapter-image-lightbox" aria-labelledby="chapter-image-lightbox-title">
+    <div class="teaser-dialog-heading"><h2 id="chapter-image-lightbox-title">Zitatbild</h2><button type="button" class="secondary-button" data-teaser-dialog-close aria-label="Bildansicht schließen">Schließen</button></div>
+    <img data-teaser-lightbox-image alt="">
   </dialog>
   <details class="panel next-settings" aria-label="Kapiteltext">
     <summary>Vollständigen Kapiteltext lesen</summary>

@@ -94,7 +94,10 @@ def test_only_reviewed_image_enters_batch_reel_and_motion_chains_video(setup, mo
 
     with TestClient(app, base_url="http://127.0.0.1:8000") as client:
         page = client.get(base)
-        assert "Bild freigeben" in page.text
+        assert "Bild freigeben" not in page.text
+        assert 'class="quote-image-preview"' in page.text
+        assert 'data-teaser-image-open' in page.text
+        assert '<dialog id="chapter-image-lightbox"' in page.text
         approved = client.post(reel_url + "/image/approve", data={
             "revision": str(draft.revision), "image_sha256": draft.selected_image_sha256,
         }, follow_redirects=False)
