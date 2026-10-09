@@ -538,13 +538,46 @@ def add_preview_album(workflow):
     workflow.link("Prepare preview signing", "Sign preview URL")
     workflow.code("Prepare Telegram album", """const signed=$input.all(),rows=$('Prepare preview signing').all();if(signed.length!==rows.length)throw new Error('Preview signing incomplete');const media=rows.map((row,index)=>{const p=signed[index].json.signedURL||signed[index].json.signedUrl;if(typeof p!=='string')throw new Error('Signed preview URL missing');const url=p.startsWith('http')?p:$('Config').first().json.supabase_url+'/storage/v1'+p;return {type:'photo',media:url,additionalFields:{caption:index===0?'Carousel-Vorschau · '+rows.length+' Slides':''}};});return [{json:{...rows[0].json.post,telegram_media:media}}];""")
     workflow.link("Sign preview URL", "Prepare Telegram album")
-    workflow.node("Show carousel album", "n8n-nodes-base.telegram", {
-        "resource": "message", "operation": "sendMediaGroup", "chatId": "={{ $json.telegram_chat_id }}",
-        "media": "={{ {media:$json.telegram_media} }}", "additionalFields": {},
-    }, 1.2, "telegramApi")
-    workflow.link("Prepare Telegram album", "Show carousel album")
     workflow.code("Carousel approval context", "return [{json:$('Prepare Telegram album').first().json}];")
-    workflow.link("Show carousel album", "Carousel approval context")
+
+    # n8n's Telegram node models media as a fixed collection. A root-level
+    # expression for that collection is discarded when current n8n versions
+    # import/save the workflow, leaving mediaItems.media undefined at runtime.
+    # Keep the collection literal and select the matching 3..10 item node.
+    previous_gate = None
+    for slide_count in range(3, 11):
+        gate = f"Carousel has {slide_count} slides?"
+        show = f"Show carousel album · {slide_count} slides"
+        workflow.condition(gate, f"$json.telegram_media.length === {slide_count}")
+        if previous_gate is None:
+            workflow.link("Prepare Telegram album", gate)
+        else:
+            workflow.link(previous_gate, gate, 1)
+
+        media = []
+        for index in range(slide_count):
+            additional_fields = {}
+            if index == 0:
+                additional_fields["caption"] = (
+                    "={{ $json.telegram_media[0].additionalFields.caption }}"
+                )
+            media.append({
+                "type": "photo",
+                "media": f"={{{{ $json.telegram_media[{index}].media }}}}",
+                "additionalFields": additional_fields,
+            })
+        workflow.node(show, "n8n-nodes-base.telegram", {
+            "resource": "message", "operation": "sendMediaGroup",
+            "chatId": "={{ $json.telegram_chat_id }}",
+            "media": {"media": media}, "additionalFields": {},
+        }, 1.2, "telegramApi")
+        workflow.link(gate, show)
+        workflow.link(show, "Carousel approval context")
+        previous_gate = gate
+
+    workflow.code("Reject unsupported preview size",
+                  "throw new Error('Telegram album must contain 3 to 10 slides');")
+    workflow.link(previous_gate, "Reject unsupported preview size", 1)
     workflow.telegram("Approve carousel",
         "={{ '<b>Carousel prüfen</b>\\n'+$json.telegram_media.length+' Slides sind oben vollständig und in Post-Reihenfolge sichtbar.' }}",
         [("Freigeben und posten", "i"), ("Bild neu", "ri"), ("Text + Bild neu", "rt"), ("Verwerfen", "d")])

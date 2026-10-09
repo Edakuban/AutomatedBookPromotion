@@ -60,7 +60,6 @@ def test_review_has_hitl_and_auto_has_no_waiting_approval_nodes():
     for name in (
         "Telegram decisions",
         "Approve text",
-        "Show carousel album",
         "Approve carousel",
         "Carousel approval context",
         "Parse callback",
@@ -68,8 +67,32 @@ def test_review_has_hitl_and_auto_has_no_waiting_approval_nodes():
     ):
         assert name in review
         assert name not in auto
-    assert review["Show carousel album"]["parameters"]["operation"] == "sendMediaGroup"
-    assert "telegram_media" in review["Show carousel album"]["parameters"]["media"]
+    for slide_count in range(3, 11):
+        name = f"Show carousel album · {slide_count} slides"
+        assert name in review
+        assert name not in auto
+        parameters = review[name]["parameters"]
+        assert parameters["operation"] == "sendMediaGroup"
+        assert isinstance(parameters["media"], dict)
+        assert len(parameters["media"]["media"]) == slide_count
+        assert all(
+            item["media"] == f"={{{{ $json.telegram_media[{index}].media }}}}"
+            for index, item in enumerate(parameters["media"]["media"])
+        )
+
+
+def test_review_routes_preview_to_matching_fixed_telegram_collection():
+    workflow = build("review")
+    assert targets(workflow, "Prepare Telegram album") == ["Carousel has 3 slides?"]
+    for slide_count in range(3, 11):
+        gate = f"Carousel has {slide_count} slides?"
+        show = f"Show carousel album · {slide_count} slides"
+        assert targets(workflow, gate) == [show]
+        assert targets(workflow, show) == ["Carousel approval context"]
+        if slide_count < 10:
+            assert targets(workflow, gate, 1) == [f"Carousel has {slide_count + 1} slides?"]
+        else:
+            assert targets(workflow, gate, 1) == ["Reject unsupported preview size"]
 
 
 def test_review_builds_telegram_callbacks_in_code_nodes_not_parameter_expressions():

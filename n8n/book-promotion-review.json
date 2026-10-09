@@ -1821,19 +1821,86 @@
       }
     },
     {
-      "id": "0c74d6a1-0468-5b21-ba16-d47a8350de18",
-      "name": "Show carousel album",
+      "id": "cf47f7b1-07bd-5262-b51e-f220622e1e0e",
+      "name": "Carousel approval context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        2070
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:$('Prepare Telegram album').first().json}];"
+      }
+    },
+    {
+      "id": "e312140f-c6d4-5a22-9281-c02b68516d11",
+      "name": "Carousel has 3 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1400,
+        2070
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 3 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 3 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "70a98d14-10cd-55cd-8c91-753e1515677a",
+      "name": "Show carousel album · 3 slides",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1120,
+        1680,
         2070
       ],
       "parameters": {
         "resource": "message",
         "operation": "sendMediaGroup",
         "chatId": "={{ $json.telegram_chat_id }}",
-        "media": "={{ {media:$json.telegram_media} }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
         "additionalFields": {}
       },
       "credentials": {
@@ -1844,17 +1911,689 @@
       }
     },
     {
-      "id": "cf47f7b1-07bd-5262-b51e-f220622e1e0e",
-      "name": "Carousel approval context",
+      "id": "019f7849-3d52-5d6a-89a0-90edcc2edc31",
+      "name": "Carousel has 4 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        2070
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 4 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 4 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "1e869276-09b1-5f63-806e-158f773062f3",
+      "name": "Show carousel album · 4 slides",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        2300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMediaGroup",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[3].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "e72a2597-8f81-5ffc-a7fa-b4d5e26ce6fc",
+      "name": "Carousel has 5 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        2300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 5 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 5 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "059890b4-efdd-57aa-b20c-2a55fcdd5bed",
+      "name": "Show carousel album · 5 slides",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        2300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMediaGroup",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[3].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[4].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "b2e1164e-4712-5019-a5a0-f57e2a28f424",
+      "name": "Carousel has 6 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        840,
+        2300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 6 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 6 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0777ea1e-ccc9-5264-adea-8adeb1949e7f",
+      "name": "Show carousel album · 6 slides",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        2300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMediaGroup",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[3].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[4].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[5].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "4f53ebe5-cbb4-57bb-a024-22ea4e4caa60",
+      "name": "Carousel has 7 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1400,
+        2300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 7 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 7 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "6b7bd6c2-036e-51b6-bd7b-ae21dfbe0d00",
+      "name": "Show carousel album · 7 slides",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1680,
+        2300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMediaGroup",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[3].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[4].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[5].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[6].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "3954a5cb-a9d2-59f7-ad32-9baf95100294",
+      "name": "Carousel has 8 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        2300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 8 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 8 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "528051fe-4a77-5231-817d-37765960aff2",
+      "name": "Show carousel album · 8 slides",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        2530
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMediaGroup",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[3].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[4].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[5].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[6].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[7].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "97617514-4249-56c7-9d35-80b3909337e1",
+      "name": "Carousel has 9 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        2530
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 9 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 9 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "77d45c08-d4e5-58f2-bd8a-155b56afaa05",
+      "name": "Show carousel album · 9 slides",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        2530
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMediaGroup",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[3].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[4].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[5].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[6].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[7].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[8].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "aae0ccda-5dcb-5e86-991c-7bce933aab8b",
+      "name": "Carousel has 10 slides?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        840,
+        2530
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Carousel has 10 slides?",
+              "leftValue": "={{ $json.telegram_media.length === 10 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f0ba204c-c87e-57e5-b73a-5d9a645a8f02",
+      "name": "Show carousel album · 10 slides",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        2530
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMediaGroup",
+        "chatId": "={{ $json.telegram_chat_id }}",
+        "media": {
+          "media": [
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[0].media }}",
+              "additionalFields": {
+                "caption": "={{ $json.telegram_media[0].additionalFields.caption }}"
+              }
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[1].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[2].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[3].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[4].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[5].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[6].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[7].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[8].media }}",
+              "additionalFields": {}
+            },
+            {
+              "type": "photo",
+              "media": "={{ $json.telegram_media[9].media }}",
+              "additionalFields": {}
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_telegramApi",
+          "name": "BookPromotion telegramApi"
+        }
+      }
+    },
+    {
+      "id": "7e94cb3c-bdc3-52d5-accf-ebc5c50b266e",
+      "name": "Reject unsupported preview size",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         1400,
-        2070
+        2530
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "return [{json:$('Prepare Telegram album').first().json}];"
+        "jsCode": "throw new Error('Telegram album must contain 3 to 10 slides');"
       }
     },
     {
@@ -1864,7 +2603,7 @@
       "typeVersion": 1.2,
       "position": [
         1680,
-        2070
+        2530
       ],
       "parameters": {
         "resource": "message",
@@ -1925,7 +2664,7 @@
       "typeVersion": 2.2,
       "position": [
         1960,
-        2070
+        2530
       ],
       "parameters": {
         "conditions": {
@@ -1958,7 +2697,7 @@
       "typeVersion": 1.2,
       "position": [
         0,
-        2300
+        2760
       ],
       "parameters": {
         "resource": "message",
@@ -1984,7 +2723,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        2300
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -1998,7 +2737,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        2300
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2012,7 +2751,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        2300
+        2760
       ],
       "parameters": {
         "url": "https://graph.instagram.com/refresh_access_token",
@@ -2047,7 +2786,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        2300
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2061,7 +2800,7 @@
       "typeVersion": 2.2,
       "position": [
         1400,
-        2300
+        2760
       ],
       "parameters": {
         "conditions": {
@@ -2094,7 +2833,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        2300
+        2760
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2108,7 +2847,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        2300
+        2760
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -2141,7 +2880,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        2530
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2155,7 +2894,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        2530
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2169,7 +2908,7 @@
       "typeVersion": 4.2,
       "position": [
         560,
-        2530
+        2990
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/rest/v1/post_media?post_id=eq.'+$('Active publishing context').first().json.post.id+'&select=id,post_id,manifest_revision,position,kind,text_fragment,alt_text,storage_path,sha256,status,instagram_container_id&order=position.asc' }}",
@@ -2199,7 +2938,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        2530
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2214,7 +2953,7 @@
       "typeVersion": 3,
       "position": [
         1120,
-        2530
+        2990
       ],
       "parameters": {
         "batchSize": 1,
@@ -2228,7 +2967,7 @@
       "typeVersion": 2.2,
       "position": [
         1400,
-        2530
+        2990
       ],
       "parameters": {
         "conditions": {
@@ -2261,7 +3000,7 @@
       "typeVersion": 4.2,
       "position": [
         1680,
-        2530
+        2990
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/sign/'+$('Config').first().json.media_bucket+'/'+$json.storage_path }}",
@@ -2295,7 +3034,7 @@
       "typeVersion": 2,
       "position": [
         1960,
-        2530
+        2990
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2310,7 +3049,7 @@
       "typeVersion": 4.2,
       "position": [
         0,
-        2760
+        3220
       ],
       "parameters": {
         "url": "={{ $json.signed_url }}",
@@ -2340,7 +3079,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        2760
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2355,7 +3094,7 @@
       "typeVersion": 4.2,
       "position": [
         560,
-        2760
+        3220
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.account_id+'/media' }}",
@@ -2406,7 +3145,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        2760
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2421,7 +3160,7 @@
       "typeVersion": 4.2,
       "position": [
         1120,
-        2760
+        3220
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_media_container' }}",
@@ -2456,7 +3195,7 @@
       "typeVersion": 2,
       "position": [
         1400,
-        2760
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2471,7 +3210,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        2760
+        3220
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2485,7 +3224,7 @@
       "typeVersion": 1.1,
       "position": [
         1960,
-        2760
+        3220
       ],
       "parameters": {
         "amount": "={{ $('Config').first().json.poll_seconds }}",
@@ -2499,7 +3238,7 @@
       "typeVersion": 4.2,
       "position": [
         0,
-        2990
+        3450
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.instagram_container_id }}",
@@ -2536,7 +3275,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        2990
+        3450
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2550,7 +3289,7 @@
       "typeVersion": 2.2,
       "position": [
         560,
-        2990
+        3450
       ],
       "parameters": {
         "conditions": {
@@ -2583,7 +3322,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        2990
+        3450
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2597,7 +3336,7 @@
       "typeVersion": 2.2,
       "position": [
         1120,
-        2990
+        3450
       ],
       "parameters": {
         "conditions": {
@@ -2630,7 +3369,7 @@
       "typeVersion": 2,
       "position": [
         1400,
-        2990
+        3450
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2644,7 +3383,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        2990
+        3450
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2658,7 +3397,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        2990
+        3450
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/rest/v1/post_media?post_id=eq.'+$('Ready children context').first().json.post.id+'&status=eq.container_ready&select=id,post_id,manifest_revision,position,kind,text_fragment,alt_text,storage_path,sha256,status,instagram_container_id&order=position.asc' }}",
@@ -2688,7 +3427,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        3220
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2703,7 +3442,7 @@
       "typeVersion": 2.2,
       "position": [
         280,
-        3220
+        3680
       ],
       "parameters": {
         "conditions": {
@@ -2736,7 +3475,7 @@
       "typeVersion": 4.2,
       "position": [
         560,
-        3220
+        3680
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.account_id+'/media' }}",
@@ -2791,7 +3530,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        3220
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2806,7 +3545,7 @@
       "typeVersion": 4.2,
       "position": [
         1120,
-        3220
+        3680
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -2841,7 +3580,7 @@
       "typeVersion": 2,
       "position": [
         1400,
-        3220
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2856,7 +3595,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        3220
+        3680
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2870,7 +3609,7 @@
       "typeVersion": 1.1,
       "position": [
         1960,
-        3220
+        3680
       ],
       "parameters": {
         "amount": "={{ $('Config').first().json.poll_seconds }}",
@@ -2884,7 +3623,7 @@
       "typeVersion": 4.2,
       "position": [
         0,
-        3450
+        3910
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.instagram_container_id }}",
@@ -2921,7 +3660,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        3450
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -2935,7 +3674,7 @@
       "typeVersion": 2.2,
       "position": [
         560,
-        3450
+        3910
       ],
       "parameters": {
         "conditions": {
@@ -2968,7 +3707,7 @@
       "typeVersion": 2.2,
       "position": [
         840,
-        3450
+        3910
       ],
       "parameters": {
         "conditions": {
@@ -3001,7 +3740,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        3450
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3015,7 +3754,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        3450
+        3910
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.post.account_id+'/media_publish' }}",
@@ -3058,7 +3797,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        3450
+        3910
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3073,7 +3812,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        3450
+        3910
       ],
       "parameters": {
         "url": "={{ 'https://graph.instagram.com/'+$('Config').first().json.graph_version+'/'+$json.media_id }}",
@@ -3109,7 +3848,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        3680
+        4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3123,7 +3862,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        3680
+        4140
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -3158,7 +3897,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        3680
+        4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3172,7 +3911,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        3680
+        4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3186,7 +3925,7 @@
       "typeVersion": 4.2,
       "position": [
         1120,
-        3680
+        4140
       ],
       "parameters": {
         "url": "={{ (()=>{const c=$('Decision cleanup context').isExecuted?$('Decision cleanup context').first().json:$('Published cleanup context').isExecuted?$('Published cleanup context').first().json:$('Terminal cleanup context').first().json;return $('Config').first().json.supabase_url+'/rest/v1/post_media?post_id=eq.'+c.post.id+'&status=eq.cleanup_pending&select=storage_path&order=position.asc';})() }}",
@@ -3222,7 +3961,7 @@
       "typeVersion": 2,
       "position": [
         1400,
-        3680
+        4140
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3236,7 +3975,7 @@
       "typeVersion": 2.2,
       "position": [
         1680,
-        3680
+        4140
       ],
       "parameters": {
         "conditions": {
@@ -3269,7 +4008,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        3680
+        4140
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket }}",
@@ -3303,7 +4042,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        3910
+        4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3317,7 +4056,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        3910
+        4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3331,7 +4070,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        3910
+        4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3345,7 +4084,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        3910
+        4370
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_media_cleanup' }}",
@@ -3379,7 +4118,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        3910
+        4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3393,7 +4132,7 @@
       "typeVersion": 2.2,
       "position": [
         1400,
-        3910
+        4370
       ],
       "parameters": {
         "conditions": {
@@ -3426,7 +4165,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        3910
+        4370
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3440,7 +4179,7 @@
       "typeVersion": 1.2,
       "position": [
         1960,
-        3910
+        4370
       ],
       "parameters": {
         "resource": "message",
@@ -3466,7 +4205,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        4140
+        4600
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3480,7 +4219,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        4140
+        4600
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
@@ -3513,7 +4252,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        4140
+        4600
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3527,7 +4266,7 @@
       "typeVersion": 1.2,
       "position": [
         840,
-        4140
+        4600
       ],
       "parameters": {
         "resource": "message",
@@ -3553,7 +4292,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        4140
+        4600
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3567,7 +4306,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        4140
+        4600
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
@@ -3600,7 +4339,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        4140
+        4600
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3614,7 +4353,7 @@
       "typeVersion": 1.2,
       "position": [
         1960,
-        4140
+        4600
       ],
       "parameters": {
         "resource": "message",
@@ -3640,7 +4379,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        4370
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3654,7 +4393,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        4370
+        4830
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
@@ -3687,7 +4426,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        4370
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3701,7 +4440,7 @@
       "typeVersion": 1.2,
       "position": [
         840,
-        4370
+        4830
       ],
       "parameters": {
         "resource": "message",
@@ -3727,7 +4466,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        4370
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3741,7 +4480,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        4370
+        4830
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
@@ -3774,7 +4513,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        4370
+        4830
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3788,7 +4527,7 @@
       "typeVersion": 1.2,
       "position": [
         1960,
-        4370
+        4830
       ],
       "parameters": {
         "resource": "message",
@@ -3814,7 +4553,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        4600
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3828,7 +4567,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        4600
+        5060
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
@@ -3861,7 +4600,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        4600
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3875,7 +4614,7 @@
       "typeVersion": 1.2,
       "position": [
         840,
-        4600
+        5060
       ],
       "parameters": {
         "resource": "message",
@@ -3901,7 +4640,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        4600
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3915,7 +4654,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        4600
+        5060
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
@@ -3948,7 +4687,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        4600
+        5060
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -3962,7 +4701,7 @@
       "typeVersion": 1.2,
       "position": [
         1960,
-        4600
+        5060
       ],
       "parameters": {
         "resource": "message",
@@ -3988,7 +4727,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        4830
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4002,7 +4741,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        4830
+        5290
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_prepared_image_fail' }}",
@@ -4035,7 +4774,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        4830
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4049,7 +4788,7 @@
       "typeVersion": 1.2,
       "position": [
         840,
-        4830
+        5290
       ],
       "parameters": {
         "resource": "message",
@@ -4075,7 +4814,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        4830
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4089,7 +4828,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        4830
+        5290
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4122,7 +4861,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        4830
+        5290
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4136,7 +4875,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        4830
+        5290
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4169,7 +4908,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        5060
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4183,7 +4922,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        5060
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4216,7 +4955,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        5060
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4230,7 +4969,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        5060
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4263,7 +5002,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        5060
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4277,7 +5016,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        5060
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4310,7 +5049,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        5060
+        5520
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4324,7 +5063,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        5060
+        5520
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4357,7 +5096,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        5290
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4371,7 +5110,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        5290
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4404,7 +5143,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        5290
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4418,7 +5157,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        5290
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4451,7 +5190,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        5290
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4465,7 +5204,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        5290
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4498,7 +5237,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        5290
+        5750
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4512,7 +5251,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        5290
+        5750
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4545,7 +5284,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        5520
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4559,7 +5298,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        5520
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4592,7 +5331,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        5520
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4606,7 +5345,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        5520
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4639,7 +5378,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        5520
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4653,7 +5392,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        5520
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4686,7 +5425,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        5520
+        5980
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4700,7 +5439,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        5520
+        5980
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4733,7 +5472,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        5750
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4747,7 +5486,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        5750
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4780,7 +5519,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        5750
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4794,7 +5533,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        5750
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4827,7 +5566,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        5750
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4841,7 +5580,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        5750
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4874,7 +5613,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        5750
+        6210
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4888,7 +5627,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        5750
+        6210
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4921,7 +5660,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        5980
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4935,7 +5674,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        5980
+        6440
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -4968,7 +5707,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        5980
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -4982,7 +5721,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        5980
+        6440
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -5015,7 +5754,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        5980
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5029,7 +5768,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        5980
+        6440
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -5062,7 +5801,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        5980
+        6440
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5076,7 +5815,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        5980
+        6440
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -5109,7 +5848,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        6210
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5123,7 +5862,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        6210
+        6670
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket }}",
@@ -5157,7 +5896,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        6210
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5171,7 +5910,7 @@
       "typeVersion": 4.2,
       "position": [
         840,
-        6210
+        6670
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -5204,7 +5943,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        6210
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5218,7 +5957,7 @@
       "typeVersion": 4.2,
       "position": [
         1400,
-        6210
+        6670
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url+'/storage/v1/object/'+$('Config').first().json.media_bucket }}",
@@ -5252,7 +5991,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        6210
+        6670
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5266,7 +6005,7 @@
       "typeVersion": 4.2,
       "position": [
         1960,
-        6210
+        6670
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -5299,7 +6038,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        6440
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5313,7 +6052,7 @@
       "typeVersion": 4.2,
       "position": [
         280,
-        6440
+        6900
       ],
       "parameters": {
         "url": "={{ $('Config').first().json.supabase_url + '/rest/v1/rpc/bookpromo_transition' }}",
@@ -5347,7 +6086,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        6440
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5361,7 +6100,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        6440
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5375,7 +6114,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        6440
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5389,7 +6128,7 @@
       "typeVersion": 2,
       "position": [
         1400,
-        6440
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5403,7 +6142,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        6440
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5417,7 +6156,7 @@
       "typeVersion": 2,
       "position": [
         1960,
-        6440
+        6900
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5431,7 +6170,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5445,7 +6184,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5459,7 +6198,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5473,7 +6212,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5487,7 +6226,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5501,7 +6240,7 @@
       "typeVersion": 2,
       "position": [
         1400,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5515,7 +6254,7 @@
       "typeVersion": 2,
       "position": [
         1680,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5529,7 +6268,7 @@
       "typeVersion": 2,
       "position": [
         1960,
-        6670
+        7130
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5543,7 +6282,7 @@
       "typeVersion": 2,
       "position": [
         0,
-        6900
+        7360
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5557,7 +6296,7 @@
       "typeVersion": 2,
       "position": [
         280,
-        6900
+        7360
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5571,7 +6310,7 @@
       "typeVersion": 2,
       "position": [
         560,
-        6900
+        7360
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5585,7 +6324,7 @@
       "typeVersion": 2,
       "position": [
         840,
-        6900
+        7360
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5599,7 +6338,7 @@
       "typeVersion": 2,
       "position": [
         1120,
-        6900
+        7360
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5613,7 +6352,7 @@
       "typeVersion": 2,
       "position": [
         1400,
-        6900
+        7360
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
@@ -5627,7 +6366,7 @@
       "typeVersion": 1,
       "position": [
         1680,
-        6900
+        7360
       ],
       "parameters": {
         "content": "## Book Promotion Carousel · review\nInactive import for n8n 2.35.4. Assign credentials before testing.\nPrepared sources use their frozen Supabase/R2 object identity; R2 public URLs fall back to fresh signatures. Generated slides remain private in Supabase Storage.\npublish_enabled=false is the default dry-run gate. See n8n/README.md.",
@@ -6758,14 +7497,235 @@
       "main": [
         [
           {
-            "node": "Show carousel album",
+            "node": "Carousel has 3 slides?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Show carousel album": {
+    "Carousel has 3 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 3 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carousel has 4 slides?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 3 slides": {
+      "main": [
+        [
+          {
+            "node": "Carousel approval context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carousel has 4 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 4 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carousel has 5 slides?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 4 slides": {
+      "main": [
+        [
+          {
+            "node": "Carousel approval context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carousel has 5 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 5 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carousel has 6 slides?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 5 slides": {
+      "main": [
+        [
+          {
+            "node": "Carousel approval context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carousel has 6 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 6 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carousel has 7 slides?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 6 slides": {
+      "main": [
+        [
+          {
+            "node": "Carousel approval context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carousel has 7 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 7 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carousel has 8 slides?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 7 slides": {
+      "main": [
+        [
+          {
+            "node": "Carousel approval context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carousel has 8 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 8 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carousel has 9 slides?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 8 slides": {
+      "main": [
+        [
+          {
+            "node": "Carousel approval context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carousel has 9 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 9 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carousel has 10 slides?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 9 slides": {
+      "main": [
+        [
+          {
+            "node": "Carousel approval context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carousel has 10 slides?": {
+      "main": [
+        [
+          {
+            "node": "Show carousel album · 10 slides",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject unsupported preview size",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Show carousel album · 10 slides": {
       "main": [
         [
           {

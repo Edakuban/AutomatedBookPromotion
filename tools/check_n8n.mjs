@@ -48,11 +48,22 @@ for(const file of files){
 }
 
 const [review,auto]=workflows;
-for(const name of ['Telegram decisions','Approve text','Show carousel album','Approve carousel']){
+for(const name of ['Telegram decisions','Approve text','Approve carousel']){
  assert.ok(review.nodes.has(name),`review missing ${name}`);
  assert.ok(!auto.nodes.has(name),`auto must not contain ${name}`);
 }
-assert.equal(review.nodes.get('Show carousel album').parameters.operation,'sendMediaGroup');
+for(let count=3;count<=10;count++){
+ const name=`Show carousel album · ${count} slides`;
+ assert.ok(review.nodes.has(name),`review missing ${name}`);
+ assert.ok(!auto.nodes.has(name),`auto must not contain ${name}`);
+ const parameters=review.nodes.get(name).parameters;
+ assert.equal(parameters.operation,'sendMediaGroup');
+ assert.ok(parameters.media&&typeof parameters.media==='object'&&!Array.isArray(parameters.media));
+ assert.equal(parameters.media.media.length,count);
+ for(let index=0;index<count;index++){
+  assert.equal(parameters.media.media[index].media,`={{ $json.telegram_media[${index}].media }}`);
+ }
+}
 
 const callbackDraft={
  id:'12345678-1234-4234-8234-123456789012',revision:35,
