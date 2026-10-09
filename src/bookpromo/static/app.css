@@ -358,6 +358,20 @@ a.button-link.secondary-button:hover { background: #edf2ff; }
 .quote-card .form-actions button { background: white; color: var(--muted); border-color: var(--border); }
 .quote-card .form-actions button:hover { background: #f4f6fa; }
 .quote-card .quote-produce { margin: 0; }
+.quote-production { margin: 1rem 0 1.25rem; padding: 1rem; border: 1px solid #bfd1ea; border-radius: 12px; background: linear-gradient(135deg, #f5f9ff, #fff); }
+.quote-production-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.quote-production-heading h3 { margin: .1rem 0 .8rem; }
+.quote-production .eyebrow { margin: 0; color: var(--accent); font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.quote-production-progress { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; margin-bottom: .85rem; }
+.quote-production-progress span { padding: .65rem .75rem; border: 1px solid var(--border); border-radius: 9px; background: white; color: var(--muted); font-size: .8rem; }
+.quote-production-progress strong { display: block; color: var(--text); font-size: 1rem; }
+.quote-production-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; }
+.quote-production-actions form, .quote-production-actions button { width: 100%; height: 100%; margin: 0; }
+.quote-media-status { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
+.quote-image-review { display: grid; grid-template-columns: minmax(120px, 180px) 1fr; gap: 1rem; align-items: center; margin-top: 1rem; padding: .8rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft, #f7f9fd); }
+.quote-image-review img { display: block; width: 100%; max-height: 230px; object-fit: cover; border-radius: 8px; }
+.quote-image-review p { margin: 0 0 .55rem; }
+.quote-image-review form { margin: 0; }
 .quote-evidence > summary { color: var(--muted); font-size: .8rem; }
 .quote-spoiler { font-size: .8rem; background: #fff5e7; border-color: #c88630; }
 .quote-workspace .next-settings { margin-top: 1.3rem; }
@@ -391,6 +405,8 @@ a.button-link.secondary-button:hover { background: #edf2ff; }
   .search-field input, .search-field select { min-width: 0; width: 100%; }
   .settings-savebar { bottom: .4rem; padding: .8rem; }
   .quote-card { padding: 1rem; }
+  .quote-production-progress, .quote-production-actions { grid-template-columns: 1fr 1fr; }
+  .quote-image-review { grid-template-columns: 1fr; }
   .quote-filters { overflow-x: auto; flex-wrap: nowrap; min-height: 0; }
   .quote-filters a { white-space: nowrap; }
   .settings-nav { min-height: 0; }

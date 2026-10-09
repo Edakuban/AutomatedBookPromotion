@@ -8,7 +8,7 @@
     </p>
   {% endif %}
 
-  {% set current_step = 'image' if not draft or not draft.selected_image_path or draft.image_stale else 'copy' if not draft.final_caption else 'audio' if not draft.audio_track_id or draft.audio_start_ms is none else 'video' if not draft.selected_video_path or draft.video_stale else 'ready' %}
+  {% set current_step = 'image' if not draft or not draft.image_approved else 'copy' if not draft.final_caption else 'audio' if not draft.audio_track_id or draft.audio_start_ms is none else 'video' if not draft.selected_video_path or draft.video_stale else 'ready' %}
   <p class="muted small">Für Zitat-Carousels genügen Text und Bild. Im Schritt „Bild &amp; Carousel“ kannst du das gewählte Bild für n8n vorbereiten. Für ein Reel folgen Musik und Video.</p>
   <div class="reel-steps">
     <details class="reel-step" data-reel-step="copy" {% if current_step == 'copy' %}open{% endif %} aria-labelledby="reel-copy-title">
@@ -43,7 +43,7 @@
     </details>
 
     <details class="reel-step" data-reel-step="image" {% if current_step == 'image' %}open{% endif %} aria-labelledby="reel-image-title">
-      <summary class="reel-step-heading"><h3 id="reel-image-title">2 · Bild &amp; Carousel</h3>{% if draft and draft.selected_image_path and not draft.image_stale %}<span class="badge badge-ready">Erstellt</span>{% endif %}</summary>
+      <summary class="reel-step-heading"><h3 id="reel-image-title">2 · Bild &amp; Carousel</h3>{% if draft and draft.image_approved %}<span class="badge badge-ready">Freigegeben</span>{% elif draft and draft.selected_image_path and not draft.image_stale %}<span class="badge">Prüfung offen</span>{% endif %}</summary>
       {% if draft %}
         {% with simple_image_action=url_for('create_reel_image_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id), simple_image_draft=draft, simple_image_characters=characters, simple_image_busy=(job and job.active), simple_image_is_quote=true, simple_image_providers=text_ai_providers %}
           {% include 'simple_image_actions.html' %}
@@ -55,13 +55,13 @@
             {% set candidate_selected = draft.image_candidate_is_selected(source) %}
             <figure class="reel-image-candidate{% if candidate_selected %} is-selected{% endif %}">
               <img class="reel-media-preview" src="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?source={{ source }}&amp;revision={{ draft.revision }}&amp;sha256={{ draft.image_candidate_sha256(source) or '' }}" alt="{{ label }}">
-              <figcaption>{{ label }}{% if candidate_selected %}<span class="badge badge-ready">Für Video gewählt</span>{% elif source == draft.selected_image_source and draft.selected_image_path %}<span class="badge">Neue Version · noch nicht gewählt</span>{% endif %}</figcaption>
+              <figcaption>{{ label }}{% if candidate_selected and draft.image_approved %}<span class="badge badge-ready">Für Reel freigegeben</span>{% elif candidate_selected %}<span class="badge">Ausgewählt · Freigabe offen</span>{% elif source == draft.selected_image_source and draft.selected_image_path %}<span class="badge">Neue Version · noch nicht gewählt</span>{% endif %}</figcaption>
             </figure>
           {% endfor %}
           {% if draft.selected_image_path and not draft.selected_image_is_current_candidate %}
             <figure class="reel-image-candidate is-selected">
               <img class="reel-media-preview" src="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?source=selected&amp;revision={{ draft.revision }}&amp;sha256={{ draft.selected_image_sha256 or '' }}" alt="Aktuelle Auswahl: {{ draft.selected_image_label }} · frühere Version">
-              <figcaption>{{ draft.selected_image_label }} · frühere Version<span class="badge badge-ready">Für Video gewählt</span></figcaption>
+              <figcaption>{{ draft.selected_image_label }} · frühere Version<span class="badge {% if draft.image_approved %}badge-ready{% endif %}">{{ 'Für Reel freigegeben' if draft.image_approved else 'Freigabe offen' }}</span></figcaption>
             </figure>
           {% endif %}
         </div>
@@ -75,7 +75,7 @@
               {% for source, label, path in draft.image_candidates %}<option value="{{ source }}" {% if source == draft.selected_image_source %}selected{% endif %}>{{ label }}{% if source == draft.selected_image_source and draft.selected_image_path and not draft.image_candidate_is_selected(source) %} · neue Version{% endif %}</option>{% endfor %}
             </select>
           </label>
-          <div class="form-actions"><button type="submit" {% if job and job.active %}disabled{% endif %}>Auswahl übernehmen</button></div>
+          <div class="form-actions"><button type="submit" {% if job and job.active %}disabled{% endif %}>Auswahl übernehmen &amp; freigeben</button></div>
         </form>
       {% else %}<p class="muted">Ein Szenenbild erzeugen oder ein eigenes Bild hochladen.</p>{% endif %}
       <details class="simple-image-advanced"><summary>Erweiterte Einstellungen · Szenenplan &amp; bisherige Verfahren</summary>
@@ -227,7 +227,7 @@
       <summary class="reel-step-heading"><h3 id="reel-video-title">4 · Bewegung und Video</h3>{% if draft and draft.selected_video_path and not draft.video_stale %}<span class="badge badge-ready">Erstellt</span>{% endif %}</summary>
       <form method="post" action="{{ url_for('generate_reel_motion_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Videoprompt wird erzeugt …">
         {% include 'global_text_ai.html' %}
-        <button type="submit" {% if not draft or not draft.selected_image_path or draft.image_stale or not draft.audio_track_id or draft.audio_start_ms is none or (job and job.active) %}disabled{% endif %}>{{ 'Videoprompt neu erzeugen' if draft and draft.video_prompt else 'Videoprompt erzeugen' }}</button>
+        <button type="submit" {% if not draft or not draft.image_approved or not draft.audio_track_id or draft.audio_start_ms is none or (job and job.active) %}disabled{% endif %}>{{ 'Videoprompt neu erzeugen' if draft and draft.video_prompt else 'Videoprompt erzeugen' }}</button>
       </form>
       {% if draft and draft.video_prompt %}
         <form method="post" action="{{ url_for('save_reel_motion_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Videoprompt wird gespeichert …">
@@ -238,7 +238,7 @@
       {% endif %}
       {% if draft and draft.selected_video_path %}<video class="reel-media-preview" controls preload="metadata" src="{{ url_for('reel_video', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?revision={{ draft.revision }}"></video>{% endif %}
       <form method="post" action="{{ url_for('generate_reel_video_route', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" data-reel-action data-waiting="Videogenerierung wird in ComfyUI vorgemerkt …" class="form-actions">
-        <button type="submit" {% if not draft or not draft.video_prompt or not draft.audio_track_id or draft.audio_start_ms is none or not draft.selected_image_path or draft.image_stale or (job and job.active) %}disabled{% endif %}>{{ 'Video neu erzeugen' if draft and draft.selected_video_path else 'Video erzeugen' }}</button>
+        <button type="submit" {% if not draft or not draft.video_prompt or not draft.audio_track_id or draft.audio_start_ms is none or not draft.image_approved or (job and job.active) %}disabled{% endif %}>{{ 'Video neu erzeugen' if draft and draft.selected_video_path else 'Video erzeugen' }}</button>
       </form>
     </details>
 

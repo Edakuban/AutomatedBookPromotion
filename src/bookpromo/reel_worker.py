@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 import hashlib
+import json
 import sqlite3
 import threading
 import time
@@ -10,7 +13,7 @@ from pathlib import Path
 
 from .comfy import ComfyClient, load_workflow
 from .characters import (
-    CharacterStore, character_forbidden_features, character_mask_selector,
+    CharacterStore, character_forbidden_features, character_mask_selector, character_mention_index,
     character_scene_prompt, order_scene_characters,
 )
 from .config import Settings, load_settings
@@ -18,7 +21,8 @@ from .extraction_store import ExtractionStore
 from .management import ManagementStore
 from .image_flow import description_scene_prompt, prepare_simple_plan
 from .image_presets import checked_preset, check_preset_available, identity_edit_prompts
-from .text_ai import provider_endpoint_hash
+from .text_ai import create_text_client, provider_endpoint_hash, provider_missing, provider_model_id
+from .reel_content import generate_motion_prompt, generate_reel_copy
 from .reel_generation import (
     CHARACTER_IDENTITY_STRATEGY, PLANNED_SCENE_STRATEGY, REFERENCE_SCENE_STRATEGY,
     CharacterReferenceSpec, ReelGenerator, build_planned_reference_prompt, build_simple_reference_prompt,
@@ -48,6 +52,47 @@ def _check_image_source(uploads, draft, payload):
         raise ValueError("Der Buchtext wurde seit dem Bildklick geändert. Bitte erneut anfordern.")
 
 
+def _prompt_client(settings: Settings, payload: dict):
+    provider = payload.get("ai_provider")
+    if provider not in {"openwebui", "comfyui_qwen"} or provider_missing(settings, provider):
+        raise ValueError("Der ausgewählte Text-KI-Provider ist nicht verfügbar.")
+    model_id = payload.get("ai_model_id")
+    if (payload.get("ai_endpoint_hash") != provider_endpoint_hash(settings, provider)
+            or model_id != provider_model_id(settings, provider)):
+        raise ValueError("Die Text-KI-Konfiguration wurde geändert. Bitte erneut anfordern.")
+    return create_text_client(settings, provider, model_id=model_id)
+
+
+def _prompt_character_ids(characters, draft, generated_prompt: str, scene_plan) -> list[str]:
+    planned = []
+    for actor in scene_plan.actors if scene_plan is not None else ():
+        actor_key = " ".join(actor.name.casefold().split())
+        matches = [
+            character for character in characters
+            if actor_key in {
+                " ".join(label.casefold().split())
+                for label in (character.name, *character.aliases)
+            }
+        ]
+        if len(matches) == 1 and matches[0].id not in planned:
+            planned.append(matches[0].id)
+    if planned:
+        return planned[:4]
+    context = " ".join((draft.quote_text, generated_prompt)).casefold()
+    detected = [
+        character for character in characters
+        if character_mention_index(character, context) is not None
+    ]
+    return [character.id for character in order_scene_characters(detected, context)[:4]]
+
+
+def _identity_context(snapshot) -> str:
+    return " ".join(
+        f"{item.get('name', 'Named character')} keeps the same visible identity."
+        for item in snapshot if isinstance(item, dict)
+    )
+
+
 def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> bool:
     reels = ReelStore(
         uploads,
@@ -57,7 +102,7 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
     jobs = ReelJobStore(reels)
     from .chapter_teaser_worker import reconcile_chapter_teaser_media
     reconciled = reconcile_chapter_teaser_media(uploads, reels, jobs)
-    job = jobs.claim(kinds={"image", "video"})
+    job = jobs.claim(kinds={"prompt", "image", "video"})
     if job is None:
         from .book_teaser_worker import run_book_teaser_once
         return run_book_teaser_once(uploads, settings, stop) or reconciled
@@ -81,6 +126,76 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
             jobs.finish(job, error="Der Reel-Entwurf wurde nicht gefunden.")
             return True
         operation = job.payload.get("operation", "scene")
+        if job.kind == "prompt":
+            client = _prompt_client(settings, job.payload)
+            profile = ManagementStore(uploads).get(draft.book_id)
+            if not profile:
+                raise ValueError("Das Kreativprofil des Buchs fehlt.")
+            if operation == "copy":
+                context = job.payload.get("source_context")
+                if (not isinstance(context, dict)
+                        or set(context) != {"quote", "context_before", "context_after"}
+                        or context.get("quote") != draft.quote_text
+                        or any(not isinstance(value, str) for value in context.values())
+                        or len(context["quote"]) > 14_000
+                        or len(context["context_before"]) > 4_000
+                        or len(context["context_after"]) > 4_000):
+                    raise ValueError("Der Buchkontext für den Textauftrag fehlt oder ist ungültig.")
+                characters = CharacterStore(uploads).list(draft.book_id)
+                generated = asyncio.run(generate_reel_copy(
+                    client, quote=draft.quote_text,
+                    book_profile=profile["details"].model_dump(),
+                    context_before=context["context_before"],
+                    context_after=context["context_after"],
+                    characters=tuple({"name": item.name, "aliases": list(item.aliases)}
+                                     for item in characters),
+                    scene_direction=draft.scene_direction,
+                ))
+                character_ids = _prompt_character_ids(
+                    characters, draft, generated.image_prompt, generated.scene_plan,
+                )
+                direction = draft.scene_direction or generated.scene_direction
+                selected = [item for item in characters if item.id in character_ids]
+                proposed = replace(
+                    draft, image_prompt=generated.image_prompt, scene_direction=direction,
+                    character_ids_json=json.dumps(character_ids),
+                )
+                fingerprint = scene_plan_fingerprint(
+                    quote=proposed.quote_text, image_prompt=proposed.image_prompt,
+                    scene_direction=proposed.scene_direction,
+                    art_direction=profile["details"].image_prompt_base,
+                    characters=selected,
+                )
+                result = {
+                    "caption_addition": generated.addition,
+                    "final_caption": generated.caption,
+                    "image_prompt": generated.image_prompt,
+                    "scene_direction": direction,
+                    "character_ids": character_ids,
+                }
+                if generated.scene_plan is not None:
+                    result["scene_plan_json"] = encode_saved_plan(generated.scene_plan, fingerprint)
+                jobs.finish(job, result=result)
+                return True
+            if operation == "motion":
+                if not draft.image_approved:
+                    raise ValueError("Das ausgewählte Bild wurde noch nicht freigegeben.")
+                prompt = asyncio.run(generate_motion_prompt(
+                    client,
+                    image_prompt=(f"{_identity_context(draft.character_snapshot)} "
+                                  f"{draft.image_prompt}").strip(),
+                    quote=draft.quote_text,
+                    genre=profile["details"].genre,
+                    mood=profile["details"].mood,
+                    duration_seconds=draft.duration_ms / 1000,
+                    intensity="dynamic",
+                ))
+                if jobs.finish(job, result={"video_prompt": prompt}) and job.payload.get("enqueue_video"):
+                    current = reels.get_draft(draft.id)
+                    if current is not None:
+                        jobs.enqueue(current.id, "video")
+                return True
+            raise ValueError("Der angeforderte Textschritt ist ungültig.")
         strategy = job.payload.get("strategy", "masked")
         simple = job.kind == "image" and operation == "simple"
         resume_prompt = job.payload.get("comfy_prompt_id") if simple else None

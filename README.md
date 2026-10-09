@@ -165,6 +165,8 @@ Die Verwaltung nutzt zusätzlich `local_book_settings`, `local_book_assets` und 
 
 Bei jedem nutzbaren Zitat öffnet **Reel erzeugen** eine lokale Werkstatt. Für Begleittext/Bildprompt und später für den Videoprompt lässt sich jeweils Open WebUI oder lokales ComfyUI/Qwen auswählen. Das Originalzitat wird nicht von der KI umgeschrieben, sondern vom Code unverändert mit Begleittext, Buchtitel, Autor und Zieladresse zur fertigen Caption zusammengesetzt. Das erzeugte Szenenbild ist direkt sichtbar und bleibt als eigener Kandidat erhalten. Optional überträgt **Charaktere optimieren** anschließend die hinterlegten Referenzen in dieses Bild. Zusätzlich lässt sich ein eigenes PNG-, JPEG- oder WebP-Bild hochladen. Aus allen vorhandenen Kandidaten wird ausdrücklich das Bild gewählt, das in den Video-Workflow geht.
 
+Auf jeder Kapitelseite bündelt **Vom Zitat zum Reel** den Ablauf für alle nutzbaren Zitate des Kapitels: fehlende Texte vormerken, Bilder wahlweise mit Charakterbeschreibungen oder Referenzbildern erzeugen, die Ergebnisse einzeln sichtbar prüfen und freigeben und danach Reels ausschließlich aus den freigegebenen Bildversionen rendern. Vorhandene Ergebnisse werden übersprungen. Fehlende Audioausschnitte werden aus dem ersten Buchsong in freie, nicht überlappende Abschnitte gelegt; ohne Buchsong bleibt der betreffende Reel-Schritt offen.
+
 Das ausgewählte Zitatbild kann zusätzlich ausdrücklich als vorbereitetes
 Carousel-Bild gespeichert werden. In der Kapitel-Produktion lässt sich dieselbe
 Aktion pro Kapitel als Fallback für dessen Zitate setzen. Übertragen wird dabei

@@ -391,38 +391,20 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         except (ValueError, TypeError):
             return None, False
 
-    async def simple_image_inputs(request, book_id, draft, management, source_context):
-        """Validate the whole user action before queueing; never call text AI here."""
-        try:
-            async with request.form(max_files=0, max_fields=10) as form:
-                required = {"revision", "image_prompt", "scene_direction", "mode"}
-                if (set(form) - (required | {"character_ids", "ai_provider"}) or required - set(form)
-                        or any(len(form.getlist(key)) != 1 or not isinstance(form[key], str)
-                               for key in required)):
-                    raise ValueError()
-                revision = int(form["revision"])
-                # Browser form textareas submit CRLF; pasted/legacy text may
-                # also contain lone CR. Canonicalize before rejecting controls.
-                image_prompt = form["image_prompt"].replace("\r\n", "\n").replace("\r", "\n").strip()
-                scene_direction = form["scene_direction"].replace("\r\n", "\n").replace("\r", "\n").strip()
-                mode = form["mode"]
-                if "ai_provider" in form and (len(form.getlist("ai_provider")) != 1
-                        or form["ai_provider"] not in {"", "openwebui", "comfyui_qwen"}):
-                    raise ValueError()
-                preferences = ai_settings_store.get(settings)
-                provider = preferences.text_provider
-                character_ids = [str(UUID(str(value))) for value in form.getlist("character_ids")]
-                if (not image_prompt or len(image_prompt) > 8000 or len(scene_direction) > 2000
-                        or mode not in {"plain", "text", "references"} or len(character_ids) > 4
-                        or len(set(character_ids)) != len(character_ids)
-                        or (mode == "references" and not character_ids)
-                        or any(ord(char) < 32 and char not in "\n\t"
-                               for char in image_prompt + scene_direction)):
-                    raise ValueError()
-        except (KeyError, TypeError, ValueError):
-            raise UploadError("Bitte eine Szene, bis zu vier Figuren und ein gültiges Bildverfahren auswählen.") from None
-        if revision != draft.revision:
-            raise UploadError("Der Entwurf wurde geändert. Bitte neu laden.", 409)
+    async def prepare_simple_image_inputs(
+        book_id, draft, management, source_context, *, revision: int,
+        image_prompt: str, scene_direction: str, mode: str, character_ids: list[str],
+    ):
+        """Validate one explicit image action before queueing; never call text AI here."""
+        if (revision != draft.revision or not image_prompt or len(image_prompt) > 8000
+                or len(scene_direction) > 2000 or mode not in {"plain", "text", "references"}
+                or len(character_ids) > 4 or len(set(character_ids)) != len(character_ids)
+                or (mode == "references" and not character_ids)
+                or any(ord(char) < 32 and char not in "\n\t"
+                       for char in image_prompt + scene_direction)):
+            if revision != draft.revision:
+                raise UploadError("Der Entwurf wurde geändert. Bitte neu laden.", 409)
+            raise UploadError("Bitte eine Szene, bis zu vier Figuren und ein gültiges Bildverfahren auswählen.")
         if any(item["state"] in {"queued", "running"}
                for item in await run_in_threadpool(reel_jobs.status, draft.id)):
             raise UploadError("Für dieses Bild läuft bereits ein Auftrag. Bitte kurz warten.", 409)
@@ -443,8 +425,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         proposed = replace(draft, image_prompt=image_prompt, scene_direction=scene_direction,
                            character_ids_json=json.dumps(character_ids))
         _, plan_current = current_scene_plan(proposed, management, characters)
-        if provider not in {"", "openwebui", "comfyui_qwen"}:
-            raise UploadError("Bitte einen gültigen Text-KI-Provider auswählen.")
+        preferences = ai_settings_store.get(settings)
+        provider = preferences.text_provider
         if not plan_current and (not provider or provider_missing(settings, provider)):
             raise UploadError("Für die automatische Szenenplanung einen eingerichteten Text-KI-Provider auswählen.", 409)
         if len(source_context["quote"]) > 14000:
@@ -462,6 +444,33 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                            ai_endpoint_hash=provider_endpoint_hash(settings, provider))
         return {"revision": revision, "image_prompt": image_prompt, "scene_direction": scene_direction,
                 "character_ids": character_ids, "mode": mode, "payload": payload}
+
+    async def simple_image_inputs(request, book_id, draft, management, source_context):
+        """Parse and validate a single image action from the workshop."""
+        try:
+            async with request.form(max_files=0, max_fields=10) as form:
+                required = {"revision", "image_prompt", "scene_direction", "mode"}
+                if (set(form) - (required | {"character_ids", "ai_provider"}) or required - set(form)
+                        or any(len(form.getlist(key)) != 1 or not isinstance(form[key], str)
+                               for key in required)):
+                    raise ValueError()
+                revision = int(form["revision"])
+                # Browser form textareas submit CRLF; pasted/legacy text may
+                # also contain lone CR. Canonicalize before rejecting controls.
+                image_prompt = form["image_prompt"].replace("\r\n", "\n").replace("\r", "\n").strip()
+                scene_direction = form["scene_direction"].replace("\r\n", "\n").replace("\r", "\n").strip()
+                mode = form["mode"]
+                if "ai_provider" in form and (len(form.getlist("ai_provider")) != 1
+                        or form["ai_provider"] not in {"", "openwebui", "comfyui_qwen"}):
+                    raise ValueError()
+                character_ids = [str(UUID(str(value))) for value in form.getlist("character_ids")]
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte eine Szene, bis zu vier Figuren und ein gültiges Bildverfahren auswählen.") from None
+        return await prepare_simple_image_inputs(
+            book_id, draft, management, source_context, revision=revision,
+            image_prompt=image_prompt, scene_direction=scene_direction,
+            mode=mode, character_ids=character_ids,
+        )
 
     async def workshop_response(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
         book, chapter, quote, management, draft = await reel_context(
@@ -2046,7 +2055,10 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     @app.get("/books/local/{book_id}/chapters/{chapter_id}", response_class=HTMLResponse, name="local_chapter")
     async def local_chapter(request: Request, book_id: UUID, chapter_id: UUID,
                             filter: Literal["all", "usable", "blocked", "unsuitable", "unused", "used"] = "all",
-                            quote_page: int = Query(default=1, ge=1, le=100000)):
+                            quote_page: int = Query(default=1, ge=1, le=100000),
+                            batch: Literal["text", "image_text", "image_references", "reels", "approve"] | None = None,
+                            queued: int = Query(default=0, ge=0, le=100000),
+                            skipped: int = Query(default=0, ge=0, le=100000)):
         try:
             book = await run_in_threadpool(local_store.get_book, book_id)
             record = await run_in_threadpool(extraction_store.get, str(book_id))
@@ -2065,6 +2077,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 usage=await db.quote_usage([q['quote'].id for q in items])
             except DatabaseError as exc: usage_error=str(exc)
         else: usage_error='Noch keine Veröffentlichungshistorie angebunden.'
+        production_active = False
         for item in items:
             item['usage']=usage.get(item['quote'].id)
             draft = await run_in_threadpool(
@@ -2072,12 +2085,22 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 management["suggestion_id"],
             )
             if draft is not None:
+                statuses = await run_in_threadpool(reel_jobs.status, draft.id)
+                active = any(status["state"] in {"queued", "running"} for status in statuses)
+                production_active = production_active or active
                 labels = {
                     "editing": "In Bearbeitung", "generating": "Wird erzeugt",
                     "ready": "Bereit", "uploading": "Wird übertragen",
                     "stocked": "Im Reel-Vorrat", "failed": "Fehler",
                 }
-                item["reel"] = {"state": draft.state, "label": labels.get(draft.state, draft.state)}
+                item["reel"] = {
+                    "state": draft.state, "label": labels.get(draft.state, draft.state),
+                    "draft": draft, "active": active,
+                    "text_ready": bool(draft.final_caption and draft.image_prompt),
+                    "image_ready": bool(draft.selected_image_path and not draft.image_stale),
+                    "image_approved": draft.image_approved,
+                    "video_ready": bool(draft.selected_video_path and not draft.video_stale),
+                }
         counts = {"all": len(items), "usable": sum(q["usable"] for q in items),
                   "blocked": sum(q["blocked"] for q in items), "unsuitable": sum(not q["quote"].usable for q in items),
                   "unused":sum(q['usage'] is not None and q['usage'].last_published_at is None for q in items),
@@ -2086,6 +2109,25 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                     or (filter == "blocked" and q["blocked"]) or (filter == "unsuitable" and not q["quote"].usable)
                     or (filter == 'unused' and q['usage'] is not None and q['usage'].last_published_at is None)
                     or (filter == 'used' and q['usage'] is not None and q['usage'].last_published_at is not None)]
+        usable = [item for item in items if item["usable"]]
+        production_summary = {
+            "total": len(usable),
+            "text": sum(bool(item.get("reel") and item["reel"]["text_ready"]) for item in usable),
+            "image": sum(bool(item.get("reel") and item["reel"]["image_ready"]) for item in usable),
+            "approved": sum(bool(item.get("reel") and item["reel"]["image_approved"]) for item in usable),
+            "reel": sum(bool(item.get("reel") and item["reel"]["video_ready"]) for item in usable),
+            "active": production_active,
+        }
+        batch_labels = {
+            "text": "Textaufträge", "image_text": "Bilder mit Beschreibung",
+            "image_references": "Bilder mit Charakterreferenz", "reels": "Reels",
+            "approve": "Bildfreigabe",
+        }
+        batch_notice = (
+            f"{batch_labels[batch]}: {queued} erfolgreich vorgemerkt"
+            + (f", {skipped} übersprungen" if skipped else "") + "."
+            if batch else None
+        )
         return templates.TemplateResponse(request=request, name="local_chapter.html",
             context={"active_page": "books", "book": book, "chapter": chapter, "record": record,
                      "analysis": analysis, "management": management, "quote_items": filtered[(quote_page-1)*20:quote_page*20],
@@ -2094,7 +2136,215 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                      "chapter_blocked_counts": {c.id: sum(q["blocked"] and q["quote"].chapter_id == c.id for q in management["quotes"]) for c in record.result.chapters},
                      "usage_error":usage_error,
                      "filters": FILTERS, "filter": filter, "filter_counts": counts, "quote_page": quote_page, "quote_more": len(filtered)>quote_page*20,
+                     "production_summary": production_summary, "batch_notice": batch_notice,
                      "summary": analysis["result"].chapter_summaries.get(chapter.id) if analysis and analysis["result"] else None})
+
+    def quote_batch_redirect(request: Request, book_id: UUID, chapter_id: UUID,
+                             action: str, queued: int, skipped: int):
+        target = str(request.url_for("local_chapter", book_id=book_id, chapter_id=chapter_id))
+        return RedirectResponse(
+            f"{target}?batch={action}&queued={queued}&skipped={skipped}#quotes-title",
+            status_code=303,
+        )
+
+    def prompt_job_payload(operation: Literal["copy", "motion"], **values):
+        preferences = ai_settings_store.get(settings)
+        provider = preferences.text_provider
+        if provider_missing(settings, provider):
+            raise UploadError("Bitte zuerst die globale Text-KI vollständig einrichten.", 409)
+        return {
+            "operation": operation, "ai_provider": provider,
+            "ai_model_id": provider_model_id(settings, provider),
+            "ai_endpoint_hash": provider_endpoint_hash(settings, provider),
+            **values,
+        }
+
+    async def quote_batch_context(book_id: UUID, chapter_id: UUID):
+        book = await run_in_threadpool(local_store.get_book, book_id)
+        record = await run_in_threadpool(extraction_store.get, str(book_id))
+        management = await run_in_threadpool(management_store.get, str(book_id)) if book else None
+        chapter = next(
+            (item for item in record.result.chapters if item.id == str(chapter_id)), None,
+        ) if record and record.result else None
+        if book is None or chapter is None or management is None:
+            raise HTTPException(404)
+        pairs = []
+        for item in management["quotes"]:
+            quote = item["quote"]
+            if quote.chapter_id != chapter.id or not item["usable"]:
+                continue
+            draft = await run_in_threadpool(
+                reel_store.get_or_create_draft,
+                str(book_id), quote_key(book.version_id, quote), management["suggestion_id"],
+                quote.id, quote.text, scene_direction=quote.scene_direction,
+                scene_plan_json=encode_saved_plan(quote.scene_plan, scene_plan_fingerprint(
+                    quote=quote.text, image_prompt="", scene_direction=quote.scene_direction,
+                    art_direction=management["details"].image_prompt_base, characters=(),
+                )) if quote.scene_plan else "",
+            )
+            pairs.append((quote, draft))
+        return book, chapter, record, management, pairs
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/batch/text",
+        name="batch_quote_texts",
+    )
+    async def batch_quote_texts(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        _, chapter, _, _, pairs = await quote_batch_context(book_id, chapter_id)
+        queued = skipped = 0
+        for quote, draft in pairs:
+            statuses = await run_in_threadpool(reel_jobs.status, draft.id)
+            if (draft.final_caption and draft.image_prompt) or any(
+                item["state"] in {"queued", "running"} for item in statuses
+            ):
+                skipped += 1
+                continue
+            offset = chapter.source_text.find(quote.text)
+            context = {
+                "quote": quote.text,
+                "context_before": chapter.source_text[max(0, offset - 1200):offset]
+                    if offset >= 0 else quote.context_before,
+                "context_after": chapter.source_text[
+                    offset + len(quote.text):offset + len(quote.text) + 1200
+                ] if offset >= 0 else quote.context_after,
+            }
+            await run_in_threadpool(
+                reel_jobs.enqueue, draft.id, "prompt",
+                prompt_job_payload("copy", source_context=context),
+            )
+            queued += 1
+        return quote_batch_redirect(request, book_id, chapter_id, "text", queued, skipped)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/batch/images",
+        name="batch_quote_images",
+    )
+    async def batch_quote_images(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        try:
+            async with request.form(max_files=0, max_fields=1) as form:
+                if set(form) != {"mode"} or len(form.getlist("mode")) != 1:
+                    raise ValueError()
+                mode = str(form["mode"])
+                if mode not in {"text", "references"}:
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte ein gültiges Bildverfahren auswählen.") from None
+        _, chapter, record, management, pairs = await quote_batch_context(book_id, chapter_id)
+        queued = skipped = 0
+        for quote, draft in pairs:
+            candidate_exists = (
+                bool(draft.scene_image_path) if mode == "text" else bool(draft.optimized_image_path)
+            )
+            if (not draft.final_caption or not draft.image_prompt
+                    or (candidate_exists and not draft.image_stale)):
+                skipped += 1
+                continue
+            source_context = {
+                "quote": quote.text,
+                "context_before": quote.context_before[-4000:],
+                "context_after": quote.context_after[:4000],
+            }
+            try:
+                inputs = await prepare_simple_image_inputs(
+                    book_id, draft, management, source_context,
+                    revision=draft.revision, image_prompt=draft.image_prompt,
+                    scene_direction=draft.scene_direction, mode=mode,
+                    character_ids=list(draft.character_ids),
+                )
+                inputs["payload"]["source_snapshot"] = {
+                    "extraction_revision": record.revision, "chapter_id": str(chapter_id),
+                    "chapter_sha256": hashlib.sha256(chapter.source_text.encode("utf-8")).hexdigest(),
+                }
+                await run_in_threadpool(reel_jobs.enqueue_simple_image, draft.id, **inputs)
+            except UploadError:
+                skipped += 1
+                continue
+            queued += 1
+        action = "image_references" if mode == "references" else "image_text"
+        return quote_batch_redirect(request, book_id, chapter_id, action, queued, skipped)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image/approve",
+        name="approve_quote_image",
+    )
+    async def approve_quote_image(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, draft = await reel_context(book_id, chapter_id, quote_id)
+        if draft is None:
+            raise UploadError("Für dieses Zitat wurde noch kein Bild erzeugt.", 409)
+        try:
+            async with request.form(max_files=0, max_fields=2) as form:
+                if set(form) != {"revision", "image_sha256"}:
+                    raise ValueError()
+                revision = int(str(form["revision"]))
+                image_sha256 = str(form["image_sha256"])
+        except (KeyError, TypeError, ValueError):
+            raise UploadError("Bitte die Kapitelansicht neu laden.", 409) from None
+        await run_in_threadpool(
+            reel_store.approve_selected_image, draft.id, revision, image_sha256,
+        )
+        return quote_batch_redirect(request, book_id, chapter_id, "approve", 1, 0)
+
+    def first_free_audio_start(book_id: str, track, duration_ms: int) -> int | None:
+        intervals = sorted(
+            (draft.audio_start_ms, draft.audio_start_ms + draft.duration_ms)
+            for draft in reel_store.list_drafts(book_id)
+            if draft.audio_track_id == track.id and draft.audio_start_ms is not None
+        )
+        candidate = 0
+        for start, end in intervals:
+            if candidate + duration_ms <= start:
+                break
+            candidate = max(candidate, end)
+        return candidate if candidate + duration_ms <= track.duration_ms else None
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/batch/reels",
+        name="batch_quote_reels",
+    )
+    async def batch_quote_reels(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        _, _, _, _, pairs = await quote_batch_context(book_id, chapter_id)
+        tracks = await run_in_threadpool(reel_store.list_audio, str(book_id))
+        queued = skipped = 0
+        for _, draft in pairs:
+            draft = await run_in_threadpool(reel_store.get_draft, draft.id)
+            statuses = await run_in_threadpool(reel_jobs.status, draft.id)
+            if (not draft.final_caption or not draft.image_approved
+                    or (draft.selected_video_path and not draft.video_stale)
+                    or any(item["state"] in {"queued", "running"} for item in statuses)):
+                skipped += 1
+                continue
+            if draft.audio_track_id is None or draft.audio_start_ms is None:
+                if not tracks:
+                    skipped += 1
+                    continue
+                track = tracks[0]
+                duration_ms = min(
+                    round(settings.reel_default_duration_seconds * 1000), track.duration_ms,
+                )
+                start_ms = await run_in_threadpool(
+                    first_free_audio_start, str(book_id), track, duration_ms,
+                )
+                if start_ms is None or duration_ms < 4000:
+                    skipped += 1
+                    continue
+                draft = await run_in_threadpool(
+                    reel_store.update_draft, draft.id, draft.revision,
+                    audio_track_id=track.id, audio_start_ms=start_ms,
+                    audio_cue_id=None, duration_ms=duration_ms,
+                )
+            if draft.video_prompt and not draft.video_stale:
+                await run_in_threadpool(reel_jobs.enqueue, draft.id, "video")
+            else:
+                await run_in_threadpool(
+                    reel_jobs.enqueue, draft.id, "prompt",
+                    prompt_job_payload("motion", enqueue_video=True),
+                )
+            queued += 1
+        return quote_batch_redirect(request, book_id, chapter_id, "reels", queued, skipped)
 
     @app.get(
         "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel",
@@ -2448,7 +2698,12 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                 source = str(form["source"])
             except (TypeError, ValueError):
                 raise UploadError("Bitte eine gültige Bildvariante auswählen.") from None
-        await run_in_threadpool(reel_store.select_image, draft.id, revision, source)
+        selected = await run_in_threadpool(reel_store.select_image, draft.id, revision, source)
+        if not selected.image_approved:
+            await run_in_threadpool(
+                reel_store.approve_selected_image, selected.id, selected.revision,
+                selected.selected_image_sha256,
+            )
         return action_response(request, book_id, chapter_id, quote_id)
 
     @app.post(

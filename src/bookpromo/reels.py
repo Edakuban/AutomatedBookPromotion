@@ -110,6 +110,7 @@ class ReelDraft:
     selected_image_source: str
     selected_image_path: str | None
     selected_image_sha256: str | None
+    approved_image_sha256: str | None
     selected_video_path: str | None
     selected_video_sha256: str | None
     image_stale: bool
@@ -136,6 +137,7 @@ class ReelDraft:
         values.setdefault("uploaded_image_path", None)
         values.setdefault("uploaded_image_sha256", None)
         values.setdefault("selected_image_source", "scene")
+        values.setdefault("approved_image_sha256", None)
         values.setdefault("scene_direction", "")
         values.setdefault("scene_plan_json", "")
         values["image_stale"] = bool(values["image_stale"])
@@ -190,6 +192,15 @@ class ReelDraft:
         return {
             "scene": "Szenenbild", "optimized": "Charakteroptimiert", "upload": "Eigenes Bild",
         }.get(self.selected_image_source, "Bild")
+
+    @property
+    def image_approved(self) -> bool:
+        """Whether the exact currently selected pixels were explicitly reviewed."""
+        return bool(
+            self.selected_image_path and self.selected_image_sha256
+            and self.approved_image_sha256 == self.selected_image_sha256
+            and not self.image_stale
+        )
 
 
 @dataclass(frozen=True)
@@ -261,6 +272,7 @@ class ReelStore:
                 uploaded_image_path text, uploaded_image_sha256 text,
                 selected_image_source text not null default 'scene',
                 selected_image_path text, selected_image_sha256 text,
+                approved_image_sha256 text,
                 selected_video_path text, selected_video_sha256 text,
                 image_stale integer not null check(image_stale in (0,1)),
                 video_stale integer not null check(video_stale in (0,1)),
@@ -318,6 +330,8 @@ class ReelStore:
             connection.execute(
                 "alter table local_reel_drafts add column selected_image_source text not null default 'scene'"
             )
+        if "approved_image_sha256" not in columns:
+            connection.execute("alter table local_reel_drafts add column approved_image_sha256 text")
         if not had_scene_image:
             connection.execute(
                 """update local_reel_drafts set scene_image_path=selected_image_path,
@@ -858,13 +872,46 @@ class ReelStore:
                     continue
         connection.execute(
             """update local_reel_drafts set selected_image_source=?,selected_image_path=?,
-            selected_image_sha256=?,character_snapshot_json=?,image_stale=0,video_stale=1,state='editing',error=null,
+            selected_image_sha256=?,approved_image_sha256=?,character_snapshot_json=?,
+            image_stale=0,video_stale=1,state='editing',error=null,
             revision=revision+1,updated_at=? where id=? and revision=?""",
-            (source, relative, digest, snapshot_json, time.time(), draft_id, revision),
+            (source, relative, digest, digest, snapshot_json, time.time(), draft_id, revision),
         )
         saved = connection.execute(
             "select * from local_reel_drafts where id=?", (draft_id,)
         ).fetchone()
+        return ReelDraft.from_row(saved)
+
+    def approve_selected_image(
+        self, draft_id: str, revision: int, image_sha256: str,
+    ) -> ReelDraft:
+        """Approve only the immutable selected image version shown to the reviewer."""
+        if not re.fullmatch(r"[0-9a-f]{64}", image_sha256 or ""):
+            raise UploadError("Das zu prüfende Bild ist ungültig.")
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            draft = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,),
+            ).fetchone()
+            if draft is None:
+                raise UploadError("Der Reel-Entwurf wurde nicht gefunden.", 404)
+            if draft["revision"] != revision:
+                raise UploadError("Der Reel-Entwurf wurde zwischenzeitlich geändert. Bitte neu laden.", 409)
+            if (draft["image_stale"] or not draft["selected_image_path"]
+                    or draft["selected_image_sha256"] != image_sha256):
+                raise UploadError("Das angezeigte Bild ist nicht mehr aktuell. Bitte neu laden.", 409)
+            self._validate_stored_image(draft, draft["selected_image_path"], image_sha256)
+            if draft["approved_image_sha256"] == image_sha256:
+                return ReelDraft.from_row(draft)
+            connection.execute(
+                """update local_reel_drafts set approved_image_sha256=?,revision=revision+1,
+                updated_at=? where id=? and revision=?""",
+                (image_sha256, time.time(), draft_id, revision),
+            )
+            saved = connection.execute(
+                "select * from local_reel_drafts where id=?", (draft_id,),
+            ).fetchone()
         return ReelDraft.from_row(saved)
 
     def save_uploaded_image(
@@ -1696,6 +1743,33 @@ class ReelJobStore:
                         if len(value) > limit:
                             raise ValueError("Das Prompt-Ergebnis ist zu lang.")
                         updates[key] = value
+                if "character_ids" in result:
+                    try:
+                        selected = tuple(dict.fromkeys(
+                            str(UUID(str(value))) for value in result["character_ids"]
+                        ))
+                    except (TypeError, ValueError):
+                        raise ValueError("Das Prompt-Ergebnis enthält ungültige Charaktere.") from None
+                    if len(selected) > 4:
+                        raise ValueError("Das Prompt-Ergebnis enthält zu viele Charaktere.")
+                    if selected:
+                        placeholders = ",".join("?" for _ in selected)
+                        count = connection.execute(
+                            f"""select count(*) from local_book_characters where book_id=?
+                            and id in ({placeholders})""", (draft["book_id"], *selected),
+                        ).fetchone()[0]
+                        if count != len(selected):
+                            raise ValueError("Das Prompt-Ergebnis verweist auf unbekannte Charaktere.")
+                    updates["character_ids_json"] = json.dumps(selected)
+                if "scene_plan_json" in result:
+                    plan_json = str(result["scene_plan_json"])
+                    if len(plan_json) > 40_000:
+                        raise ValueError("Der gespeicherte Szenenplan ist zu lang.")
+                    try:
+                        json.loads(plan_json)
+                    except (TypeError, ValueError):
+                        raise ValueError("Der gespeicherte Szenenplan ist ungültig.") from None
+                    updates["scene_plan_json"] = plan_json
                 if "image_prompt" in updates and updates["image_prompt"] != draft["image_prompt"]:
                     updates["image_stale"] = 1
                     updates["video_stale"] = 1
@@ -1703,8 +1777,8 @@ class ReelJobStore:
                     updates["video_stale"] = 1
                 if any(
                     key in updates and updates[key] != draft[key]
-                    for key in ("image_prompt", "scene_direction")
-                ):
+                    for key in ("image_prompt", "scene_direction", "character_ids_json")
+                ) and "scene_plan_json" not in updates:
                     updates["scene_plan_json"] = ""
             elif job.kind in {"image", "video"}:
                 relative, digest = result.get("path"), result.get("sha256")

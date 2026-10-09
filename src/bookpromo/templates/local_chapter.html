@@ -16,6 +16,38 @@
   <div class="quote-workspace">
   <section class="panel next-settings" aria-labelledby="quotes-title">
     <h2 id="quotes-title">Zitate</h2>
+    {% if analysis and analysis.result and production_summary.total %}
+      <section class="quote-production" data-quote-production-active="{{ 'true' if production_summary.active else 'false' }}" aria-labelledby="quote-production-title">
+        <div class="quote-production-heading">
+          <div><p class="eyebrow">Kapitelweite Produktion</p><h3 id="quote-production-title">Vom Zitat zum Reel</h3></div>
+          {% if production_summary.active %}<span class="badge">Aufträge laufen</span>{% endif %}
+        </div>
+        <div class="quote-production-progress" aria-label="Produktionsfortschritt">
+          <span><strong>{{ production_summary.text }}/{{ production_summary.total }}</strong> Texte</span>
+          <span><strong>{{ production_summary.image }}/{{ production_summary.total }}</strong> Bilder</span>
+          <span><strong>{{ production_summary.approved }}/{{ production_summary.total }}</strong> freigegeben</span>
+          <span><strong>{{ production_summary.reel }}/{{ production_summary.total }}</strong> Reels</span>
+        </div>
+        <div class="quote-production-actions">
+          <form method="post" action="{{ url_for('batch_quote_texts', book_id=book.id, chapter_id=chapter.id) }}">
+            <button type="submit" {% if production_summary.active or production_summary.text == production_summary.total %}disabled{% endif %}>1 · Alle Texte erstellen</button>
+          </form>
+          <form method="post" action="{{ url_for('batch_quote_images', book_id=book.id, chapter_id=chapter.id) }}">
+            <input type="hidden" name="mode" value="text">
+            <button type="submit" {% if production_summary.active or not production_summary.text %}disabled{% endif %}>2 · Bilder mit Beschreibung</button>
+          </form>
+          <form method="post" action="{{ url_for('batch_quote_images', book_id=book.id, chapter_id=chapter.id) }}">
+            <input type="hidden" name="mode" value="references">
+            <button type="submit" {% if production_summary.active or not production_summary.text %}disabled{% endif %}>3 · Bilder mit Charakter</button>
+          </form>
+          <form method="post" action="{{ url_for('batch_quote_reels', book_id=book.id, chapter_id=chapter.id) }}">
+            <button type="submit" {% if production_summary.active or not production_summary.approved %}disabled{% endif %}>4 · Freigegebene Reels erstellen</button>
+          </form>
+        </div>
+        <p class="small muted">Bestehende Ergebnisse bleiben erhalten. Bilder zuerst unten prüfen und einzeln freigeben; der Reel-Lauf verarbeitet ausschließlich diese freigegebenen Bildversionen.</p>
+        {% if batch_notice %}<p class="notice success" role="status">{{ batch_notice }}</p>{% endif %}
+      </section>
+    {% endif %}
     <nav class="quote-filters" aria-label="Zitatfilter">
       {% for key, label in filters.items() %}<a href="?filter={{ key }}#quotes-title" {% if filter == key %}aria-current="page"{% endif %}>{{ label }} ({{ filter_counts[key] }})</a>{% endfor %}
     </nav>
@@ -48,9 +80,35 @@
                 Medien-Werkstatt öffnen
               </a>
               <span class="muted small">Auch Bild für Zitat-Carousels vorbereiten</span>
-              {% if reel %}<span class="badge {% if reel.state in ('ready', 'stocked') %}badge-ready{% endif %}">{{ reel.label }}</span>{% endif %}
+              {% if reel %}
+                <span class="badge {% if reel.video_ready %}badge-ready{% endif %}">{{ reel.label }}</span>
+                <span class="quote-media-status" aria-label="Medienstatus">
+                  <span class="badge {% if reel.text_ready %}badge-ready{% endif %}">{{ 'Text erstellt' if reel.text_ready else 'Text offen' }}</span>
+                  <span class="badge {% if reel.image_ready %}badge-ready{% endif %}">{{ 'Bild erstellt' if reel.image_ready else 'Bild offen' }}</span>
+                  <span class="badge {% if reel.image_approved %}badge-ready{% endif %}">{{ 'Bild freigegeben' if reel.image_approved else 'Prüfung offen' }}</span>
+                </span>
+              {% endif %}
             {% endif %}
           </form>
+          {% if item.usable and reel and reel.image_ready %}
+            <div class="quote-image-review">
+              <img src="{{ url_for('reel_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}?source=selected&amp;revision={{ reel.draft.revision }}&amp;sha256={{ reel.draft.selected_image_sha256 }}" alt="Ausgewähltes Bild für dieses Zitat">
+              <div>
+                {% if reel.image_approved %}
+                  <p><span class="badge badge-ready">Für Reel freigegeben</span></p>
+                  <p class="small muted">Genau diese Bildversion wird vom kapitelweiten Reel-Lauf verwendet.</p>
+                {% else %}
+                  <p><strong>Bild manuell prüfen</strong></p>
+                  <p class="small muted">Bei Bedarf die Medien-Werkstatt öffnen, neu erzeugen oder eine andere Variante wählen.</p>
+                  <form method="post" action="{{ url_for('approve_quote_image', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}">
+                    <input type="hidden" name="revision" value="{{ reel.draft.revision }}">
+                    <input type="hidden" name="image_sha256" value="{{ reel.draft.selected_image_sha256 }}">
+                    <button type="submit">Bild freigeben</button>
+                  </form>
+                {% endif %}
+              </div>
+            </div>
+          {% endif %}
           {% if not quote.usable %}<p class="muted small">Die KI stuft dieses Zitat als nicht geeignet ein. Eine aufgehobene manuelle Sperre ändert diese Einstufung nicht.</p>{% endif %}
         </article>
       {% else %}<p>Keine Zitate für diesen Filter auf dieser Seite.</p>{% endfor %}

@@ -1,5 +1,18 @@
 // Sections are progressively enhanced: without JavaScript every form and
 // action remains visible. Values stay enabled so a shared save keeps all fields.
+const quoteProduction = document.querySelector('[data-quote-production-active="true"]');
+if (quoteProduction) {
+  const refreshQuoteProduction = () => {
+    const dialog = document.getElementById('reel-dialog');
+    if (dialog?.open) {
+      window.setTimeout(refreshQuoteProduction, 4000);
+      return;
+    }
+    window.location.reload();
+  };
+  window.setTimeout(refreshQuoteProduction, 4000);
+}
+
 function wireSimpleImageForms(scope) {
   for (const form of scope.querySelectorAll('[data-simple-image-form]')) {
     const cast = [...form.querySelectorAll('[name="character_ids"]')];
