@@ -169,7 +169,8 @@ Auf jeder Kapitelseite bündelt **Vom Zitat zum Reel** den Ablauf für alle nutz
 
 Das ausgewählte Zitatbild kann zusätzlich ausdrücklich als vorbereitetes
 Carousel-Bild gespeichert werden. In der Kapitel-Produktion lässt sich dieselbe
-Aktion pro Kapitel als Fallback für dessen Zitate setzen. Übertragen wird dabei
+Aktion mit einem Sammel-Button für alle vorhandenen Zitatbilder ausführen oder
+pro Kapitel als Fallback für dessen Zitate setzen. Übertragen wird dabei
 nur die gewählte, lokal vorab sichtbare 1080×1350-JPEG-Fassung – nicht die
 gesamte Bildergalerie. Beim späteren Carousel gilt Zitatbild vor Kapitelbild;
 fehlen beide, erzeugt n8n das Motiv weiterhin live. Diese Funktion benötigt die

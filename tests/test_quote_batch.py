@@ -7,6 +7,7 @@ from bookpromo.reel_content import ReelCopy
 from bookpromo.reel_worker import run_reel_once
 from bookpromo.reels import ReelJobStore, ReelStore
 from bookpromo.scene_plan import ScenePlan
+from bookpromo.sync import SyncStore
 from bookpromo.web import create_app
 from test_analysis import setup
 from test_management import analyzed
@@ -21,7 +22,7 @@ def chapter_fixture(setup):
     return settings, uploads, book, quote, base
 
 
-def test_chapter_page_has_four_batch_actions_and_text_job_is_durable(setup, monkeypatch):
+def test_chapter_page_has_batch_actions_and_text_job_is_durable(setup, monkeypatch):
     settings, uploads, book, quote, base = chapter_fixture(setup)
     app = create_app(settings, start_worker=False)
     with TestClient(app, base_url="http://127.0.0.1:8000") as client:
@@ -30,6 +31,7 @@ def test_chapter_page_has_four_batch_actions_and_text_job_is_durable(setup, monk
         for label in (
             "Alle Texte erstellen", "Bilder mit Beschreibung",
             "Bilder mit Charakter", "Freigegebene Reels erstellen",
+            "Alle Bilder für Zitat-Carousels vorbereiten",
         ):
             assert label in page.text
         response = client.post(base + "/quotes/batch/text", follow_redirects=False)
@@ -118,3 +120,50 @@ def test_only_reviewed_image_enters_batch_reel_and_motion_chains_video(setup, mo
     assert draft.video_prompt
     assert any(item["kind"] == "video" and item["state"] == "queued"
                for item in jobs.status(draft.id))
+
+
+def test_chapter_can_prepare_all_current_quote_images_for_carousels(setup, monkeypatch):
+    settings, uploads, book, quote, base = chapter_fixture(setup)
+    monkeypatch.setattr(SyncStore, "receipt", lambda *args: {"revision": 1})
+    uploaded, linked = [], []
+
+    class Remote:
+        async def check_schema(self, **kwargs):
+            if kwargs:
+                assert kwargs.get("carousel_images") is True
+
+        async def quote_usage(self, *args):
+            return {}
+
+        async def list_carousel_sources(self, *args):
+            return []
+
+        async def upload_carousel_source(self, key, data):
+            uploaded.append((key, data))
+
+        async def set_carousel_source(self, scope, owner, media):
+            linked.append((scope, owner, media))
+            return {"outcome": "set", "old_media": None}
+
+    app = create_app(settings, repository=Remote(), start_worker=False)
+    reel_url = f"{base}/quotes/{quote.id}/reel"
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        assert client.get(reel_url).status_code == 200
+        draft = ReelStore(uploads).list_drafts(book.id)[0]
+        draft = ReelStore(uploads).save_uploaded_image(
+            draft.id, draft.revision, png_bytes(), "quote.png",
+        )
+        draft = ReelStore(uploads).select_image(draft.id, draft.revision, "upload")
+
+        page = client.get(base)
+        assert "Alle Bilder für Zitat-Carousels vorbereiten" in page.text
+        response = client.post(
+            base + "/quotes/batch/carousel-sources", follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "batch=carousel" in response.headers["location"]
+
+    assert len(uploaded) == len(linked) == 1
+    assert linked[0][0] == "quote"
+    assert str(linked[0][1]) == quote.id
+    assert linked[0][2]["sha256"] in uploaded[0][0]

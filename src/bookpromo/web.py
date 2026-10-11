@@ -2099,7 +2099,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
     async def local_chapter(request: Request, book_id: UUID, chapter_id: UUID,
                             filter: Literal["all", "usable", "blocked", "unsuitable", "unused", "used"] = "all",
                             quote_page: int = Query(default=1, ge=1, le=100000),
-                            batch: Literal["text", "image_text", "image_references", "reels", "approve"] | None = None,
+                            batch: Literal["text", "image_text", "image_references", "reels", "approve", "carousel"] | None = None,
                             queued: int = Query(default=0, ge=0, le=100000),
                             skipped: int = Query(default=0, ge=0, le=100000)):
         try:
@@ -2112,6 +2112,8 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         chapter = next((c for c in record.result.chapters if c.id == str(chapter_id)), None) if record and record.result else None
         if book is None or chapter is None: raise HTTPException(404)
         items = [q for q in management["quotes"] if q["quote"].chapter_id == chapter.id]
+        sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
+        source_rows, carousel_schema_ready, carousel_source_error = await carousel_sources(book_id)
         usage,usage_error={},None
         if settings.supabase_enabled or repository is not None:
             try:
@@ -2159,15 +2161,18 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             "image": sum(bool(item.get("reel") and item["reel"]["image_ready"]) for item in usable),
             "approved": sum(bool(item.get("reel") and item["reel"]["image_approved"]) for item in usable),
             "reel": sum(bool(item.get("reel") and item["reel"]["video_ready"]) for item in usable),
+            "carousel": sum(
+                ("quote", str(item["quote"].id)) in source_rows for item in usable
+            ),
             "active": production_active,
         }
         batch_labels = {
             "text": "Textaufträge", "image_text": "Bilder mit Beschreibung",
             "image_references": "Bilder mit Charakterreferenz", "reels": "Reels",
-            "approve": "Bildfreigabe",
+            "approve": "Bildfreigabe", "carousel": "Carousel-Bilder",
         }
         batch_notice = (
-            f"{batch_labels[batch]}: {queued} erfolgreich vorgemerkt"
+            f"{batch_labels[batch]}: {queued} erfolgreich {'vorbereitet' if batch == 'carousel' else 'vorgemerkt'}"
             + (f", {skipped} übersprungen" if skipped else "") + "."
             if batch else None
         )
@@ -2180,6 +2185,9 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                      "usage_error":usage_error,
                      "filters": FILTERS, "filter": filter, "filter_counts": counts, "quote_page": quote_page, "quote_more": len(filtered)>quote_page*20,
                      "production_summary": production_summary, "batch_notice": batch_notice,
+                     "book_synced": sync_receipt is not None,
+                     "carousel_schema_ready": carousel_schema_ready,
+                     "carousel_source_error": carousel_source_error,
                      "summary": analysis["result"].chapter_summaries.get(chapter.id) if analysis and analysis["result"] else None})
 
     def quote_batch_redirect(request: Request, book_id: UUID, chapter_id: UUID,
@@ -2307,6 +2315,41 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             queued += 1
         action = "image_references" if mode == "references" else "image_text"
         return quote_batch_redirect(request, book_id, chapter_id, action, queued, skipped)
+
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/quotes/batch/carousel-sources",
+        name="batch_quote_carousel_sources",
+    )
+    async def batch_quote_carousel_sources(request: Request, book_id: UUID, chapter_id: UUID):
+        """Freeze every current selected quote image in this chapter for later carousels."""
+        require_local_origin(request)
+        _, _, _, _, pairs = await quote_batch_context(book_id, chapter_id)
+        # Validate the shared remote prerequisites before the first upload so a
+        # missing sync or schema cannot leave a surprising partial batch.
+        await require_carousel_repository(book_id)
+        prepared = skipped = 0
+        for quote, draft in pairs:
+            draft = await run_in_threadpool(reel_store.get_draft, draft.id)
+            statuses = await run_in_threadpool(reel_jobs.status, draft.id)
+            if (draft is None or not draft.selected_image_path or draft.image_stale
+                    or any(item["state"] in {"queued", "running"} for item in statuses)):
+                skipped += 1
+                continue
+            try:
+                path = await run_in_threadpool(reel_store.candidate_image_path, draft, "selected")
+                crop = await run_in_threadpool(reel_store.carousel_crop, draft)
+                await store_carousel_source(
+                    "quote", book_id, UUID(str(quote.id)), path, crop[:2],
+                )
+            except UploadError as exc:
+                if exc.status not in {404, 409, 422}:
+                    raise
+                skipped += 1
+                continue
+            prepared += 1
+        return quote_batch_redirect(
+            request, book_id, chapter_id, "carousel", prepared, skipped,
+        )
 
     @app.post(
         "/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/reel/image/approve",

@@ -368,10 +368,10 @@ a.button-link.secondary-button:hover { background: #edf2ff; }
 .quote-production-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .quote-production-heading h3 { margin: .1rem 0 .8rem; }
 .quote-production .eyebrow { margin: 0; color: var(--accent); font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.quote-production-progress { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; margin-bottom: .85rem; }
+.quote-production-progress { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: .55rem; margin-bottom: .85rem; }
 .quote-production-progress span { padding: .65rem .75rem; border: 1px solid var(--border); border-radius: 9px; background: white; color: var(--muted); font-size: .8rem; }
 .quote-production-progress strong { display: block; color: var(--text); font-size: 1rem; }
-.quote-production-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; }
+.quote-production-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .55rem; }
 .quote-production-actions form, .quote-production-actions button { width: 100%; height: 100%; margin: 0; }
 .quote-media-status { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
 .quote-evidence > summary { color: var(--muted); font-size: .8rem; }

@@ -27,6 +27,7 @@
           <span><strong>{{ production_summary.image }}/{{ production_summary.total }}</strong> Bilder</span>
           <span><strong>{{ production_summary.approved }}/{{ production_summary.total }}</strong> freigegeben</span>
           <span><strong>{{ production_summary.reel }}/{{ production_summary.total }}</strong> Reels</span>
+          <span><strong>{{ production_summary.carousel }}/{{ production_summary.total }}</strong> für Carousels</span>
         </div>
         <div class="quote-production-actions">
           <form method="post" action="{{ url_for('batch_quote_texts', book_id=book.id, chapter_id=chapter.id) }}">
@@ -43,8 +44,12 @@
           <form method="post" action="{{ url_for('batch_quote_reels', book_id=book.id, chapter_id=chapter.id) }}">
             <button type="submit" {% if production_summary.active or not production_summary.approved %}disabled{% endif %}>4 · Freigegebene Reels erstellen</button>
           </form>
+          <form method="post" action="{{ url_for('batch_quote_carousel_sources', book_id=book.id, chapter_id=chapter.id) }}">
+            <button type="submit" {% if production_summary.active or not production_summary.image or not book_synced or not carousel_schema_ready %}disabled{% endif %}>Alle Bilder für Zitat-Carousels vorbereiten</button>
+          </form>
         </div>
         <p class="small muted">Bestehende Ergebnisse bleiben erhalten. Bilder direkt in den Zitat-Kacheln prüfen; zum Neu-Erzeugen oder Freigeben die Medien-Werkstatt öffnen. Der Reel-Lauf verarbeitet ausschließlich freigegebene Bildversionen.</p>
+        {% if carousel_source_error %}<p class="teaser-warning small">{{ carousel_source_error }}</p>{% elif not book_synced %}<p class="muted small">Nach der Supabase-Synchronisierung können alle vorhandenen Zitatbilder gemeinsam für Carousels vorbereitet werden.</p>{% endif %}
         {% if batch_notice %}<p class="notice success" role="status">{{ batch_notice }}</p>{% endif %}
       </section>
     {% endif %}
