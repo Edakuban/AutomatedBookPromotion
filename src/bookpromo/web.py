@@ -1028,7 +1028,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             )
             if not count:
                 archive_path.unlink(missing_ok=True)
-                raise UploadError("Für dieses Buch wurden noch keine Bilder oder Reels erzeugt.", 409)
+                raise UploadError("Für dieses Buch sind keine Zitate, Bilder oder Reels verfügbar.", 409)
         except Exception:
             archive_path.unlink(missing_ok=True)
             raise

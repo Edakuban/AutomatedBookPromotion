@@ -18,7 +18,7 @@ def test_path_slug_is_short_ascii_and_filesystem_safe():
     assert path_slug("...", max_length=24) == "zitat"
 
 
-def test_book_media_download_contains_current_selected_image_and_reel(setup):
+def test_book_media_download_contains_quotes_selected_image_and_reel(setup):
     settings, uploads, book, record, _ = setup
     management = analyzed(setup).get(book.id)
     quote = next(
@@ -29,10 +29,17 @@ def test_book_media_download_contains_current_selected_image_and_reel(setup):
     url = f"/books/local/{book.id}/media.zip"
 
     with TestClient(app, base_url="http://127.0.0.1:8000") as client:
-        empty = client.get(url, headers={"Accept": "application/json"})
-        assert empty.status_code == 409
-        assert "noch keine Bilder oder Reels" in empty.json()["error"]
-        assert "Bilder &amp; Reels als ZIP herunterladen" in client.get(
+        quotes_only = client.get(url)
+        assert quotes_only.status_code == 200
+        with ZipFile(BytesIO(quotes_only.content)) as archive:
+            text_names = archive.namelist()
+            assert len(text_names) == len(management["quotes"])
+            assert all(re.fullmatch(r"\d{2}-\d{2}-[a-z0-9-]+\.txt", name)
+                       for name in text_names)
+            assert sorted(archive.read(name).decode("utf-8") for name in text_names) == sorted(
+                item["quote"].text for item in management["quotes"]
+            )
+        assert "Zitate, Bilder &amp; Reels als ZIP herunterladen" in client.get(
             f"/books/local/{book.id}"
         ).text
 
@@ -64,8 +71,12 @@ def test_book_media_download_contains_current_selected_image_and_reel(setup):
     assert "testbuch-medien.zip" in response.headers["content-disposition"]
     with ZipFile(BytesIO(response.content)) as archive:
         names = archive.namelist()
-        assert len(names) == 2
-        assert re.fullmatch(r"01-01-[a-z0-9-]+\.png", names[0])
-        assert names[1] == names[0][:-4] + ".mp4"
-        assert archive.read(names[0]).startswith(b"\x89PNG")
-        assert b"ftypisom" in archive.read(names[1])
+        assert len(names) == len(management["quotes"]) + 2
+        image_name = next(name for name in names if name.endswith(".png"))
+        stem = image_name[:-4]
+        assert re.fullmatch(r"01-01-[a-z0-9-]+", stem)
+        assert stem + ".txt" in names
+        assert stem + ".mp4" in names
+        assert archive.read(stem + ".txt").decode("utf-8") == quote.text
+        assert archive.read(image_name).startswith(b"\x89PNG")
+        assert b"ftypisom" in archive.read(stem + ".mp4")

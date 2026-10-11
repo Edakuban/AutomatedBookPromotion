@@ -1,4 +1,4 @@
-"""Create a path-safe ZIP containing the current media for a book's quotes."""
+"""Create a path-safe ZIP containing a book's quotes and current media."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def write_book_media_zip(
     analysis_run_id: str,
     reels: ReelStore,
 ) -> int:
-    """Write selected images and reels from the current analysis to ``output``.
+    """Write quote texts plus selected images and reels to ``output``.
 
     Quote numbers are assigned by their position in the chapter text, independent
     of the order in which media were generated.
@@ -47,20 +47,21 @@ def write_book_media_zip(
 
     max_chapter = max(chapter_positions.values(), default=0)
     chapter_width = max(2, len(str(max_chapter)))
-    entries: list[tuple[str, Path]] = []
+    entries: list[tuple[str, Path | bytes]] = []
     for chapter_id, quotes in sorted(
         quotes_by_chapter.items(), key=lambda pair: chapter_positions[pair[0]],
     ):
         ordered = sorted(quotes, key=lambda quote: (quote.source_start, quote.source_end, quote.id))
         quote_width = max(2, len(str(len(ordered))))
         for quote_number, quote in enumerate(ordered, 1):
-            draft = current_drafts.get(quote.id)
-            if draft is None:
-                continue
             stem = (
                 f"{chapter_positions[chapter_id]:0{chapter_width}d}-"
                 f"{quote_number:0{quote_width}d}-{path_slug(quote.text)}"
             )
+            entries.append((stem + ".txt", quote.text.encode("utf-8")))
+            draft = current_drafts.get(quote.id)
+            if draft is None:
+                continue
             image = reels.artifact_path(draft, "image")
             if image is not None:
                 entries.append((stem + image.suffix.lower(), image))
@@ -70,5 +71,8 @@ def write_book_media_zip(
 
     with ZipFile(output, "w", compression=ZIP_STORED, allowZip64=True) as archive:
         for archive_name, source in entries:
-            archive.write(source, archive_name)
+            if isinstance(source, Path):
+                archive.write(source, archive_name)
+            else:
+                archive.writestr(archive_name, source)
     return len(entries)
