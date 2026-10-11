@@ -9,6 +9,7 @@ from bookpromo.media_export import path_slug
 from bookpromo.reels import ReelJobStore, ReelStore
 from bookpromo.web import create_app
 from test_analysis import setup
+from test_chapter_teasers import ready_chapter_images
 from test_management import analyzed
 from test_reels import png_bytes, wav_bytes
 
@@ -80,3 +81,55 @@ def test_book_media_download_contains_quotes_selected_image_and_reel(setup):
         assert archive.read(stem + ".txt").decode("utf-8") == quote.text
         assert archive.read(image_name).startswith(b"\x89PNG")
         assert b"ftypisom" in archive.read(stem + ".mp4")
+
+
+def test_chapter_download_contains_all_texts_without_generated_media(setup):
+    settings, _, book, record, _ = setup
+    app = create_app(settings, start_worker=False)
+    url = f"/books/local/{book.id}/chapter-media.zip"
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        response = client.get(url)
+        page = client.get(f"/books/local/{book.id}")
+
+    assert response.status_code == 200
+    assert "testbuch-kapitel.zip" in response.headers["content-disposition"]
+    assert "Kapitel, Bilder &amp; Reels als ZIP herunterladen" in page.text
+    with ZipFile(BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        assert len(names) == len(record.result.chapters)
+        assert all(re.fullmatch(r"\d{2}-[a-z0-9-]+\.txt", name) for name in names)
+        assert [archive.read(name).decode("utf-8") for name in names] == [
+            chapter.source_text for chapter in record.result.chapters
+        ]
+
+
+def test_chapter_download_adds_current_image_and_reel(setup):
+    settings, _, book, record, reels, store, jobs, run = ready_chapter_images(setup)
+    first = run["plans"][0]
+    draft = reels.get_draft(first["draft_id"])
+    jobs.enqueue(draft.id, "video")
+    job = jobs.claim(kinds={"video"})
+    video_path, video_hash = reels.save_artifact(
+        draft.id, "video", BytesIO(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 32), "reel.mp4",
+    )
+    assert jobs.finish(job, result={"path": video_path, "sha256": video_hash})
+    text_path, text_hash = reels.save_artifact(
+        draft.id, "video", BytesIO(
+            b"\x00\x00\x00\x18ftypisom" + b"\x00" * 32 + b"chapter-text-version"
+        ), "reel-with-text.mp4",
+    )
+    store.save_text_video(run["id"], draft.id, text_path, text_hash)
+
+    app = create_app(settings, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        response = client.get(f"/books/local/{book.id}/chapter-media.zip")
+    assert response.status_code == 200
+    with ZipFile(BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        chapter = record.result.chapters[0]
+        stem = next(name[:-4] for name in names if name.startswith("01-") and name.endswith(".txt"))
+        assert archive.read(stem + ".txt").decode("utf-8") == chapter.source_text
+        assert stem + ".png" in names
+        assert stem + ".mp4" in names
+        assert archive.read(stem + ".png").startswith(b"\x89PNG")
+        assert b"chapter-text-version" in archive.read(stem + ".mp4")

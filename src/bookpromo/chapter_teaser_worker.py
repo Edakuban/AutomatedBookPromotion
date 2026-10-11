@@ -12,8 +12,10 @@ from uuid import uuid4
 
 from .chapter_teasers import (
     ChapterTeaserError, ChapterTeaserStore, ChapterTeaserSuggestion, PROMPT_VERSION,
-    analyze_whole_chapter, chapter_quote_id, chapter_source_key, compose_chapter_caption,
+    _verified_quote_candidates, analyze_verified_chapter_quote, analyze_whole_chapter,
+    chapter_quote_id, chapter_source_key, compose_chapter_caption,
 )
+from .analysis_store import AnalysisStore
 from .characters import CharacterStore, character_mention_index, order_scene_characters
 from .config import load_settings
 from .extraction_store import ExtractionStore
@@ -25,6 +27,7 @@ from .scene_plan import (
     describe_scene_direction, encode_saved_plan, scene_plan_fingerprint, validate_reference_bindings,
 )
 from .text_ai import TextAIError, create_text_client, provider_endpoint_hash
+from .uploads import UploadError
 
 
 def _cancelled(stop, lost: threading.Event) -> bool:
@@ -137,6 +140,21 @@ def run_chapter_teaser_once(
         if track is None:
             raise ChapterTeaserError("Der ausgewählte Book-Teaser-Song fehlt.")
         pending = set(store.pending_positions(job))
+        verified_quotes = ()
+        try:
+            analysis = AnalysisStore(uploads).latest(
+                job["book_id"], include_result=True, purpose="full",
+            )
+            if (
+                analysis
+                and analysis["extraction_revision"] == job["extraction_revision"]
+                and analysis.get("result") is not None
+            ):
+                verified_quotes = tuple(analysis["result"].quotes)
+        except (OSError, sqlite3.Error, UploadError):
+            # A quote analysis is an optional recovery source. Its absence or a
+            # damaged historical row must not break the normal chapter path.
+            verified_quotes = ()
 
         async def execute():
             for chapter in source.chapters:
@@ -151,24 +169,48 @@ def run_chapter_teaser_once(
                 art_direction = management["details"].image_prompt_base if management else ""
                 current_context = {**context, "image_prompt_base": art_direction}
                 store.reserve_call(job, chapter.position)
+                chapter_quotes = _verified_quote_candidates(chapter, verified_quotes)
                 try:
                     suggestion = await analyze_whole_chapter(
                         api, chapter=chapter, book_context=current_context, characters=relevant_characters,
                         duration_seconds=job["duration_ms"] / 1000,
+                        verified_quotes=chapter_quotes,
                     )
-                except OpenWebUIError as exc:
-                    if exc.code not in {"structured", "truncated"}:
+                except (OpenWebUIError, TextAIError, ChapterTeaserError) as primary_error:
+                    recoverable = (
+                        isinstance(primary_error, ChapterTeaserError)
+                        or isinstance(primary_error, OpenWebUIError)
+                        and primary_error.code in {"structured", "truncated"}
+                        or isinstance(primary_error, TextAIError)
+                        and primary_error.code == "structured"
+                    )
+                    if not recoverable:
                         raise
-                    store.fail_plan(job, chapter.id, chapter.position, str(exc))
-                    continue
-                except TextAIError as exc:
-                    if exc.code != "structured":
-                        raise
-                    store.fail_plan(job, chapter.id, chapter.position, str(exc))
-                    continue
-                except ChapterTeaserError as exc:
-                    store.fail_plan(job, chapter.id, chapter.position, str(exc))
-                    continue
+                    if not chapter_quotes:
+                        store.fail_plan(job, chapter.id, chapter.position, str(primary_error))
+                        continue
+                    try:
+                        suggestion = await analyze_verified_chapter_quote(
+                            api,
+                            chapter=chapter,
+                            quote=chapter_quotes[0],
+                            book_context=current_context,
+                            characters=relevant_characters,
+                            duration_seconds=job["duration_ms"] / 1000,
+                        )
+                    except OpenWebUIError as exc:
+                        if exc.code not in {"structured", "truncated"}:
+                            raise
+                        store.fail_plan(job, chapter.id, chapter.position, str(exc))
+                        continue
+                    except TextAIError as exc:
+                        if exc.code != "structured":
+                            raise
+                        store.fail_plan(job, chapter.id, chapter.position, str(exc))
+                        continue
+                    except ChapterTeaserError as exc:
+                        store.fail_plan(job, chapter.id, chapter.position, str(exc))
+                        continue
                 if suggestion.scene_plan is not None:
                     try:
                         selected = _plan_characters(suggestion.scene_plan, characters)

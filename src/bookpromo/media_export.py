@@ -7,7 +7,11 @@ import re
 import unicodedata
 from zipfile import ZIP_STORED, ZipFile
 
+from .chapter_teasers import ChapterTeaserStore
 from .reels import ReelStore
+
+
+ZipEntry = tuple[str, Path | bytes]
 
 
 def path_slug(value: str, *, max_length: int = 56) -> str:
@@ -47,7 +51,7 @@ def write_book_media_zip(
 
     max_chapter = max(chapter_positions.values(), default=0)
     chapter_width = max(2, len(str(max_chapter)))
-    entries: list[tuple[str, Path | bytes]] = []
+    entries: list[ZipEntry] = []
     for chapter_id, quotes in sorted(
         quotes_by_chapter.items(), key=lambda pair: chapter_positions[pair[0]],
     ):
@@ -69,10 +73,54 @@ def write_book_media_zip(
             if video is not None:
                 entries.append((stem + video.suffix.lower(), video))
 
+    _write_zip(output, entries)
+    return len(entries)
+
+
+def write_book_chapter_zip(
+    output: Path,
+    *,
+    chapters,
+    chapter_run,
+    drafts,
+    reels: ReelStore,
+    chapter_teasers: ChapterTeaserStore,
+) -> int:
+    """Write every chapter text plus its current image and reel to ``output``."""
+    plans = (
+        {plan["chapter_id"]: plan for plan in chapter_run.get("plans", [])}
+        if chapter_run and chapter_run.get("state") != "stale" else {}
+    )
+    drafts_by_id = {draft.id: draft for draft in drafts}
+    max_chapter = max((chapter.position for chapter in chapters), default=0)
+    chapter_width = max(2, len(str(max_chapter)))
+    entries: list[ZipEntry] = []
+    for chapter in sorted(chapters, key=lambda item: (item.position, item.id)):
+        stem = f"{chapter.position:0{chapter_width}d}-{path_slug(chapter.title)}"
+        entries.append((stem + ".txt", chapter.source_text.encode("utf-8")))
+        plan = plans.get(chapter.id)
+        draft = drafts_by_id.get(plan.get("draft_id")) if plan else None
+        if draft is None:
+            continue
+        image = reels.artifact_path(draft, "image")
+        if image is not None:
+            entries.append((stem + image.suffix.lower(), image))
+        video = None
+        if not draft.video_stale:
+            video = chapter_teasers.text_video_path(
+                plan, book_id=draft.book_id, draft_id=draft.id,
+            ) or reels.artifact_path(draft, "video")
+        if video is not None:
+            entries.append((stem + video.suffix.lower(), video))
+
+    _write_zip(output, entries)
+    return len(entries)
+
+
+def _write_zip(output: Path, entries: list[ZipEntry]) -> None:
     with ZipFile(output, "w", compression=ZIP_STORED, allowZip64=True) as archive:
         for archive_name, source in entries:
             if isinstance(source, Path):
                 archive.write(source, archive_name)
             else:
                 archive.writestr(archive_name, source)
-    return len(entries)

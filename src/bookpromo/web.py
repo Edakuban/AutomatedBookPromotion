@@ -62,7 +62,7 @@ from .book_teaser_worker import BookTeaserJobStore
 from .teaser_publication import book_teaser_platforms
 from .comfy import ComfyClient
 from .characters import CharacterStore, character_mention_index, order_scene_characters
-from .media_export import path_slug, write_book_media_zip
+from .media_export import path_slug, write_book_chapter_zip, write_book_media_zip
 from .text_ai import (
     TextAIError, configured_providers as all_configured_providers, create_text_client, provider_missing,
     provider_endpoint_hash, provider_model_id,
@@ -1036,6 +1036,48 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             archive_path,
             media_type="application/zip",
             filename=f"{path_slug(book.title, max_length=80)}-medien.zip",
+            background=BackgroundTask(archive_path.unlink, missing_ok=True),
+        )
+
+    @app.get("/books/local/{book_id}/chapter-media.zip", name="download_book_chapter_media")
+    async def download_book_chapter_media(book_id: UUID):
+        try:
+            book = await run_in_threadpool(local_store.get_book, book_id)
+            if book is None:
+                raise HTTPException(404)
+            record = await run_in_threadpool(extraction_store.get, str(book_id))
+            drafts = await run_in_threadpool(reel_store.list_drafts, str(book_id))
+            chapter_run = await run_in_threadpool(
+                chapter_teaser_store.latest, str(book_id), include_plans=True,
+            )
+        except (OSError, sqlite3.Error):
+            raise UploadError("Die Kapitel des Buchs konnten nicht gelesen werden.", 503) from None
+        if not record or not record.result:
+            raise UploadError("Für dieses Buch wurden noch keine Kapitel eingelesen.", 409)
+
+        temporary = tempfile.NamedTemporaryFile(prefix="bookpromo-", suffix=".zip", delete=False)
+        archive_path = Path(temporary.name)
+        temporary.close()
+        try:
+            count = await run_in_threadpool(
+                write_book_chapter_zip,
+                archive_path,
+                chapters=record.result.chapters,
+                chapter_run=chapter_run,
+                drafts=drafts,
+                reels=reel_store,
+                chapter_teasers=chapter_teaser_store,
+            )
+            if not count:
+                archive_path.unlink(missing_ok=True)
+                raise UploadError("Für dieses Buch sind keine Kapitel oder Kapitelmedien verfügbar.", 409)
+        except Exception:
+            archive_path.unlink(missing_ok=True)
+            raise
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=f"{path_slug(book.title, max_length=80)}-kapitel.zip",
             background=BackgroundTask(archive_path.unlink, missing_ok=True),
         )
 

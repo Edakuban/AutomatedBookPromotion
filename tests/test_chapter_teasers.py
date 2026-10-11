@@ -3,6 +3,7 @@ import hashlib
 from io import BytesIO
 import json
 import sqlite3
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -11,10 +12,10 @@ from bookpromo.chapter_teaser_worker import (
     reconcile_chapter_teaser_media, run_chapter_teaser_once,
 )
 from bookpromo.chapter_teasers import (
-    ChapterTeaserError, ChapterTeaserStore, ChapterTeaserSuggestion,
-    ChapterTeaserGeneration,
-    analyze_whole_chapter,
+    ChapterTeaserDraft, ChapterTeaserError, ChapterTeaserStore, ChapterTeaserSuggestion,
+    ChapterTeaserGeneration, analyze_verified_chapter_quote, analyze_whole_chapter,
 )
+from bookpromo.analysis import Quote, Scores
 from bookpromo.characters import CharacterStore
 from bookpromo.analysis_store import endpoint_hash
 from bookpromo.reels import ReelJobStore, ReelStore
@@ -22,6 +23,7 @@ from bookpromo.scene_plan import ScenePlan
 from bookpromo.publication import PlatformDefault, PublicationDefaults
 from bookpromo.openwebui import OpenWebUIError
 from bookpromo.sync import SyncStore
+from bookpromo.text_ai import TextAIError
 from bookpromo.uploads import UploadError
 from bookpromo.web import create_app
 from test_analysis import setup
@@ -190,6 +192,100 @@ def test_structured_provider_error_fails_only_its_chapter(setup):
     assert run["plans"][0]["state"] == "failed"
     assert run["plans"][1]["state"] == "image_queued"
     assert len(reels.list_drafts(book.id)) == 1
+
+
+def verified_quote(chapter):
+    text = chapter.source_text[:min(200, len(chapter.source_text))]
+    return Quote(
+        id=f"quote-{chapter.id}", chapter_id=chapter.id, text=text,
+        source_start=0, source_end=len(text), paragraph_ids=[chapter.paragraphs[0]["id"]],
+        context_before="", context_after=chapter.source_text[len(text):len(text) + 200],
+        scores=Scores(clarity=5, curiosity=5, emotion=4, imagery=5),
+        reason="Visuell klarer, bereits geprüfter Szenenanker.", spoiler="none", usable=True,
+    )
+
+
+def test_verified_quote_fallback_owns_exact_excerpt_and_survives_plan_schema_error(setup):
+    chapter = setup[3].result.chapters[0]
+    quote = verified_quote(chapter)
+
+    class AnchoredAPI:
+        def __init__(self):
+            self.calls = []
+
+        async def complete_json(self, system, user, result_type, **kwargs):
+            self.calls.append((json.loads(user), result_type, kwargs))
+            if result_type is ChapterTeaserDraft:
+                return ChapterTeaserDraft(
+                    scene_summary="Eine belegte Szene erzeugt unmittelbare Spannung.",
+                    teaser_text="Die Nacht hält den Atem an.",
+                    image_prompt="Cinematic vertical frame of the documented scene in dramatic light.",
+                    video_prompt=(
+                        "The camera tracks laterally while the existing subject turns clearly and "
+                        "the documented light moves across the room in one continuous shot."
+                    ),
+                    motion_intensity="medium",
+                )
+            raise TextAIError("Ungültiger Plan", code="structured")
+
+    api = AnchoredAPI()
+    result = asyncio.run(analyze_verified_chapter_quote(
+        api, chapter=chapter, quote=quote, book_context={}, duration_seconds=12,
+    ))
+
+    assert result.source_excerpt == quote.text
+    assert result.scene_plan is None
+    assert api.calls[0][0]["scene_source"]["focus_text"] == quote.text
+    assert api.calls[0][0]["scene_source"]["kind"] == "verified_quote"
+    assert api.calls[0][1] is ChapterTeaserDraft
+
+
+def test_worker_recovers_failed_full_chapter_calls_from_verified_quotes(setup, monkeypatch):
+    settings, uploads, book, record, reels, _, store, _ = prepare_run(setup)
+    quotes = [verified_quote(chapter) for chapter in record.result.chapters]
+    monkeypatch.setattr(
+        "bookpromo.chapter_teaser_worker.AnalysisStore.latest",
+        lambda *args, **kwargs: {
+            "extraction_revision": record.revision,
+            "result": SimpleNamespace(quotes=quotes),
+        },
+    )
+
+    class RecoveringAPI:
+        def __init__(self):
+            self.calls = []
+
+        async def complete_json(self, system, user, result_type, **kwargs):
+            self.calls.append((json.loads(user), result_type))
+            if result_type is ChapterTeaserGeneration:
+                raise OpenWebUIError("structured")
+            if result_type is ChapterTeaserDraft:
+                return ChapterTeaserDraft(
+                    scene_summary="Die belegte Szene verdichtet den Konflikt.",
+                    teaser_text="Etwas gerät in Bewegung.",
+                    image_prompt="Cinematic vertical frame of the documented moment, dramatic lighting.",
+                    video_prompt=(
+                        "The camera pans across the documented scene as the existing subject moves "
+                        "clearly and practical light shifts in one continuous shot."
+                    ),
+                    motion_intensity="medium",
+                )
+            return ScenePlan(
+                setting="The documented setting", composition="Vertical medium shot",
+                art_direction="Cinematic dramatic lighting",
+            )
+
+    api = RecoveringAPI()
+    assert run_chapter_teaser_once(uploads, settings=settings, api_factory=lambda _: api)
+
+    run = store.latest(book.id, include_plans=True)
+    assert run["state"] == "rendering"
+    assert all(plan["state"] == "image_queued" for plan in run["plans"])
+    assert {draft.quote_text for draft in reels.list_drafts(book.id)} == {
+        quote.text for quote in quotes
+    }
+    assert sum(result_type is ChapterTeaserGeneration for _, result_type in api.calls) == len(quotes)
+    assert sum(result_type is ChapterTeaserDraft for _, result_type in api.calls) == len(quotes)
 
 
 def test_all_unverifiable_scenes_finish_partial_and_can_be_retried(setup):
