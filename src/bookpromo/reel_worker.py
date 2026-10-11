@@ -20,7 +20,7 @@ from .config import Settings, load_settings
 from .extraction_store import ExtractionStore
 from .management import ManagementStore
 from .image_flow import description_scene_prompt, prepare_simple_plan
-from .image_presets import checked_preset, check_preset_available, identity_edit_prompts
+from .image_presets import checked_preset, check_preset_available
 from .text_ai import create_text_client, provider_endpoint_hash, provider_missing, provider_model_id
 from .reel_content import generate_motion_prompt, generate_reel_copy
 from .reel_generation import (
@@ -336,12 +336,15 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                     # A submitted graph owns its conditioning. Workflow/compiler changes
                     # affect only new renders, never recovery or the old prompt audit.
                     planned_prompt = job.payload["effective_image_prompt"]
+                elif strategy == "simple_references":
+                    # The direct reference-first graph needs the explicit image/actor
+                    # bindings regardless of the selected fixed model preset.
+                    planned_prompt = build_simple_reference_prompt(saved_plan.plan, specs)
                 elif preset is not None:
                     planned_prompt = (description_scene_prompt(saved_plan.plan, selected)
                                       if strategy == "simple_text" else compile_scene_plan(saved_plan.plan))
                 else:
-                    planned_prompt = (build_simple_reference_prompt(saved_plan.plan, specs)
-                                      if strategy == "simple_references" else description_scene_prompt(saved_plan.plan, selected))
+                    planned_prompt = description_scene_prompt(saved_plan.plan, selected)
             if strategy in {"planned_scene", "scene_plan"}:
                 saved_plan = decode_saved_plan(job.payload.get("scene_plan_json"))
                 if len(selected) != len(draft.character_ids):
@@ -391,17 +394,23 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
             effective_prompt = None
             if simple:
                 effective_prompt = planned_prompt
-                edits = []
-                if preset is not None and strategy == "simple_references":
-                    edits = (job.payload.get("identity_edit_prompts") if resume_prompt
-                             else identity_edit_prompts(saved_plan.plan, selected))
-                    if not isinstance(edits, list) or len(edits) != len(specs):
-                        raise ValueError("Die ursprüngliche Referenzzuordnung fehlt. Kein neuer Lauf wird gestartet.")
+                # Only old, already-submitted sequential graphs carry these
+                # prompts. They remain resumable but are never created again.
+                edits = job.payload.get("identity_edit_prompts") if resume_prompt else None
+                if edits is not None and (
+                    not isinstance(edits, list) or len(edits) != len(specs)
+                    or any(not isinstance(value, str) or not value.strip() for value in edits)
+                ):
+                    raise ValueError("Die ursprüngliche Referenzzuordnung fehlt. Kein neuer Lauf wird gestartet.")
                 endpoint_hash = provider_endpoint_hash(settings, "comfyui_qwen")
                 if strategy == "simple_references":
                     for index, item in enumerate(snapshot, 1):
-                        item.update(position=("sequential identity edit; scene outfit and pose preserved" if preset else
-                                              "ordered identity reference for restaged scene"), reference_image_index=index)
+                        item.update(
+                            position=("sequential identity edit; scene outfit and pose preserved"
+                                      if edits is not None else
+                                      "ordered identity reference for direct scene generation"),
+                            reference_image_index=index,
+                        )
                 if resume_prompt:
                     if job.payload.get("render_endpoint_hash") != endpoint_hash:
                         raise ValueError("Der ComfyUI-Server wurde geändert. Der alte Lauf wird nicht erneut gestartet.")
@@ -414,7 +423,6 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                 else:
                     if not jobs.checkpoint_simple_image(
                         job, phase="render_started", effective_image_prompt=effective_prompt,
-                        **({"identity_edit_prompts": edits} if preset is not None else {}),
                     ):
                         return True
                     def submitted(prompt_id):
@@ -422,13 +430,18 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                             job, phase="render_started", prompt_id=prompt_id, render_endpoint_hash=endpoint_hash,
                         ):
                             raise RuntimeError("Der Bildlauf gehört nicht mehr zu diesem Auftrag; kein zweiter Lauf wird gestartet.")
-                if not resume_prompt and preset is not None:
+                if not resume_prompt and strategy == "simple_references" and preset is not None:
+                    generated = generator.generate_preset_reference_scene(
+                        reel_id=draft.id, image_prompt=effective_prompt, preset=preset,
+                        references=specs, progress=submitted,
+                    )
+                    candidate = "optimized"
+                elif not resume_prompt and preset is not None:
                     generated = generator.generate_preset_image(
                         reel_id=draft.id, image_prompt=effective_prompt, preset=preset,
-                        references=specs if strategy == "simple_references" else (),
-                        edit_prompts=edits, progress=submitted,
+                        progress=submitted,
                     )
-                    candidate = "optimized" if strategy == "simple_references" else "scene"
+                    candidate = "scene"
                 elif not resume_prompt and strategy == "simple_references":
                     generated = generator.restage_character_references(
                         reel_id=draft.id, references=specs, scene_plan=saved_plan.plan, target_size=(736, 1312),
@@ -530,9 +543,12 @@ def run_reel_once(uploads: LocalUploadStore, settings: Settings, stop=None) -> b
                     ai_provider=job.payload.get("ai_provider"), ai_model_id=job.payload.get("ai_model_id"),
                 )
                 if preset is not None:
-                    result.update(image_preset=preset, identity_edit_prompts=edits,
-                                  identity_transfer_strategy="sequential-reference-identity-only-v1"
-                                  if strategy == "simple_references" else None)
+                    result["image_preset"] = preset
+                    if edits is not None:
+                        result.update(
+                            identity_edit_prompts=edits,
+                            identity_transfer_strategy="sequential-reference-identity-only-v1",
+                        )
             if operation == "optimize":
                 if saved_plan is not None:
                     result.update(

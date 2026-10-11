@@ -294,6 +294,32 @@ class ReelGenerator:
         target = self.output_root / safe_id / f"preset-image-{uuid.uuid4().hex}.png"
         return localize_comfy_output(self.client, reference, target, comfy_output_root=self.comfy_output_root)
 
+    def generate_preset_reference_scene(
+        self, *, reel_id, image_prompt, preset, references, progress=None,
+    ) -> Path:
+        """Generate one scene directly from every intact identity reference."""
+        from .image_presets import build_reference_preset_workflow
+        safe_id = _safe_reel_id(reel_id)
+        if not 1 <= len(references) <= 4:
+            raise ValueError("One to four character references are required")
+        images = [self.client.upload_input(
+            ref.reference_image_path,
+            subfolder=f"BookPromo/reels/{safe_id}/reference-scene-inputs",
+        ) for ref in references]
+        workflow = build_reference_preset_workflow(
+            preset, image_prompt, reference_images=images,
+            filename_prefix=f"BookPromo/reels/{safe_id}/reference-scene",
+        )
+        result = self.client.run_workflow(
+            workflow, timeout_sec=7200, partial_execution_targets=["save"],
+            **({"progress": progress} if progress is not None else {}),
+        )
+        reference = _pick_output(result, {".png", ".jpg", ".jpeg", ".webp"}, "reference scene")
+        target = self.output_root / safe_id / f"reference-scene-{uuid.uuid4().hex}.png"
+        return localize_comfy_output(
+            self.client, reference, target, comfy_output_root=self.comfy_output_root,
+        )
+
     def generate_image(
         self,
         *,

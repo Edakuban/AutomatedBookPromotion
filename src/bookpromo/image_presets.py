@@ -1,8 +1,8 @@
 """Two fixed FLUX.2 bundles, shared by quote and chapter buttons.
 
-No workflow-file parsing and no arbitrary loader/sampling combinations. A whole
-reference action is one resumable Comfy prompt: scene, then one identity edit per
-reference. Reference edits never receive character appearance prose.
+No workflow-file parsing and no arbitrary loader/sampling combinations. New
+reference scenes condition one sampling pass with every selected portrait. The
+older sequential edit graph remains available only for already submitted jobs.
 """
 from dataclasses import asdict, dataclass, replace
 import secrets
@@ -96,10 +96,13 @@ def identity_edit_prompts(plan, characters):
 
 
 def build_preset_workflow(snapshot, prompt, *, reference_images=(), edit_prompts=(),
-                          width=736, height=1312, filename_prefix="BookPromo/image", seed=None):
+                          direct_reference_images=(), width=736, height=1312,
+                          filename_prefix="BookPromo/image", seed=None):
     preset = checked_preset(snapshot)
     if (not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 20000
             or len(reference_images) != len(edit_prompts) or len(reference_images) > 4
+            or len(direct_reference_images) > 4
+            or direct_reference_images and (reference_images or edit_prompts)
             or any(not isinstance(p, str) or not p.strip() or len(p) > 20000 for p in edit_prompts)
             or type(width) is not int or type(height) is not int or min(width, height) < 16
             or width % 16 or height % 16 or width * height > 1_000_000):
@@ -112,7 +115,7 @@ def build_preset_workflow(snapshot, prompt, *, reference_images=(), edit_prompts
         "sampler": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": preset.sampler}},
     }
 
-    def stage(prefix, text, images):
+    def stage(prefix, text, images, *, upscale_method="nearest-exact"):
         graph[prefix + "text"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["clip", 0], "text": text}}
         if preset.id == "flux2-klein-9b-base" and preset.version >= 2:
             # 9B Base requires encoded empty text, not all-zero conditioning.
@@ -125,7 +128,7 @@ def build_preset_workflow(snapshot, prompt, *, reference_images=(), edit_prompts
         for index, image in enumerate(images):
             node = prefix + f"ref{index}"
             graph[node + "scale"] = {"class_type": "ImageScaleToTotalPixels", "inputs": {
-                "image": image, "upscale_method": "nearest-exact", "megapixels": 1, "resolution_steps": 1}}
+                "image": image, "upscale_method": upscale_method, "megapixels": 1, "resolution_steps": 1}}
             graph[node + "encode"] = {"class_type": "VAEEncode", "inputs": {"pixels": [node + "scale", 0], "vae": ["vae", 0]}}
             for branch in branches:
                 graph[node + branch] = {"class_type": "ReferenceLatent", "inputs": {
@@ -142,10 +145,30 @@ def build_preset_workflow(snapshot, prompt, *, reference_images=(), edit_prompts
         graph[prefix + "decode"] = {"class_type": "VAEDecode", "inputs": {"samples": [prefix + "sample", 0], "vae": ["vae", 0]}}
         return [prefix + "decode", 0]
 
-    current = stage("scene-", prompt, [])
+    direct_inputs = []
+    for index, image in enumerate(direct_reference_images):
+        load = f"reference-{index}"
+        graph[load] = {"class_type": "LoadImage", "inputs": {"image": image}}
+        direct_inputs.append([load, 0])
+    current = stage(
+        "scene-", prompt, direct_inputs,
+        upscale_method="lanczos" if direct_inputs else "nearest-exact",
+    )
     for index, (image, edit_prompt) in enumerate(zip(reference_images, edit_prompts, strict=True)):
         load = f"identity-{index}"
         graph[load] = {"class_type": "LoadImage", "inputs": {"image": image}}
         current = stage(f"edit-{index}-", edit_prompt, [current, [load, 0]])
     graph["save"] = {"class_type": "SaveImage", "inputs": {"images": current, "filename_prefix": filename_prefix}}
     return graph
+
+
+def build_reference_preset_workflow(snapshot, prompt, *, reference_images,
+                                    width=736, height=1312,
+                                    filename_prefix="BookPromo/reference-scene", seed=None):
+    """Build the reference-first graph proven by the isolated character test."""
+    if not 1 <= len(reference_images) <= 4:
+        raise ValueError("Für die Referenzszene werden ein bis vier Referenzbilder benötigt.")
+    return build_preset_workflow(
+        snapshot, prompt, direct_reference_images=reference_images,
+        width=width, height=height, filename_prefix=filename_prefix, seed=seed,
+    )

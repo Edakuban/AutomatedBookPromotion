@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 from bookpromo.ai_settings import AISettingsStore
 from bookpromo.config import Settings
 from bookpromo.image_presets import (
-    PRESETS, build_preset_workflow, checked_preset, check_preset_available,
+    PRESETS, build_preset_workflow, build_reference_preset_workflow,
+    checked_preset, check_preset_available,
     identity_edit_prompts, preset_snapshot,
 )
 from bookpromo.reel_worker import run_reel_once
@@ -41,6 +42,24 @@ def test_fixed_bundle_and_sequential_reference_pixel_bindings(preset_id):
         for value in node["inputs"].values():
             if isinstance(value, list):
                 assert value[0] in graph  # No dangling nested-workflow links.
+
+
+@pytest.mark.parametrize("preset_id", PRESETS)
+def test_direct_reference_scene_uses_one_sampling_pass(preset_id):
+    snapshot = preset_snapshot(preset_id)
+    graph = build_reference_preset_workflow(
+        snapshot, "Scene with exact Image 1 and Image 2 identities",
+        reference_images=["a.png", "b.png"], seed=123,
+    )
+    assert graph["reference-0"]["inputs"]["image"] == "a.png"
+    assert graph["reference-1"]["inputs"]["image"] == "b.png"
+    assert graph["scene-ref0scale"]["inputs"]["upscale_method"] == "lanczos"
+    assert graph["scene-ref1scale"]["inputs"]["image"] == ["reference-1", 0]
+    assert graph["scene-guider"]["inputs"]["positive"] == ["scene-ref1positive", 0]
+    assert graph["scene-guider"]["inputs"]["negative"] == ["scene-ref1negative", 0]
+    assert graph["save"]["inputs"]["images"] == ["scene-decode", 0]
+    assert sum(node["class_type"] == "SamplerCustomAdvanced" for node in graph.values()) == 1
+    assert not any(node_id.startswith("edit-") for node_id in graph)
 
 
 def test_no_free_loader_or_sampling_combinations():
@@ -158,25 +177,40 @@ def test_worker_three_modes_keep_conditioning_separate(setup, monkeypatch, tmp_p
     generated.write_bytes(png_bytes((96, 128)).read())
     calls = []
     def render(self, **kwargs):
-        calls.append(kwargs)
+        calls.append(("ordinary", kwargs))
         kwargs['progress']('comfy-fixed-preset')
+        return generated
+    def render_references(self, **kwargs):
+        calls.append(("references", kwargs))
+        kwargs['progress']('comfy-fixed-reference-preset')
         return generated
     monkeypatch.setattr('bookpromo.reel_worker.check_preset_available', lambda *a: None)
     monkeypatch.setattr('bookpromo.reel_worker.ReelGenerator.generate_preset_image', render, raising=False)
+    monkeypatch.setattr(
+        'bookpromo.reel_worker.ReelGenerator.generate_preset_reference_scene',
+        render_references, raising=False,
+    )
     jobs.enqueue_simple_image(draft.id, draft.revision, mode=mode, **inputs)
     # Changing global choices cannot alter this captured image bundle.
     other_preset = next(p for p in PRESETS if p != preset_id)
     AISettingsStore(uploads).save(settings, 0, other_preset, 'comfyui_qwen')
     assert run_reel_once(uploads, settings)
     assert jobs.status(draft.id)[0]['state'] == 'done'
-    assert len(calls) == 1 and calls[0]['preset'] == preset_snapshot(preset_id)
-    assert ('silver fox' in calls[0]['image_prompt']) == (mode == 'text')
-    assert bool(calls[0]['references']) == (mode == 'references')
-    assert bool(calls[0]['edit_prompts']) == (mode == 'references')
-    assert all('silver fox' not in p and 'black ears' not in p for p in calls[0]['edit_prompts'])
+    assert len(calls) == 1
+    kind, call = calls[0]
+    assert kind == ('references' if mode == 'references' else 'ordinary')
+    assert call['preset'] == preset_snapshot(preset_id)
+    assert ('silver fox' in call['image_prompt']) == (mode in {'text', 'references'})
+    assert bool(call.get('references')) == (mode == 'references')
+    assert 'edit_prompts' not in call
     with sqlite3.connect(uploads.db_path) as db:
         payload = json.loads(db.execute('select payload_json from local_reel_jobs where draft_id=?', (draft.id,)).fetchone()[0])
-    assert payload['identity_edit_prompts'] == calls[0]['edit_prompts']
+        result = json.loads(db.execute('select result_json from local_reel_jobs where draft_id=?', (draft.id,)).fetchone()[0])
+    assert 'identity_edit_prompts' not in payload
+    assert 'identity_edit_prompts' not in result
+    assert result['identity_transfer_strategy'] == (
+        'reference-scene-plan-v2' if mode == 'references' else None
+    )
 
 
 def test_submitted_preset_pipeline_resumes_without_any_preflight_or_new_stages(setup, monkeypatch, tmp_path):
@@ -192,7 +226,6 @@ def test_submitted_preset_pipeline_resumes_without_any_preflight_or_new_stages(s
         db.execute('update local_reel_jobs set lease_until=0 where id=?', (job.id,))
     calls = fake_generator(monkeypatch, tmp_path)
     monkeypatch.setattr('bookpromo.reel_worker.check_preset_available', lambda *a: pytest.fail('No new preflight'))
-    monkeypatch.setattr('bookpromo.reel_worker.identity_edit_prompts', lambda *a: pytest.fail('No new prompts'))
     assert run_reel_once(uploads, settings)
     assert calls[0][0] == 'resume' and len(calls) == 1
 

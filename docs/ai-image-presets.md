@@ -1,6 +1,6 @@
 # Globale KI-Auswahl und drei Bildwege
 
-Stand: 05.10.2026. Gilt für die Hauptaktionen bei Zitaten und Kapitel-Teasern.
+Stand: 11.10.2026. Gilt für die Hauptaktionen bei Zitaten und Kapitel-Teasern.
 
 ## Bedienung
 
@@ -15,13 +15,14 @@ Beide Inhaltsarten verwenden dieselben drei Buttons:
 | --- | --- |
 | Bild erzeugen | Szenenplan und Buchstil; keine zusätzlich angehängten Charakter-Imageprompts oder Referenzbilder |
 | Bild mit Beschreibung erzeugen | Szene/Stil plus gefilterte Aussehensmerkmale der ausgewählten Charakter-Imageprompts |
-| Bild mit Referenzbild erzeugen | Zunächst Szene/Stil, danach je ausgewählter Figur ein Edit mit Szenenbild, Referenzbild und Namens-/Positionszuordnung; keine zusätzlichen Aussehensbeschreibungen |
+| Bild mit Referenzbild erzeugen | Ein direkter Sampling-Lauf mit Szenenplan und allen ausgewählten Referenzbildern; Bildreihenfolge und Namensbindung stehen im Renderprompt |
 
 Ein gültiger aktueller Szenenplan wird wiederverwendet; sonst erzeugt die global
 gewählte Text-KI einmal einen Plan. Szene, Charakterauswahl und optionale Regie
-werden mit dem Bildklick gespeichert. Im Referenzweg bestimmt die Szene die
-Kleidung, Pose und den Ausdruck, nicht das Referenzporträt. Bis zu vier Figuren
-werden nacheinander bearbeitet. Es ist kein vorhandenes Szenenbild erforderlich.
+werden mit dem Bildklick gespeichert. Im Referenzweg gehen bis zu vier intakte
+Referenzporträts zusammen mit dem Szenenplan in die positive und negative
+FLUX.2-Referenzkonditionierung. Es gibt weder ein vorab erzeugtes Szenenbild noch
+nachgeschaltete Einzel-Edits. Es ist kein vorhandenes Szenenbild erforderlich.
 
 ## Feste Bild-Presets
 
@@ -37,9 +38,9 @@ Der Prüfbutton liest nur die in ComfyUI angebotenen Modelldateien.
 
 ### 9B-Konditionierung, Version 2
 
-Neue 9B-Aufträge verwenden in der Grundszene und jedem Referenz-Edit einen
-leer encodierten Negativtext (`CLIPTextEncode`, Text `""`) statt
-`ConditioningZeroOut`. Die Referenz-Latents werden weiterhin an beide Zweige
+Neue 9B-Aufträge verwenden einen leer encodierten Negativtext
+(`CLIPTextEncode`, Text `""`) statt `ConditioningZeroOut`. Im direkten
+Referenzweg werden alle Referenz-Latents in demselben Szenenlauf an beide Zweige
 angehängt. Modellpaket, Euler, 50 Schritte und CFG 4 bleiben unverändert.
 4B Distilled behält den bisherigen Null-Zweig mit CFG 1.
 
@@ -60,8 +61,10 @@ nicht auf; daraus folgt keine allgemeine Garantie für die 4B-Bildqualität.
 
 - Aufträge speichern das ganze Bild-Preset und die gewählte Text-KI mit Modell-ID.
   Spätere globale Änderungen verändern einen bereits erteilten Bildauftrag nicht.
-- Szene und alle Referenz-Edits laufen in einem nativen ComfyUI-Graph mit einer
-  Prompt-ID. Nach Wiederaufnahme wird diese ID abgefragt, kein neuer Graph erzeugt.
+- Die Szene und alle Referenzbilder laufen in einem nativen ComfyUI-Graph mit
+  einer Prompt-ID. Nach Wiederaufnahme wird diese ID abgefragt, kein neuer Graph
+  erzeugt. Bereits eingereichte ältere sequentielle Graphen werden unverändert
+  fortgesetzt, aber nicht mehr neu angelegt.
 - Vorhandene Varianten, Bild-/Videoauswahl, Uploads, Carousel-Ausschnitte,
   Publishing und bisherige erweiterte Bildverfahren bleiben erhalten.
 - Alte Aufträge ohne Preset behalten ihre bisherigen Verfahren. Die optionalen
@@ -77,11 +80,13 @@ nicht auf; daraus folgt keine allgemeine Garantie für die 4B-Bildqualität.
 Automatisierte Prüfungen decken beide Quellen, drei Modi, feste Modellpakete,
 Revisionen, unveränderte Auswahlen und Wiederaufnahme ab. Die Browser-Sichtprüfung
 zeigt die drei Aktionen bei Zitaten und Kapiteln sowie die globale Auswahl.
-Ein isolierter Live-Test des 4B-Graphs mit Szene plus zwei Referenz-Edits lief in
-rund 13 Sekunden durch. Er veränderte keine Buchdaten oder ausgewählten Medien.
+Der direkte 9B-Live-Test mit zwei vollständigen Referenzbildern erzeugte die
+visuell beste der verglichenen Varianten und war schneller als zusätzliche
+Kopfdetail- oder maskierte Korrekturläufe. Er veränderte keine Buchdaten oder
+ausgewählten Medien.
 
-Dies ist **keine bestandene visuelle Identitätsabnahme**: Im Live-Test blieb Lys'
-nichtmenschliche Form unvollständig. Auch Anatomie, Kleidung und die unveränderte
-erste Figur im zweiten Edit sind Modellziele, keine garantierten Eigenschaften.
+Dies ist **keine Garantie exakter Gesichtsidentität**. Anatomie, Kleidung,
+Interaktionen und Wiedererkennbarkeit bleiben Modellziele, keine garantierten
+Eigenschaften.
 Die Imagegen-Skill-Prüfkriterien halten Modellfunktion und Bildqualität getrennt;
 die gewollten lokalen ComfyUI-Presets wurden nicht durch einen Cloud-Dienst ersetzt.
