@@ -33,7 +33,10 @@ from bookpromo.reel_generation import (
     _build_reference_scene_workflow,
     _reference_scene_size,
 )
-from bookpromo.reel_prompts import VIDEO_PROMPT_SYSTEM, build_video_prompt_request, validate_video_prompt
+from bookpromo.reel_prompts import (
+    VIDEO_PROMPT_SYSTEM, build_video_prompt_request, repair_generated_video_prompt,
+    validate_video_prompt,
+)
 from bookpromo.scene_plan import ScenePlan, compile_scene_plan
 
 
@@ -532,6 +535,18 @@ def test_video_prompt_contract_requires_visible_controlled_motion():
         "with the song. The camera tracks laterally through the continuous shot."
     )
     assert validate_video_prompt(performance) == performance
+
+
+def test_generated_video_prompt_repairs_banned_low_motion_wording_only_when_affirmative():
+    generated = (
+        "The camera tracks laterally as an almost imperceptible scaling pattern spreads across "
+        "her skin. Avoid subtle movement in the surrounding flames."
+    )
+
+    repaired = repair_generated_video_prompt(generated)
+
+    assert "a clearly visible scaling pattern" in repaired
+    assert "Avoid subtle movement" in repaired
 
 
 @pytest.mark.parametrize("ending", [

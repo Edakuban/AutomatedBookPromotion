@@ -9,8 +9,9 @@ from bookpromo.openwebui import OpenWebUIError
 from bookpromo.scene_plan import (
     ScenePlan, compile_scene_plan, decode_saved_plan, describe_scene_direction,
     encode_saved_plan, generate_scene_plan, scene_plan_data, scene_plan_fingerprint,
-    validate_reference_bindings,
+    normalize_local_scene_plan_json, validate_reference_bindings,
 )
+from bookpromo.text_ai import ComfyQwenClient
 
 
 def fixture_plan():
@@ -90,6 +91,36 @@ def test_object_counts_require_bounded_exact_integers(count):
     data["props"][0]["count"] = count
     with pytest.raises(ValueError):
         ScenePlan.model_validate(data)
+
+
+def test_local_scene_plan_normalizer_groups_large_exact_quantities_without_mutating_input():
+    data = fixture_plan()
+    data["props"][0] = {"id": "servants", "label": "armored servants", "count": 10}
+
+    normalized = normalize_local_scene_plan_json(data)
+
+    assert normalized["props"][0] == {
+        "id": "servants", "label": "group of exactly 10 armored servants", "count": 1,
+    }
+    assert data["props"][0]["count"] == 10
+
+
+def test_local_qwen_scene_plan_uses_large_quantity_normalizer():
+    class FakeLocalQwen(ComfyQwenClient):
+        async def complete_json(self, system, user, result_type, **kwargs):
+            raw = fixture_plan()
+            raw["props"][0] = {"id": "servants", "label": "armored servants", "count": 10}
+            raw["actors"][0]["contacts"] = []
+            raw["actors"][1]["contacts"] = []
+            normalized = kwargs["json_normalizer"](raw)
+            return result_type.model_validate(normalized, strict=True)
+
+    result = asyncio.run(generate_scene_plan(
+        object.__new__(FakeLocalQwen), quote="Ten armored servants restrain Leviathan.",
+    ))
+
+    assert result.props[0].count == 1
+    assert result.props[0].label == "group of exactly 10 armored servants"
 
 
 @pytest.mark.parametrize("field,limit", [("setting", 1200), ("composition", 500), ("art_direction", 1500)])

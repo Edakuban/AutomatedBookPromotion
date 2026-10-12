@@ -122,6 +122,26 @@ def test_whole_chapter_is_sent_unchunked_and_excerpt_must_be_verbatim(setup):
         ))
 
 
+def test_metadata_only_front_matter_is_rejected_without_calling_ai():
+    chapter = SimpleNamespace(
+        position=1,
+        title="Vorspann",
+        source_text=(
+            "Buchtitel\n\nBibliografische Information der Deutschen Nationalbibliothek\n\n"
+            "© 2025 Autor\nVerlag: Beispielverlag\nDruck: Druckerei\nISBN: 123-4"
+        ),
+    )
+
+    class UnexpectedAPI:
+        async def complete_json(self, *args, **kwargs):
+            pytest.fail("Front matter must not be sent to the text model")
+
+    with pytest.raises(ChapterTeaserError, match="keine belegte erzählerische Szene"):
+        asyncio.run(analyze_whole_chapter(
+            UnexpectedAPI(), chapter=chapter, book_context={}, duration_seconds=12,
+        ))
+
+
 def test_worker_creates_one_planned_image_job_per_full_chapter(setup):
     settings, uploads, book, record, reels, track, store, run_id = prepare_run(setup)
     api = ChapterAPI(record.result.chapters)

@@ -16,7 +16,7 @@ from .config import TextAIProvider
 from .characters import BookCharacter
 from .extraction_store import ExtractionStore
 from .management import ManagementStore
-from .reel_prompts import validate_video_prompt
+from .reel_prompts import repair_generated_video_prompt, validate_video_prompt
 from .reels import ReelDraft, ReelJobStore, ReelStore
 from .scene_context import build_scene_context
 from .scene_plan import (
@@ -149,6 +149,19 @@ class ChapterTeaserError(RuntimeError):
     pass
 
 
+def _is_front_matter_only(chapter) -> bool:
+    """Recognize metadata-only pseudo chapters without asking a model to invent a scene."""
+    title = " ".join(str(getattr(chapter, "title", "")).casefold().split())
+    if title not in {"vorspann", "impressum", "titelseite", "front matter"}:
+        return False
+    source = str(getattr(chapter, "source_text", "")).casefold()
+    markers = (
+        "bibliografische information", "deutsche nationalbibliothek", "isbn:",
+        "verlag:", "druck:", "© ",
+    )
+    return sum(marker in source for marker in markers) >= 3
+
+
 def compose_chapter_caption(teaser_text: str, context: dict) -> str:
     credit = " · ".join(
         str(context.get(key) or "").strip() for key in ("title", "author")
@@ -170,6 +183,11 @@ async def analyze_whole_chapter(
     characters=(),
     verified_quotes=(),
 ) -> ChapterTeaserSuggestion:
+    if _is_front_matter_only(chapter):
+        raise ChapterTeaserError(
+            f"Kapitel {chapter.position} enthält nur Vorspann- und Publikationsdaten; "
+            "es gibt darin keine belegte erzählerische Szene für ein Kapitel-Reel."
+        )
     scene_context = build_scene_context(
         focus_text=chapter.source_text,
         book_profile=book_context,
@@ -209,7 +227,7 @@ async def analyze_whole_chapter(
             f"Die KI hat für Kapitel {chapter.position} keine wortgetreu belegte Szene geliefert."
         )
     try:
-        prompt = validate_video_prompt(suggestion.video_prompt)
+        prompt = repair_generated_video_prompt(suggestion.video_prompt)
     except ValueError as exc:
         raise ChapterTeaserError(
             f"Der Videoprompt für Kapitel {chapter.position} ist nicht verwendbar: {exc}"
@@ -285,7 +303,7 @@ async def analyze_verified_chapter_quote(
         CHAPTER_TEASER_ANCHORED_SYSTEM, payload, ChapterTeaserDraft, max_tokens=2400,
     )
     try:
-        prompt = validate_video_prompt(draft.video_prompt)
+        prompt = repair_generated_video_prompt(draft.video_prompt)
     except ValueError as exc:
         raise ChapterTeaserError(
             f"Der Videoprompt für Kapitel {chapter.position} ist nicht verwendbar: {exc}"

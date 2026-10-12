@@ -75,6 +75,33 @@ def validate_video_prompt(value: str) -> str:
     return prompt
 
 
+def repair_generated_video_prompt(value: str) -> str:
+    """Repair only banned low-motion wording in an otherwise generated prompt.
+
+    This is intentionally narrower than general rewriting: it preserves scene
+    content and motion while turning phrases such as ``almost imperceptible``
+    into an explicit, renderable instruction. User-authored prompts still go
+    through :func:`validate_video_prompt` unchanged.
+    """
+    prompt = " ".join(value.strip().split())
+    replacements = {
+        "subtle movement": "clearly visible movement",
+        "barely perceptible": "clearly visible",
+        "almost imperceptible": "clearly visible",
+        "microscopic movement": "clearly visible movement",
+        "extremely slow": "measured",
+        "very slow": "measured",
+    }
+    for phrase, replacement in replacements.items():
+        matches = list(re.finditer(re.escape(phrase), prompt, flags=re.IGNORECASE))
+        for match in reversed(matches):
+            if _match_is_negated(prompt, match.start()):
+                continue
+            prompt = prompt[:match.start()] + replacement + prompt[match.end():]
+    prompt = re.sub(r"\ban (?=clearly visible\b)", "a ", prompt, flags=re.IGNORECASE)
+    return validate_video_prompt(prompt)
+
+
 def _contains_affirmative_instruction(prompt: str, phrase: str) -> bool:
     """Distinguish an unwanted action from an explicit prohibition of it.
 
@@ -83,12 +110,16 @@ def _contains_affirmative_instruction(prompt: str, phrase: str) -> bool:
     those safety constraints as requests to perform the action.
     """
     for match in re.finditer(re.escape(phrase), prompt):
-        prefix = prompt[max(0, match.start() - 100):match.start()]
-        clause = re.split(r"[.!?;:\n]", prefix)[-1]
-        if re.search(
-            r"\b(?:no|without|never|avoid(?:s|ed|ing)?|not|forbid(?:s|den)?)\b",
-            clause,
-        ):
+        if _match_is_negated(prompt, match.start()):
             continue
         return True
     return False
+
+
+def _match_is_negated(prompt: str, start: int) -> bool:
+    prefix = prompt[max(0, start - 100):start]
+    clause = re.split(r"[.!?;:\n]", prefix)[-1]
+    return re.search(
+        r"\b(?:no|without|never|avoid(?:s|ed|ing)?|not|forbid(?:s|den)?)\b",
+        clause, flags=re.IGNORECASE,
+    ) is not None

@@ -1,6 +1,7 @@
 """Quote-grounded scene plans: explicit generation, deterministic conditioning."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
@@ -136,6 +137,32 @@ def encode_saved_plan(plan: ScenePlan, fingerprint: str) -> str:
     return SavedScenePlan(fingerprint=fingerprint, plan=plan).model_dump_json()
 
 
+def normalize_local_scene_plan_json(value):
+    """Keep exact large quantities while fitting the bounded render inventory.
+
+    Small local models reasonably emit a literal count such as ten servants when
+    the source names ten of them.  The render contract deliberately bounds one
+    inventory entry to eight instances, so represent larger quantities as one
+    explicitly sized group instead of rejecting otherwise valid structured JSON.
+    """
+    normalized = copy.deepcopy(value)
+    if not isinstance(normalized, dict):
+        return normalized
+    props = normalized.get("props")
+    if not isinstance(props, list):
+        return normalized
+    for prop in props:
+        if not isinstance(prop, dict):
+            continue
+        count = prop.get("count")
+        label = prop.get("label")
+        if type(count) is not int or count <= 8 or not isinstance(label, str) or not label.strip():
+            continue
+        prop["label"] = (f"group of exactly {count} {label.strip()}")[:160].rstrip()
+        prop["count"] = 1
+    return normalized
+
+
 def _get(value, name, default=None):
     return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
 
@@ -236,8 +263,16 @@ async def generate_scene_plan(client, *, validation_feedback: tuple[str, ...] = 
               "kein Beleg für Ort, Figuren, Gegenstände oder Handlung. Entferne daraus übernommene "
               "Szenenmotive; wenn die Textquelle den Ort nicht nennt, beschreibe ihn neutral."
         )
-    result = await client.complete_json(system, json.dumps(data, ensure_ascii=False),
-                                        ScenePlan, max_tokens=2400)
+    request_options = {"max_tokens": 2400}
+    # Qwen 4B often preserves source-grounded quantities above the deliberately
+    # small per-entry render limit.  Normalize only that known local-model shape;
+    # every other field remains subject to strict ScenePlan validation.
+    from .text_ai import ComfyQwenClient
+    if isinstance(client, ComfyQwenClient):
+        request_options["json_normalizer"] = normalize_local_scene_plan_json
+    result = await client.complete_json(
+        system, json.dumps(data, ensure_ascii=False), ScenePlan, **request_options,
+    )
     plan = ScenePlan.model_validate(result.model_dump())
     compile_scene_plan(plan)
     return plan
