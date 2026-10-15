@@ -34,7 +34,7 @@ def write_book_media_zip(
     analysis_run_id: str,
     reels: ReelStore,
 ) -> int:
-    """Write quote texts plus selected images and reels to ``output``.
+    """Write usable quote texts plus selected images and reels to ``output``.
 
     Quote numbers are assigned by their position in the chapter text, independent
     of the order in which media were generated.
@@ -45,6 +45,8 @@ def write_book_media_zip(
     }
     quotes_by_chapter: dict[str, list] = {}
     for item in quote_items:
+        if not item["usable"]:
+            continue
         quote = item["quote"]
         if quote.chapter_id in chapter_positions:
             quotes_by_chapter.setdefault(quote.chapter_id, []).append(quote)

@@ -83,6 +83,35 @@ def test_book_media_download_contains_quotes_selected_image_and_reel(setup):
         assert b"ftypisom" in archive.read(stem + ".mp4")
 
 
+def test_book_media_download_excludes_blocked_quotes(setup):
+    settings, _, book, _, _ = setup
+    store = analyzed(setup)
+    before = store.get(book.id)
+    blocked = before["quotes"][0]
+    quote = blocked["quote"]
+    store.set_blocked(
+        book.id, quote.chapter_id, before["suggestion_id"], quote.id,
+        blocked["revision"], True,
+    )
+    current = store.get(book.id)
+
+    app = create_app(settings, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        response = client.get(f"/books/local/{book.id}/media.zip")
+
+    assert response.status_code == 200
+    with ZipFile(BytesIO(response.content)) as archive:
+        exported = {
+            archive.read(name).decode("utf-8")
+            for name in archive.namelist()
+            if name.endswith(".txt")
+        }
+    assert quote.text not in exported
+    assert exported == {
+        item["quote"].text for item in current["quotes"] if item["usable"]
+    }
+
+
 def test_chapter_download_contains_all_texts_without_generated_media(setup):
     settings, _, book, record, _ = setup
     app = create_app(settings, start_worker=False)
