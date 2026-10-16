@@ -5,12 +5,15 @@ import json
 from typing import Annotated, Literal
 from uuid import UUID, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, field_validator
 
 from .extraction import Chapter, Extraction
 from .openwebui import OpenWebUIError
-from .scene_plan import ScenePlan, SCENE_PLAN_INSTRUCTION, describe_scene_direction, scene_plan_data
-from .text_ai import TextAIError
+from .scene_plan import (
+    ScenePlan, SCENE_PLAN_INSTRUCTION, describe_scene_direction,
+    normalize_local_scene_plan_json, scene_plan_data,
+)
+from .text_ai import ComfyQwenClient, TextAIError
 
 PROMPT_VERSION = "book-analysis-v4-scene-plan"
 Short = Annotated[str, Field(min_length=1, max_length=200)]
@@ -74,6 +77,27 @@ class Candidate(StrictModel):
 
 class Candidates(StrictModel):
     candidates: list[Candidate] = Field(max_length=8)
+
+
+def _normalize_local_candidates(value):
+    """Keep valid local candidates when siblings violate the strict schema.
+
+    This never repairs or coerces model output.  Source matching and all
+    promotion rules still run afterwards in validate_quote_batch.
+    """
+    if not isinstance(value, dict) or set(value) != {"candidates"}:
+        return value
+    candidates = value.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) > 8:
+        return value
+    valid = []
+    for candidate in candidates:
+        try:
+            Candidate.model_validate(candidate, strict=True)
+        except ValidationError:
+            continue
+        valid.append(candidate)
+    return {"candidates": valid}
 
 
 class Quote(StrictModel):
@@ -270,28 +294,59 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
         cached = checkpoints.get(key, model_type)
         if cached is not None: return cached
         checkpoints.progress(stage or "Buchkontext und Profilvorschlag erstellen")
-        for attempt in range(2):
+        # Small local models occasionally produce one or two schema-invalid
+        # replies during a long book run.  Feed their bounded Pydantic
+        # diagnostics back into the correction prompt and give local Qwen one
+        # additional attempt.  Completed checkpoints make this retry cheap.
+        validation_feedback: tuple[str, ...] = ()
+        attempts = 3 if isinstance(api, ComfyQwenClient) else 2
+        for attempt in range(attempts):
             checkpoints.reserve_call()
             try:
                 request_tokens = min(tokens * (2 ** attempt), 16384)
-                raw = await api.complete_json(SYSTEM + instruction + (
-                    "\nDie letzte Antwort war ungültig. Prüfe JSON-Typen und exakte Originalfundstellen besonders sorgfältig." if attempt else ""),
+                correction = ""
+                if attempt:
+                    details = "\n".join(f"- {issue}" for issue in validation_feedback)
+                    correction = (
+                        "\nDie letzte Antwort war ungültig. Korrigiere genau diese Punkte und "
+                        "gib erneut ausschließlich das vollständige JSON-Objekt aus:\n" + details
+                    )
+                request_options = {"max_tokens": request_tokens}
+                if transform and isinstance(api, ComfyQwenClient):
+                    request_options["json_normalizer"] = _normalize_local_candidates
+                elif model_type is ScenePlan and isinstance(api, ComfyQwenClient):
+                    request_options["json_normalizer"] = normalize_local_scene_plan_json
+                raw = await api.complete_json(
+                    SYSTEM + instruction + correction,
                     json.dumps(data, ensure_ascii=False), Candidates if transform else model_type,
-                    max_tokens=request_tokens)
+                    **request_options,
+                )
                 value = transform(raw) if transform else raw
                 checkpoints.put(key, value)
                 return value
             except (OpenWebUIError, TextAIError) as exc:
-                if exc.code not in {"structured", "truncated"} or attempt: raise
+                if exc.code not in {"structured", "truncated"} or attempt == attempts - 1:
+                    raise
+                validation_feedback = getattr(exc, "validation_issues", ()) or (
+                    "Die Antwort erfüllt mindestens eine JSON-Schema-Regel nicht.",
+                )
             except AnalysisError:
-                if attempt: raise
+                if attempt == attempts - 1: raise
+                validation_feedback = (
+                    "Originalfundstellen, Datentypen und Feldgrenzen erneut prüfen.",
+                )
 
     async def reduce_summaries(scope, summaries, target=1):
         level = 0
         while len(summaries) > target:
             reduced = []
-            for index in range(0, len(summaries), 6):
-                group = summaries[index:index+6]
+            # Six detailed chapter summaries regularly make the local 4B Qwen
+            # return 4-5k characters despite Summary's explicit 3k schema
+            # limit.  Three keeps the first reduction bounded; deeper levels
+            # combine only pairs because their inputs are already dense.
+            group_size = 3 if level == 0 else 2
+            for index in range(0, len(summaries), group_size):
+                group = summaries[index:index+group_size]
                 if len(group) == 1:
                     reduced.append(group[0])
                 else:

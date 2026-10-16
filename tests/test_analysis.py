@@ -10,7 +10,8 @@ import pytest
 
 from bookpromo.analysis import (AnalysisError, AnalysisOptions, BookProfile, Candidate, Candidates,
     CharacterSuggestion, CharacterSuggestions, Chunk,
-    QuoteBatch, Scores, Summary, chunks, select_distinct, validate_candidates, validate_quote_batch)
+    QuoteBatch, Scores, Summary, _normalize_local_candidates, chunks, select_distinct,
+    validate_candidates, validate_quote_batch)
 from bookpromo.analysis_store import AnalysisStore, AnalysisLeaseLost, Checkpoints
 from bookpromo.characters import CharacterStore
 from bookpromo.analysis_worker import run_analysis_once
@@ -47,6 +48,17 @@ def setup(tmp_path, monkeypatch):
 def candidate(text=TEXT, paragraph='p000002', spoiler='none', score=5):
     return Candidate(text=text, paragraph_id=paragraph, scores=Scores(clarity=score, curiosity=score, emotion=score, imagery=score),
                      reason='Eigenständiger atmosphärischer Einstieg.', spoiler=spoiler)
+
+
+def test_local_candidate_normalizer_drops_only_schema_invalid_siblings():
+    valid = candidate().model_dump()
+    too_short = {**valid, "text": "Zu kurz"}
+
+    assert _normalize_local_candidates({"candidates": [valid, too_short]}) == {
+        "candidates": [valid],
+    }
+    malformed_batch = {"candidates": [valid], "unexpected": True}
+    assert _normalize_local_candidates(malformed_batch) is malformed_batch
 
 
 def profile():
@@ -311,6 +323,29 @@ def test_direction_step_reserves_budget_and_retries_structured_failure_once(setu
         assert connection.execute('select calls_started from local_analysis_runs where book_id=?', (book.id,)).fetchone()[0] == 9
 
 
+def test_structured_retry_includes_bounded_validation_feedback(setup):
+    settings, uploads, book, _, store = setup
+
+    class FeedbackAPI(FakeAPI):
+        systems = []
+
+        async def complete_json(self, system, user, result_type, **kwargs):
+            self.systems.append(system)
+            if len(self.systems) == 1:
+                raise TextAIError(
+                    'Invalid local JSON.', code='structured',
+                    validation_issues=('summary: String should have at most 3000 characters',),
+                )
+            return await super().complete_json(system, user, result_type, **kwargs)
+
+    api = FeedbackAPI()
+    store.enqueue(book.id, settings, AnalysisOptions())
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+
+    assert store.latest(book.id)['state'] == 'done'
+    assert 'summary: String should have at most 3000 characters' in api.systems[1]
+
+
 def test_direction_budget_exhaustion_preserves_completed_checkpoints(setup):
     settings, uploads, book, _, store = setup
     api = FakeAPI()
@@ -488,6 +523,8 @@ def test_hierarchical_context_includes_late_chapters_and_bounds_requests(setup):
     assert any('ENDE_DES_BUCHS' in data.get('source_text','') for name,data,_ in api.calls if name=='Summary')
     assert any('summaries' in data for name,data,_ in api.calls if name=='Summary')
     assert all(api.token_budgets[index] == 4096 for index,(name,data,_) in enumerate(api.calls)
+               if name == 'Summary' and 'summaries' in data)
+    assert all(len(data['summaries']) <= 3 for name,data,_ in api.calls
                if name == 'Summary' and 'summaries' in data)
     assert max(len(json.dumps(data)) for _,data,_ in api.calls)<30000
 
