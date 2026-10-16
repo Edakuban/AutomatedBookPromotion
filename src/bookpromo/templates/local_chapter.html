@@ -16,6 +16,23 @@
   <div class="quote-workspace">
   <section class="panel next-settings" aria-labelledby="quotes-title">
     <h2 id="quotes-title">Zitate</h2>
+    {% if analysis and analysis.active %}
+      <div id="analysis-progress" data-status-url="{{ url_for('analysis_status', book_id=book.id) }}">
+        <p><strong>{% if analysis.lenient_chapter_id == chapter.id %}Dieses Kapitel wird erneut geprüft.{% elif analysis.lenient_chapter_id %}Ein anderes Kapitel wird erneut geprüft.{% else %}Die Buchanalyse läuft.{% endif %}</strong></p>
+        <p data-analysis-stage aria-live="polite">{{ analysis.stage }}</p>
+        <progress aria-label="KI-Analyse läuft"></progress>
+        <p data-analysis-count class="muted small">{{ analysis.completed_steps }} Zwischenstände gespeichert · {{ analysis.calls_started }} KI-Anfragen gestartet</p>
+      </div>
+    {% elif lenient_retry_available %}
+      <div class="notice">
+        <p><strong>Noch kein nutzbares Zitat gefunden?</strong></p>
+        <p>Eine zweite Prüfung akzeptiert auch leisere, kürzere oder weniger eigenständige Stellen und senkt die Mindestbewertung um einen Punkt. Worttreue und Spoilerschutz bleiben unverändert.</p>
+        <form method="post" action="{{ url_for('retry_chapter_quotes_lenient', book_id=book.id, chapter_id=chapter.id) }}" class="analysis-start-form">
+          <button type="submit">Kapitel weniger streng erneut prüfen</button>
+        </form>
+        <p class="small muted">Nur dieses Kapitel wird neu ausgewertet; die übrige Buchanalyse bleibt erhalten.</p>
+      </div>
+    {% endif %}
     {% if analysis and analysis.result and production_summary.total %}
       <section class="quote-production" data-quote-production-active="{{ 'true' if production_summary.active else 'false' }}" aria-labelledby="quote-production-title">
         <div class="quote-production-heading">

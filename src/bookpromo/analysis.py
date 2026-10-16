@@ -157,6 +157,7 @@ class AnalysisResult(StrictModel):
 class AnalysisOptions(BaseModel):
     purpose: Literal["full", "profile", "characters"] = "full"
     profile_prompt_version: int = 3
+    lenient_chapter_id: str | None = None
     chunk_chars: int = Field(default=12000, ge=2000, le=24000)
     min_score: int = Field(default=4, ge=1, le=5)
     max_quotes_per_chapter: int = Field(default=12, ge=1, le=50)
@@ -410,14 +411,35 @@ async def analyze_book(extraction: Extraction, api, checkpoints, options: Analys
         )
     quotes, rejected_candidates = [], []
     for position, chapter in enumerate(extraction.chapters, 1):
+        lenient = chapter.id == options.lenient_chapter_id
+        quote_options = options.model_copy(update={
+            "min_score": max(2, options.min_score - 1),
+        }) if lenient else options
+        quote_instruction = (
+            "Wähle höchstens 8 wortgetreue Originalstellen von 20 bis 800 Zeichen, die sich für "
+            "Promotion eignen könnten. Prüfe diesmal bewusst weniger streng: Auch leise, kurze oder "
+            "nicht vollständig eigenständige Passagen und Dialoge sind erlaubt, sofern sie Neugier, "
+            "Stimmung, Emotion oder Bildpotenzial besitzen. Gib nur dann eine leere Liste zurück, wenn "
+            "wirklich keine belegbare, nicht stark spoilernde Stelle vorhanden ist. "
+            if lenient else
+            "Wähle höchstens 8 eigenständig verständliche, neugierig machende Originalzitate von 20 bis "
+            "800 Zeichen; vorzugsweise 1–3 vollständige Sätze. Leere Liste ist erlaubt, wenn nichts geeignet ist. "
+        ) + (
+            "Übernimm jedes Zitat EXAKT und zusammenhängend aus source_text einschließlich Satzzeichen und "
+            "Zeilenumbrüchen; keine Auslassungszeichen oder Umformulierungen. paragraph_id ist der Absatz, "
+            "in dem das Zitat beginnt. Bewerte clarity, curiosity, emotion, imagery jeweils ganzzahlig von "
+            "1 (schwach) bis 5 (stark), begründe die Eignung und bewerte Spoilergefahr anhand des gesamten "
+            "Buchkontexts als none, low oder high. Suche unterschiedliche Themen und vermeide stark "
+            "überlappende Stellen. Bei Unsicherheit über einen zentralen Spoiler: high."
+        )
         for index, chunk in enumerate(chapter_chunks[chapter.id]):
             batch = await step(f"quotes:{chapter.id}:{index}", QuoteBatch,
-                "Wähle höchstens 8 eigenständig verständliche, neugierig machende Originalzitate von 20 bis 800 Zeichen; vorzugsweise 1–3 vollständige Sätze. Leere Liste ist erlaubt, wenn nichts geeignet ist. Übernimm jedes Zitat EXAKT und zusammenhängend aus source_text einschließlich Satzzeichen und Zeilenumbrüchen; keine Auslassungszeichen oder Umformulierungen. paragraph_id ist der Absatz, in dem das Zitat beginnt. Bewerte clarity, curiosity, emotion, imagery jeweils ganzzahlig von 1 (schwach) bis 5 (stark), begründe die Eignung und bewerte Spoilergefahr anhand des gesamten Buchkontexts als none, low oder high. Suche unterschiedliche Themen und vermeide stark überlappende Stellen. Bei Unsicherheit über einen zentralen Spoiler: high.",
+                quote_instruction,
                 {"chapter": chapter.title, "source_text": chapter.source_text[chunk.start:chunk.end],
                  "paragraphs": [{"id": p["id"], "start": max(p["start"], chunk.start)-chunk.start,
                                  "end": min(p["end"], chunk.end)-chunk.start} for p in chapter.paragraphs if p["start"] < chunk.end and p["end"] > chunk.start],
                  "book_context": {"summary": profile.internal_summary, "spoilers": profile.spoilers}},
-                transform=lambda raw, c=chapter, part=chunk: validate_quote_batch(c, part, raw, options), tokens=4096,
+                transform=lambda raw, c=chapter, part=chunk, opts=quote_options: validate_quote_batch(c, part, raw, opts), tokens=4096,
                 stage=f"Kapitel {position} von {len(extraction.chapters)}: Zitate auswählen, Abschnitt {index+1} von {len(chapter_chunks[chapter.id])}")
             quotes.extend(batch.quotes)
             rejected_candidates.extend(batch.rejected_candidates)

@@ -2137,6 +2137,28 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise UploadError("Der Analysestatus konnte nicht gelesen werden.", 503) from None
         return status or {"active": False, "state": "not_started", "label": "Noch nicht analysiert"}
 
+    @app.post(
+        "/books/local/{book_id}/chapters/{chapter_id}/analysis/lenient-retry",
+        name="retry_chapter_quotes_lenient",
+    )
+    async def retry_chapter_quotes_lenient(request: Request, book_id: UUID, chapter_id: UUID):
+        require_local_origin(request)
+        if settings._env_path is None:
+            raise UploadError("Bitte die Anwendung mit zugeordneter ENV-Datei über start.bat starten.", 409)
+        try:
+            if await run_in_threadpool(local_store.get_book, book_id) is None:
+                raise HTTPException(404)
+            status = await run_in_threadpool(analysis_store.latest, str(book_id))
+            if status and provider_missing(settings, status["provider"]):
+                raise UploadError("Der Text-KI-Provider dieser Analyse ist nicht mehr eingerichtet.", 409)
+            await run_in_threadpool(
+                analysis_store.retry_chapter_lenient, str(book_id), str(chapter_id),
+            )
+        except (OSError, sqlite3.Error):
+            raise UploadError("Die erneute Kapitelprüfung konnte nicht vorgemerkt werden.", 503) from None
+        target = str(request.url_for("local_chapter", book_id=book_id, chapter_id=chapter_id))
+        return RedirectResponse(f"{target}#quotes-title", status_code=303)
+
     @app.get("/books/local/{book_id}/chapters/{chapter_id}", response_class=HTMLResponse, name="local_chapter")
     async def local_chapter(request: Request, book_id: UUID, chapter_id: UUID,
                             filter: Literal["all", "usable", "blocked", "unsuitable", "unused", "used"] = "all",
@@ -2154,6 +2176,14 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         chapter = next((c for c in record.result.chapters if c.id == str(chapter_id)), None) if record and record.result else None
         if book is None or chapter is None: raise HTTPException(404)
         items = [q for q in management["quotes"] if q["quote"].chapter_id == chapter.id]
+        chapter_ai_quotes = [
+            quote for quote in (analysis["result"].quotes if analysis and analysis["result"] else [])
+            if quote.chapter_id == chapter.id
+        ]
+        lenient_retry_available = bool(
+            analysis and analysis["state"] in {"done", "empty"}
+            and not any(quote.usable for quote in chapter_ai_quotes)
+        )
         sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
         source_rows, carousel_schema_ready, carousel_source_error = await carousel_sources(book_id)
         usage,usage_error={},None
@@ -2230,6 +2260,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
                      "book_synced": sync_receipt is not None,
                      "carousel_schema_ready": carousel_schema_ready,
                      "carousel_source_error": carousel_source_error,
+                     "lenient_retry_available": lenient_retry_available,
                      "summary": analysis["result"].chapter_summaries.get(chapter.id) if analysis and analysis["result"] else None})
 
     def quote_batch_redirect(request: Request, book_id: UUID, chapter_id: UUID,

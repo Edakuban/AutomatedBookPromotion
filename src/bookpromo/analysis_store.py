@@ -88,6 +88,9 @@ class AnalysisStore:
                     raise UploadError("Für dieses Buch läuft bereits eine andere KI-Analyse. Bitte deren Abschluss abwarten.", 409)
                 return active["id"]
             fingerprint_options = options.model_dump()
+            # A lenient chapter retry mutates an existing run and is not a
+            # separate full-analysis configuration.
+            fingerprint_options.pop("lenient_chapter_id", None)
             if options.purpose == "full":
                 fingerprint_options.pop("purpose")
                 fingerprint_options.pop("profile_prompt_version")
@@ -126,6 +129,47 @@ class AnalysisStore:
                  options.model_dump_json(), PROMPT_VERSION, source["result_json"], now, now))
             self.reuse_context(connection, run_id)
             return run_id
+
+    def retry_chapter_lenient(self, book_id, chapter_id):
+        """Requeue one completed chapter while preserving all other checkpoints."""
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            active = connection.execute(
+                "select 1 from local_analysis_runs where book_id=? and state in ('queued','running')",
+                (book_id,),
+            ).fetchone()
+            if active:
+                raise UploadError("Für dieses Buch läuft bereits eine KI-Analyse. Bitte deren Abschluss abwarten.", 409)
+            row = connection.execute(
+                """select r.* from local_analysis_runs r
+                   join local_extractions e on e.book_id=r.book_id and e.revision=r.extraction_revision
+                   where r.book_id=? and coalesce(json_extract(r.options_json,'$.purpose'),'full')='full'
+                   and r.state in ('done','empty') order by r.updated_at desc,r.rowid desc limit 1""",
+                (book_id,),
+            ).fetchone()
+            if row is None or not row["result_json"]:
+                raise UploadError("Bitte zuerst die aktuelle Buchanalyse abschließen.", 409)
+            extraction = ExtractionStore._decode(row["source_json"])
+            if chapter_id not in {chapter.id for chapter in extraction.chapters}:
+                raise UploadError("Das Kapitel gehört nicht zum aktuellen Analysestand.", 409)
+            result = AnalysisResult.model_validate_json(row["result_json"])
+            if any(quote.chapter_id == chapter_id and quote.usable for quote in result.quotes):
+                raise UploadError("Dieses Kapitel enthält bereits mindestens ein nutzbares Zitat.", 409)
+            options = AnalysisOptions.model_validate_json(row["options_json"]).model_copy(
+                update={"lenient_chapter_id": chapter_id},
+            )
+            connection.execute(
+                "delete from local_analysis_checkpoints where run_id=? and step_key like ?",
+                (row["id"], f"quotes:{chapter_id}:%"),
+            )
+            now = time.time()
+            connection.execute(
+                """update local_analysis_runs set state='queued',stage=?,attempts=0,
+                   token=null,lease_until=null,error=null,options_json=?,updated_at=? where id=?""",
+                ("Kapitel wird weniger streng erneut geprüft", options.model_dump_json(), now, row["id"]),
+            )
+            return row["id"]
 
     @staticmethod
     def reuse_context(connection, run_id):
@@ -213,6 +257,7 @@ class AnalysisStore:
             if row is None: return None
             result = dict(row)
             saved_options = json.loads(result.pop("options_json"))
+            result["lenient_chapter_id"] = saved_options.get("lenient_chapter_id")
             old_profile_prompt = purpose == "profile" and saved_options.get("profile_prompt_version", 1) < AnalysisOptions().profile_prompt_version
             if old_profile_prompt: result["state"] = "stale"
             revision = connection.execute("select revision from local_extractions where book_id=?", (book_id,)).fetchone()

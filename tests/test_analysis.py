@@ -490,6 +490,79 @@ def test_web_analysis_start_status_quotes_and_invalidation(setup):
         assert 'Wortgetreu geprüft' not in client.get(url+'/chapters/'+record.result.chapters[0].id).text
 
 
+def test_lenient_chapter_retry_reuses_other_checkpoints_and_lowers_score_gate(setup):
+    settings, uploads, book, record, store = setup
+    original_id = store.enqueue(book.id, settings, AnalysisOptions())
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: FakeAPI(empty=True))
+    target, other = record.result.chapters
+    with closing(store.connection()) as connection:
+        other_checkpoint = connection.execute(
+            "select payload_json from local_analysis_checkpoints where run_id=? and step_key=?",
+            (original_id, f"quotes:{other.id}:0"),
+        ).fetchone()[0]
+
+    assert store.retry_chapter_lenient(book.id, target.id) == original_id
+    queued = store.latest(book.id, include_result=True)
+    assert queued["state"] == "queued"
+    assert queued["result"] is not None
+    with closing(store.connection()) as connection:
+        keys = {row[0] for row in connection.execute(
+            "select step_key from local_analysis_checkpoints where run_id=?", (original_id,),
+        )}
+    assert f"quotes:{target.id}:0" not in keys
+    assert f"quotes:{other.id}:0" in keys
+
+    class LenientAPI(FakeAPI):
+        async def complete_json(self, system, user, result_type, **kwargs):
+            if result_type is Candidates:
+                data = json.loads(user)
+                self.calls.append((result_type.__name__, data, system))
+                self.token_budgets.append(kwargs.get("max_tokens"))
+                start = data["paragraphs"][0]["start"]
+                text = data["source_text"][start:start + 200]
+                return Candidates(candidates=[candidate(
+                    text, data["paragraphs"][0]["id"], score=3,
+                )])
+            return await super().complete_json(system, user, result_type, **kwargs)
+
+    api = LenientAPI()
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: api)
+    finished = store.latest(book.id, include_result=True)
+    quote = next(q for q in finished["result"].quotes if q.chapter_id == target.id)
+    assert finished["state"] == "done"
+    assert quote.usable and quote.scores.average == 3
+    candidate_call = next(call for call in api.calls if call[0] == "Candidates")
+    assert "weniger streng" in candidate_call[2]
+    assert sum(call[0] == "Candidates" for call in api.calls) == 1
+    with closing(store.connection()) as connection:
+        assert connection.execute(
+            "select payload_json from local_analysis_checkpoints where run_id=? and step_key=?",
+            (original_id, f"quotes:{other.id}:0"),
+        ).fetchone()[0] == other_checkpoint
+
+
+def test_chapter_page_can_queue_lenient_retry_when_no_usable_quote(setup):
+    settings, uploads, book, record, store = setup
+    store.enqueue(book.id, settings, AnalysisOptions())
+    run_analysis_once(uploads, settings=settings, api_factory=lambda _: FakeAPI(empty=True))
+    chapter_id = record.result.chapters[0].id
+    url = f"/books/local/{book.id}/chapters/{chapter_id}"
+    retry_url = url + "/analysis/lenient-retry"
+    with TestClient(
+        create_app(settings, start_worker=False), base_url="http://127.0.0.1:8000",
+    ) as client:
+        page = client.get(url)
+        assert "Kapitel weniger streng erneut prüfen" in page.text
+        assert client.post(
+            retry_url, headers={"Origin": "https://foreign.example"},
+        ).status_code == 403
+        response = client.post(retry_url)
+        assert response.status_code == 200
+        assert "Dieses Kapitel wird erneut geprüft" in response.text
+        assert 'id="analysis-progress"' in response.text
+    assert store.latest(book.id)["state"] == "queued"
+
+
 def test_web_analysis_can_queue_local_qwen_provider(setup):
     settings, uploads, book, _, store = setup
     settings.comfyui_qwen_workflow.parent.mkdir(parents=True, exist_ok=True)
