@@ -142,6 +142,22 @@ def test_ambiguous_repeated_quote_within_paragraph_is_rejected(setup):
         validate_candidates(chapter,Chunk(0,len(chapter.source_text)),Candidates(candidates=[candidate()]),AnalysisOptions())
 
 
+def test_unique_verbatim_quote_repairs_wrong_known_paragraph_hint(setup):
+    chapter = setup[3].result.chapters[0].model_copy(deep=True)
+    second_start = len(chapter.source_text) + 2
+    chapter.source_text += "\n\n" + TEXT2
+    chapter.paragraphs.append({
+        "id": "p000003", "start": second_start, "end": len(chapter.source_text),
+    })
+    batch = validate_candidates(
+        chapter, Chunk(0, len(chapter.source_text)),
+        Candidates(candidates=[candidate(TEXT, "p000003")]), AnalysisOptions(),
+    )
+    assert len(batch.quotes) == 1
+    assert batch.quotes[0].text == TEXT
+    assert batch.quotes[0].paragraph_ids == ["p000002"]
+
+
 def test_spoilers_scores_and_overlapping_candidates_are_filtered(setup):
     chapter = setup[3].result.chapters[0]
     options = AnalysisOptions()

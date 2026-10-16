@@ -150,6 +150,10 @@ class AnalysisStore:
             ).fetchone()
             if row is None or not row["result_json"]:
                 raise UploadError("Bitte zuerst die aktuelle Buchanalyse abschließen.", 409)
+            if row["prompt_version"] != PROMPT_VERSION:
+                raise UploadError(
+                    "Bitte zuerst die vollständige Buchanalyse mit den aktuellen Prüfregeln neu starten.", 409,
+                )
             extraction = ExtractionStore._decode(row["source_json"])
             if chapter_id not in {chapter.id for chapter in extraction.chapters}:
                 raise UploadError("Das Kapitel gehört nicht zum aktuellen Analysestand.", 409)
@@ -251,13 +255,14 @@ class AnalysisStore:
                 item[1] for item in connection.execute("pragma table_info(local_analysis_runs)")
             }
             provider_field = "provider" if "provider" in columns else "'openwebui' as provider"
-            fields = f"id,book_id,extraction_revision,{provider_field},model_id,state,stage,attempts,calls_started,error,options_json"
+            fields = f"id,book_id,extraction_revision,{provider_field},model_id,prompt_version,state,stage,attempts,calls_started,error,options_json"
             if include_result: fields += ",result_json"
             row = connection.execute(f"select {fields} from local_analysis_runs where book_id=? and coalesce(json_extract(options_json,'$.purpose'),'full')=? order by updated_at desc,rowid desc limit 1", (book_id, purpose)).fetchone()
             if row is None: return None
             result = dict(row)
             saved_options = json.loads(result.pop("options_json"))
             result["lenient_chapter_id"] = saved_options.get("lenient_chapter_id")
+            result["current_prompt"] = result["prompt_version"] == PROMPT_VERSION
             old_profile_prompt = purpose == "profile" and saved_options.get("profile_prompt_version", 1) < AnalysisOptions().profile_prompt_version
             if old_profile_prompt: result["state"] = "stale"
             revision = connection.execute("select revision from local_extractions where book_id=?", (book_id,)).fetchone()

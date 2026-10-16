@@ -15,7 +15,7 @@ from .scene_plan import (
 )
 from .text_ai import ComfyQwenClient, TextAIError
 
-PROMPT_VERSION = "book-analysis-v4-scene-plan"
+PROMPT_VERSION = "book-analysis-v5-source-location"
 Short = Annotated[str, Field(min_length=1, max_length=200)]
 Score = Annotated[int, Field(ge=1, le=5)]
 SYSTEM = """Du analysierst ein Buch für literarische Promotion. Antworte auf Deutsch.
@@ -221,13 +221,23 @@ def validate_candidates(chapter: Chapter, chunk: Chunk, candidates: Candidates, 
         while True:
             start = chapter.source_text.find(candidate.text, offset, chunk.end)
             if start < 0: break
-            if paragraph["start"] <= start < paragraph["end"]: hits.append(start)
+            hits.append(start)
             offset = start + 1
         if not hits:
-            raise AnalysisError("Zitat nicht wortgetreu im angegebenen Originalabsatz gefunden.")
-        if len(hits) > 1:
-            raise AnalysisError("Zitat kommt im angegebenen Originalabsatz mehrfach vor; die Fundstelle ist nicht eindeutig.")
-        start, end = hits[0], hits[0] + len(candidate.text)
+            raise AnalysisError("Zitat nicht wortgetreu im Originaltext gefunden.")
+        paragraph_hits = [
+            start for start in hits if paragraph["start"] <= start < paragraph["end"]
+        ]
+        if len(paragraph_hits) == 1:
+            start = paragraph_hits[0]
+        elif len(paragraph_hits) > 1 or len(hits) > 1:
+            raise AnalysisError("Zitat kommt im Originaltext mehrfach vor; die Fundstelle ist nicht eindeutig.")
+        else:
+            # Small local models often copy the quote exactly but attach the
+            # ID of an unrelated paragraph. A unique verbatim occurrence is a
+            # stronger source locator than that generated hint.
+            start = hits[0]
+        end = start + len(candidate.text)
         quotes.append(Quote(id=str(uuid5(UUID(chapter.id), f"{start}:{end}")), chapter_id=chapter.id,
             text=chapter.source_text[start:end], source_start=start, source_end=end,
             paragraph_ids=[p["id"] for p in chapter.paragraphs if p["start"] < end and p["end"] > start],
@@ -240,8 +250,9 @@ def validate_candidates(chapter: Chapter, chunk: Chunk, candidates: Candidates, 
 def validate_quote_batch(chapter: Chapter, chunk: Chunk, candidates: Candidates, options: AnalysisOptions) -> QuoteBatch:
     """Keep verified candidates even when another candidate has no exact source.
 
-    Never repair, guess or relax source matching. Persist rejections with the
-    batch so resuming neither repeats the call nor loses the diagnostic.
+    Never repair, guess or relax source text. A wrong paragraph hint may be
+    corrected only for one unique verbatim occurrence. Persist rejections so
+    resuming neither repeats the call nor loses the diagnostic.
     """
     batch = QuoteBatch(quotes=[])
     for candidate in candidates.candidates:

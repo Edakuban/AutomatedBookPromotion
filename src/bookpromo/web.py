@@ -2182,6 +2182,7 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         ]
         lenient_retry_available = bool(
             analysis and analysis["state"] in {"done", "empty"}
+            and analysis["current_prompt"]
             and not any(quote.usable for quote in chapter_ai_quotes)
         )
         sync_receipt = await run_in_threadpool(sync_store.receipt, str(book_id))
