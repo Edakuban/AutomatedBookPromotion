@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Literal
 
@@ -154,9 +156,25 @@ def normalize_local_scene_plan_json(value):
     props = normalized.get("props")
     if not isinstance(props, list):
         return normalized
-    for prop in props:
+    id_mapping = {}
+    used_ids = set()
+    for index, prop in enumerate(props):
         if not isinstance(prop, dict):
             continue
+        original_id = prop.get("id")
+        if isinstance(original_id, str):
+            ascii_id = unicodedata.normalize("NFKD", original_id).encode("ascii", "ignore").decode()
+            ascii_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", ascii_id).strip("_-")
+            base = ascii_id[:60] or f"prop_{index + 1}"
+            candidate = base
+            suffix = 2
+            while candidate in used_ids:
+                tail = f"_{suffix}"
+                candidate = base[:60 - len(tail)] + tail
+                suffix += 1
+            prop["id"] = candidate
+            used_ids.add(candidate)
+            id_mapping.setdefault(original_id, candidate)
         count = prop.get("count")
         label = prop.get("label")
         if type(count) is not int or count <= 8 or not isinstance(label, str) or not label.strip():
@@ -172,6 +190,9 @@ def normalize_local_scene_plan_json(value):
         for actor in actors:
             if not isinstance(actor, dict) or not isinstance(actor.get("contacts"), list):
                 continue
+            for contact in actor["contacts"]:
+                if isinstance(contact, dict) and contact.get("object_id") in id_mapping:
+                    contact["object_id"] = id_mapping[contact["object_id"]]
             actor["contacts"] = [
                 contact for contact in actor["contacts"]
                 if isinstance(contact, dict) and contact.get("object_id") in prop_ids

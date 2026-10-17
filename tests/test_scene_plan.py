@@ -119,6 +119,22 @@ def test_local_scene_plan_normalizer_drops_only_dangling_object_contacts():
     assert ScenePlan.model_validate(normalized)
 
 
+def test_local_scene_plan_normalizer_ascii_folds_prop_ids_and_contact_references():
+    data = fixture_plan()
+    data["props"][0]["id"] = "Löffel & Schüssel"
+    for actor in data["actors"]:
+        actor["contacts"][0]["object_id"] = "Löffel & Schüssel"
+
+    normalized = normalize_local_scene_plan_json(data)
+
+    assert normalized["props"][0]["id"] == "Loffel_Schussel"
+    assert {actor["contacts"][0]["object_id"] for actor in normalized["actors"]} == {
+        "Loffel_Schussel",
+    }
+    assert data["props"][0]["id"] == "Löffel & Schüssel"
+    assert ScenePlan.model_validate(normalized)
+
+
 def test_local_qwen_scene_plan_uses_large_quantity_normalizer():
     class FakeLocalQwen(ComfyQwenClient):
         async def complete_json(self, system, user, result_type, **kwargs):
