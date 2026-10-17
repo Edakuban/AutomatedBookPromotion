@@ -138,12 +138,15 @@ def encode_saved_plan(plan: ScenePlan, fingerprint: str) -> str:
 
 
 def normalize_local_scene_plan_json(value):
-    """Keep exact large quantities while fitting the bounded render inventory.
+    """Fit recoverable local-model output to the bounded render inventory.
 
     Small local models reasonably emit a literal count such as ten servants when
     the source names ten of them.  The render contract deliberately bounds one
     inventory entry to eight instances, so represent larger quantities as one
     explicitly sized group instead of rejecting otherwise valid structured JSON.
+    They also sometimes describe actor-to-actor body contact as an object contact
+    without creating a matching prop. The pose already retains that staging, so
+    discard only those dangling inventory references.
     """
     normalized = copy.deepcopy(value)
     if not isinstance(normalized, dict):
@@ -160,6 +163,19 @@ def normalize_local_scene_plan_json(value):
             continue
         prop["label"] = (f"group of exactly {count} {label.strip()}")[:160].rstrip()
         prop["count"] = 1
+    prop_ids = {
+        prop.get("id") for prop in props
+        if isinstance(prop, dict) and isinstance(prop.get("id"), str)
+    }
+    actors = normalized.get("actors")
+    if isinstance(actors, list):
+        for actor in actors:
+            if not isinstance(actor, dict) or not isinstance(actor.get("contacts"), list):
+                continue
+            actor["contacts"] = [
+                contact for contact in actor["contacts"]
+                if isinstance(contact, dict) and contact.get("object_id") in prop_ids
+            ]
     return normalized
 
 

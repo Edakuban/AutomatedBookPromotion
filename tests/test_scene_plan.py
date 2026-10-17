@@ -105,6 +105,20 @@ def test_local_scene_plan_normalizer_groups_large_exact_quantities_without_mutat
     assert data["props"][0]["count"] == 10
 
 
+def test_local_scene_plan_normalizer_drops_only_dangling_object_contacts():
+    data = fixture_plan()
+    dangling = {"object_id": "face", "part": "hand", "action": "touches"}
+    data["actors"][0]["contacts"].append(dangling)
+
+    normalized = normalize_local_scene_plan_json(data)
+
+    assert normalized["actors"][0]["contacts"] == [
+        {"object_id": "map", "part": "left forepaw", "action": "steadies"},
+    ]
+    assert data["actors"][0]["contacts"][-1] == dangling
+    assert ScenePlan.model_validate(normalized)
+
+
 def test_local_qwen_scene_plan_uses_large_quantity_normalizer():
     class FakeLocalQwen(ComfyQwenClient):
         async def complete_json(self, system, user, result_type, **kwargs):
