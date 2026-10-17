@@ -3629,6 +3629,35 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
             raise UploadError("Die Zitatsperre konnte nicht gespeichert werden.", 503) from None
         return RedirectResponse(str(request.url_for("local_chapter", book_id=book_id, chapter_id=chapter_id)) + f"?filter={filter}&quote_page={quote_page}#quotes-title", status_code=303)
 
+    @app.post("/books/local/{book_id}/chapters/{chapter_id}/quotes/{quote_id}/use", name="set_quote_force_usable")
+    async def set_quote_force_usable(request: Request, book_id: UUID, chapter_id: UUID, quote_id: UUID):
+        require_local_origin(request)
+        try:
+            if await run_in_threadpool(local_store.get_book, book_id) is None:
+                raise HTTPException(404)
+            async with request.form(max_files=0, max_fields=5) as form:
+                if set(form) != {"run_id", "revision", "force_usable", "filter", "quote_page"} or any(
+                    len(form.getlist(key)) != 1 or not isinstance(form[key], str) for key in form
+                ):
+                    raise ValueError()
+                run_id, revision = str(UUID(form["run_id"])), int(form["revision"])
+                if form["force_usable"] not in {"true", "false"} or form["filter"] not in FILTERS:
+                    raise ValueError()
+                filter, quote_page = form["filter"], int(form["quote_page"])
+                if not 1 <= quote_page <= 100000:
+                    raise ValueError()
+                force_usable = form["force_usable"] == "true"
+            await run_in_threadpool(
+                management_store.set_force_usable, str(book_id), str(chapter_id), run_id,
+                str(quote_id), revision, force_usable,
+            )
+        except (ValueError, TypeError):
+            raise UploadError("Bitte das Kapitel neu öffnen und den Freigabe-Schalter dort verwenden.") from None
+        except (OSError, sqlite3.Error):
+            raise UploadError("Die manuelle Zitatfreigabe konnte nicht gespeichert werden.", 503) from None
+        target = str(request.url_for("local_chapter", book_id=book_id, chapter_id=chapter_id))
+        return RedirectResponse(f"{target}?filter={filter}&quote_page={quote_page}#quotes-title", status_code=303)
+
     @app.exception_handler(UploadError)
     async def upload_error(request: Request, exc: UploadError):
         if "application/json" in request.headers.get("accept", ""):

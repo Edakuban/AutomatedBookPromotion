@@ -106,8 +106,16 @@ class ManagementStore:
         )""")
         connection.execute("""create table if not exists local_quote_controls (
             book_id text not null, source_key text not null, blocked integer not null check(blocked in (0,1)),
-            revision integer not null, updated_at real not null, primary key(book_id,source_key)
+            revision integer not null, updated_at real not null,
+            force_usable integer not null default 0 check(force_usable in (0,1)),
+            primary key(book_id,source_key)
         )""")
+        columns = {row[1] for row in connection.execute("pragma table_info(local_quote_controls)")}
+        if "force_usable" not in columns:
+            connection.execute(
+                "alter table local_quote_controls add column force_usable integer not null default 0 "
+                "check(force_usable in (0,1))"
+            )
 
     def _snapshot(self, connection, book_id, *, prefer_ai=False):
         book = connection.execute("select * from local_books where id=?", (book_id,)).fetchone()
@@ -136,7 +144,11 @@ class ManagementStore:
         for quote in result.quotes if result else []:
             control = controls.get(quote_key(book["version_id"], quote))
             blocked = bool(control and control["blocked"])
-            quotes.append({"quote": quote, "blocked": blocked, "usable": quote.usable and not blocked,
+            force_usable = bool(
+                control and "force_usable" in control.keys() and control["force_usable"]
+            )
+            quotes.append({"quote": quote, "blocked": blocked, "force_usable": force_usable,
+                           "usable": (quote.usable or force_usable) and not blocked,
                            "revision": control["revision"] if control else 0})
         return {"details": details, "revision": row["revision"] if row else 0, "manual": row is not None,
                 "suggestion_id": suggestion_id, "preview_ai": prefer_ai, "quotes": quotes,
@@ -203,6 +215,34 @@ class ManagementStore:
             if item["revision"] != revision:
                 raise UploadError("Die Zitatsperre wurde zwischenzeitlich geändert. Bitte das Kapitel neu öffnen.", 409)
             version_id = connection.execute("select version_id from local_books where id=?", (book_id,)).fetchone()[0]
-            connection.execute("""insert into local_quote_controls values (?,?,?,?,?)
+            connection.execute("""insert into local_quote_controls
+                (book_id,source_key,blocked,revision,updated_at) values (?,?,?,?,?)
                 on conflict(book_id,source_key) do update set blocked=excluded.blocked,revision=excluded.revision,updated_at=excluded.updated_at""",
                 (book_id, quote_key(version_id, item["quote"]), int(blocked), revision+1, time.time()))
+
+    def set_force_usable(self, book_id, chapter_id, run_id, quote_id, revision, force_usable):
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            current = self._snapshot(connection, book_id)
+            if not run_id or run_id != current["suggestion_id"]:
+                raise UploadError("Die Zitatansicht ist veraltet. Bitte das Kapitel neu öffnen.", 409)
+            item = next((q for q in current["quotes"] if q["quote"].id == quote_id
+                         and q["quote"].chapter_id == chapter_id), None)
+            if item is None:
+                raise UploadError("Das Zitat wurde in diesem Kapitel nicht gefunden.", 404)
+            if item["revision"] != revision:
+                raise UploadError(
+                    "Die manuelle Zitatfreigabe wurde zwischenzeitlich geändert. Bitte das Kapitel neu öffnen.", 409,
+                )
+            if item["quote"].usable and force_usable:
+                raise UploadError("Dieses Zitat ist bereits durch die KI freigegeben.", 409)
+            version_id = connection.execute(
+                "select version_id from local_books where id=?", (book_id,),
+            ).fetchone()[0]
+            connection.execute("""insert into local_quote_controls
+                (book_id,source_key,blocked,revision,updated_at,force_usable) values (?,?,?,?,?,?)
+                on conflict(book_id,source_key) do update set
+                force_usable=excluded.force_usable,revision=excluded.revision,updated_at=excluded.updated_at""",
+                (book_id, quote_key(version_id, item["quote"]), int(item["blocked"]),
+                 revision+1, time.time(), int(force_usable)))

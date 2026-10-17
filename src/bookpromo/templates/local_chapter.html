@@ -78,7 +78,7 @@
       {% for item in quote_items %}
         {% set quote = item.quote %}
         <article class="quote-card" data-page-position-anchor="quote-{{ quote.id }}">
-          <p><span class="badge">{{ 'Gesperrt' if item.blocked else 'Nutzbar' if item.usable else 'Nicht geeignet' }}</span> <span class="muted small">Bewertung {{ '%.2f' | format(quote.scores.average) }}/5 · Spoiler: {{ {'none':'keine','low':'gering','high':'hoch'}[quote.spoiler] }}</span></p>
+          <p><span class="badge">{{ 'Gesperrt' if item.blocked else 'Manuell freigegeben' if item.force_usable else 'Nutzbar' if item.usable else 'Nicht geeignet' }}</span> <span class="muted small">Bewertung {{ '%.2f' | format(quote.scores.average) }}/5 · Spoiler: {{ {'none':'keine','low':'gering','high':'hoch'}[quote.spoiler] }}</span></p>
           {% set reel = item.reel if item.reel is defined else none %}
           <div class="quote-card-main{% if item.usable and reel and reel.image_ready %} has-image{% endif %}">
             {% if item.usable and reel and reel.image_ready %}
@@ -121,7 +121,17 @@
               {% endif %}
             {% endif %}
           </form>
-          {% if not quote.usable %}<p class="muted small">Die KI stuft dieses Zitat als nicht geeignet ein. Eine aufgehobene manuelle Sperre ändert diese Einstufung nicht.</p>{% endif %}
+          {% if not quote.usable %}
+            <form method="post" action="{{ url_for('set_quote_force_usable', book_id=book.id, chapter_id=chapter.id, quote_id=quote.id) }}" class="form-actions">
+              <input type="hidden" name="run_id" value="{{ management.suggestion_id }}">
+              <input type="hidden" name="revision" value="{{ item.revision }}">
+              <input type="hidden" name="force_usable" value="{{ 'false' if item.force_usable else 'true' }}">
+              <input type="hidden" name="filter" value="{{ filter }}">
+              <input type="hidden" name="quote_page" value="{{ quote_page }}">
+              <button type="submit" class="secondary-button">{% if item.force_usable %}Manuelle Freigabe zurücknehmen{% elif quote.spoiler == 'high' %}Trotz Spoilerwarnung nutzen{% else %}Trotzdem nutzen{% endif %}</button>
+            </form>
+            <p class="{{ 'notice quote-spoiler' if quote.spoiler == 'high' else 'muted small' }}">{% if item.force_usable and item.blocked %}Die KI-Einstufung wurde übergangen; die separate manuelle Sperre verhindert weiterhin Produktion und Veröffentlichung.{% elif item.force_usable %}Manuell freigegeben: Dieses Zitat darf trotz der KI-Einstufung produziert und veröffentlicht werden.{% elif quote.spoiler == 'high' %}Die KI erkennt eine hohe Spoilergefahr. Eine manuelle Freigabe macht das Zitat unmittelbar für Produktion und Veröffentlichung nutzbar.{% else %}Die KI stuft dieses Zitat wegen seiner Bewertung als nicht geeignet ein. Du kannst diese Einstufung bewusst übergehen.{% endif %}</p>
+          {% endif %}
         </article>
       {% else %}<p>Keine Zitate für diesen Filter auf dieser Seite.</p>{% endfor %}
       {% if quote_page > 1 or quote_more %}<nav class="pagination" aria-label="Zitatseiten">

@@ -102,6 +102,26 @@ def test_read_does_not_create_management_tables(setup):
         assert not store.exists(connection, 'local_quote_controls')
 
 
+def test_management_schema_migrates_legacy_quote_controls(setup):
+    _, uploads, book, _, _ = setup
+    store = ManagementStore(uploads)
+    with closing(store.connection()) as connection, connection:
+        connection.execute("""create table local_quote_controls (
+            book_id text not null, source_key text not null, blocked integer not null,
+            revision integer not null, updated_at real not null, primary key(book_id,source_key)
+        )""")
+        connection.execute(
+            "insert into local_quote_controls values (?,?,?,?,?)",
+            (book.id, 'legacy-source', 1, 2, 1.0),
+        )
+        store.schema(connection)
+        row = connection.execute(
+            "select blocked,revision,force_usable from local_quote_controls where book_id=?",
+            (book.id,),
+        ).fetchone()
+    assert tuple(row) == (1, 2, 0)
+
+
 def test_usable_quote_opens_reel_workshop_and_saves_reviewed_copy(setup):
     settings, uploads, book, _, _ = setup
     settings.supabase_enabled = True
@@ -299,6 +319,64 @@ def test_unblocking_does_not_override_spoiler_rejection(setup):
     current = store.get(book.id)
     assert not current['quotes'][0]['blocked'] and not current['quotes'][0]['usable']
     assert current['usable_count'] == 0
+
+
+def test_manual_quote_release_overrides_ai_rejection_but_not_manual_block(setup):
+    _, _, book, _, _ = setup
+    store = analyzed(setup, spoiler='high')
+    current = store.get(book.id)
+    quote = current['quotes'][0]['quote']
+
+    store.set_force_usable(
+        book.id, quote.chapter_id, current['suggestion_id'], quote.id, 0, True,
+    )
+    current = store.get(book.id)
+    item = current['quotes'][0]
+    assert item['force_usable'] and item['usable'] and current['usable_count'] == 1
+
+    store.set_blocked(book.id, quote.chapter_id, current['suggestion_id'], quote.id, 1, True)
+    current = store.get(book.id)
+    assert current['quotes'][0]['force_usable'] and not current['quotes'][0]['usable']
+    store.set_blocked(book.id, quote.chapter_id, current['suggestion_id'], quote.id, 2, False)
+    current = store.get(book.id)
+    assert current['quotes'][0]['usable']
+
+    store.set_force_usable(
+        book.id, quote.chapter_id, current['suggestion_id'], quote.id, 3, False,
+    )
+    current = store.get(book.id)
+    assert not current['quotes'][0]['force_usable'] and not current['quotes'][0]['usable']
+
+
+def test_manual_quote_release_web_action_warns_for_spoiler_and_is_origin_protected(setup):
+    settings, _, book, _, _ = setup
+    store = analyzed(setup, spoiler='high')
+    current = store.get(book.id)
+    quote = current['quotes'][0]['quote']
+    chapter = f'/books/local/{book.id}/chapters/{quote.chapter_id}'
+    action = f'{chapter}/quotes/{quote.id}/use'
+    fields = {
+        'run_id': current['suggestion_id'], 'revision': '0', 'force_usable': 'true',
+        'filter': 'all', 'quote_page': '1',
+    }
+    with TestClient(
+        create_app(settings, start_worker=False), base_url='http://127.0.0.1:8000',
+    ) as client:
+        page = client.get(chapter)
+        assert 'Trotz Spoilerwarnung nutzen' in page.text
+        assert client.post(
+            action, data=fields, headers={'Origin': 'https://foreign.example'},
+        ).status_code == 403
+        response = client.post(action, data=fields)
+        assert response.status_code == 200
+        assert 'Manuell freigegeben' in response.text
+        assert 'Medien-Werkstatt öffnen' in response.text
+        assert client.post(action, data=fields).status_code == 409
+
+        fields.update(revision='1', force_usable='false')
+        response = client.post(action, data=fields)
+        assert response.status_code == 200
+        assert 'Trotz Spoilerwarnung nutzen' in response.text
 
 
 def test_wrong_chapter_or_quote_and_stale_source_cannot_be_modified(setup):
