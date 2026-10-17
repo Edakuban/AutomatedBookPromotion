@@ -3415,6 +3415,20 @@ def create_app(settings: Settings, *, repository: SupabaseRepository | None = No
         return RedirectResponse(character_settings_url(request, book_id), status_code=303)
 
     @app.post(
+        "/books/local/{book_id}/settings/characters/{character_id}/delete",
+        name="delete_book_character",
+    )
+    async def delete_book_character(request: Request, book_id: UUID, character_id: UUID):
+        require_local_origin(request)
+        async with request.form(max_files=0, max_fields=1) as form:
+            if set(form) != {"revision"}:
+                raise UploadError("Die Charakteransicht ist veraltet. Bitte neu öffnen.", 409)
+            await run_in_threadpool(
+                character_store.delete, str(book_id), str(character_id), form["revision"],
+            )
+        return RedirectResponse(character_settings_url(request, book_id), status_code=303)
+
+    @app.post(
         "/books/local/{book_id}/settings/characters/{character_id}/image",
         name="generate_book_character_image",
     )

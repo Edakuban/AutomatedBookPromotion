@@ -13,7 +13,8 @@ from bookpromo.characters import (
     character_scene_prompt, order_scene_characters, stitch_character_references,
 )
 from bookpromo.reel_generation import build_reference_edit_prompt
-from bookpromo.scene_plan import ScenePlan
+from bookpromo.reels import ReelStore
+from bookpromo.scene_plan import ScenePlan, encode_saved_plan
 from bookpromo.uploads import LocalUploadStore, UploadError
 from bookpromo.web import _detected_character_ids, create_app
 from test_analysis import FakeAPI, setup
@@ -267,6 +268,47 @@ def test_reference_images_are_normalized_and_stitched_left_to_right(character_st
         store.save_reference_file(book.id, kira.id, kira.revision, image_file("white", (100, 100)))
 
 
+def test_delete_character_removes_reference_and_cleans_reel_drafts(character_store):
+    uploads, book, store = character_store
+    character = store.create(book.id, name="Kira", image_prompt="Adult woman.")
+    character = store.save_reference_file(
+        book.id, character.id, character.revision, image_file("#885533"),
+    )
+    reference = store.reference_path(character)
+    reels = ReelStore(uploads)
+    saved_plan = encode_saved_plan(
+        ScenePlan(setting="Forest", composition="Kira walking", art_direction="Cinematic"),
+        "b" * 64,
+    )
+    draft = reels.get_or_create_draft(
+        book.id, "a" * 64, "run-1", "quote-1", "Kira ging durch den Wald.",
+        scene_plan_json=saved_plan,
+    )
+    draft = reels.update_draft(draft.id, draft.revision, character_ids=[character.id])
+
+    store.delete(book.id, character.id, character.revision)
+
+    assert store.get(book.id, character.id) is None
+    assert not reference.exists()
+    cleaned = reels.get_draft(draft.id)
+    assert cleaned.character_ids == ()
+    assert cleaned.character_snapshot_json == "[]"
+    assert cleaned.scene_plan_json == ""
+    assert cleaned.image_stale and cleaned.video_stale and cleaned.state == "editing"
+
+
+def test_delete_character_rejects_stale_revision(character_store):
+    _, book, store = character_store
+    character = store.create(book.id, name="Kira")
+    saved = store.save(
+        book.id, character.id, character.revision, name="Kira", aliases="",
+        description="", image_prompt="", approved=False,
+    )
+    with pytest.raises(UploadError, match="zwischenzeitlich"):
+        store.delete(book.id, character.id, character.revision)
+    assert store.get(book.id, character.id) == saved
+
+
 def test_four_detailed_references_fit_reference_workflow_prompt(character_store, tmp_path):
     _, book, store = character_store
     references = []
@@ -318,6 +360,14 @@ def test_character_settings_create_edit_upload_and_serve_reference(setup):
         assert served.status_code == 200 and served.headers["content-type"] == "image/png"
         page = client.get(url).text
         assert "Kira" in page and "Freigegeben" in page and "Referenzbild" in page
+        assert "Kira endgültig löschen" in page
+        deleted = client.post(
+            url + f"/characters/{character.id}/delete",
+            data={"revision": str(character.revision)},
+            follow_redirects=False,
+        )
+        assert deleted.status_code == 303 and deleted.headers["location"].endswith("#characters")
+        assert CharacterStore(uploads).get(book.id, character.id) is None
 
 
 def test_existing_book_character_analysis_only_extracts_characters_and_block_is_last(setup):

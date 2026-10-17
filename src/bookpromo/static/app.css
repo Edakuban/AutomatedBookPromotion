@@ -244,6 +244,9 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 1rem; }
 .character-image-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 .character-image-actions form { min-width: 0; }
 .character-image-actions button { margin-top: .7rem; }
+.character-delete { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e5caca; }
+.character-delete summary { color: #7f1d1d; }
+.character-delete button { margin-top: .7rem; }
 .character-create { margin-top: 1.3rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 .asset-card { min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 6px; background: #fafbfc; }
 .asset-card h3 { margin-top: 0; }

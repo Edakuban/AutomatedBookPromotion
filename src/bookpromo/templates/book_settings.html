@@ -195,6 +195,14 @@
                 <button type="submit" class="secondary-button">Bild hochladen</button>
               </form>
             </div>
+            <details class="character-delete">
+              <summary>Charakter löschen</summary>
+              <p class="small muted">Entfernt das Profil und sein Referenzbild. Verknüpfungen in Entwürfen werden ebenfalls entfernt; betroffene Medien müssen danach neu erzeugt werden.</p>
+              <form method="post" action="{{ url_for('delete_book_character', book_id=book.id, character_id=character.id) }}">
+                <input type="hidden" name="revision" value="{{ character.revision }}">
+                <button type="submit" class="danger-button">{{ character.name }} endgültig löschen</button>
+              </form>
+            </details>
           </article>
         {% endfor %}
       </div>

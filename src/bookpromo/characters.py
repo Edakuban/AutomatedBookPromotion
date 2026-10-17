@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -208,6 +209,81 @@ class CharacterStore:
                 raise UploadError("Für dieses Buch existiert bereits ein Charakter mit diesem Namen.", 409) from None
             saved = connection.execute("select * from local_book_characters where id=?", (row["id"],)).fetchone()
         return BookCharacter.from_row(saved)
+
+    def delete(self, book_id: str, character_id: str, revision: int) -> None:
+        """Delete a character and remove it from any local reel drafts."""
+        try:
+            character_id = str(UUID(str(character_id)))
+            revision = int(revision)
+        except (TypeError, ValueError):
+            raise UploadError("Die Charakteransicht ist veraltet. Bitte neu öffnen.", 409) from None
+        now = time.time()
+        with closing(self.connection()) as connection, connection:
+            self.schema(connection)
+            connection.execute("begin immediate")
+            book_id = self._require_book(connection, book_id)
+            row = connection.execute(
+                "select * from local_book_characters where id=? and book_id=?",
+                (character_id, book_id),
+            ).fetchone()
+            if row is None:
+                raise UploadError("Der Charakter wurde nicht gefunden.", 404)
+            if row["revision"] != revision:
+                raise UploadError("Der Charakter wurde zwischenzeitlich geändert. Bitte neu öffnen.", 409)
+
+            has_drafts = connection.execute(
+                "select 1 from sqlite_master where type='table' and name='local_reel_drafts'"
+            ).fetchone()
+            if has_drafts:
+                drafts = connection.execute(
+                    "select * from local_reel_drafts where book_id=?", (book_id,)
+                ).fetchall()
+                for draft in drafts:
+                    try:
+                        selected = list(json.loads(draft["character_ids_json"] or "[]"))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        raise UploadError("Die Charakterauswahl eines Reel-Entwurfs ist beschädigt.", 500) from None
+                    if character_id not in selected:
+                        continue
+                    remaining = [item for item in selected if item != character_id]
+                    preserve_upload = draft["selected_image_source"] == "upload"
+                    connection.execute(
+                        """update local_reel_drafts set character_ids_json=?,character_snapshot_json='[]',
+                        scene_plan_json='',scene_image_path=null,scene_image_sha256=null,
+                        optimized_image_path=null,optimized_image_sha256=null,
+                        selected_image_path=case when ? then selected_image_path else null end,
+                        selected_image_sha256=case when ? then selected_image_sha256 else null end,
+                        image_stale=?,video_stale=1,state='editing',error=null,
+                        revision=revision+1,updated_at=? where id=?""",
+                        (json.dumps(remaining), int(preserve_upload), int(preserve_upload),
+                         int(not preserve_upload), now, draft["id"]),
+                    )
+                    if connection.execute(
+                        "select 1 from sqlite_master where type='table' and name='local_reel_jobs'"
+                    ).fetchone():
+                        connection.execute(
+                            """update local_reel_jobs set state='cancelled',token=null,lease_until=null,
+                            error='Charakter wurde gelöscht.',updated_at=? where draft_id=?
+                            and state in ('queued','running')""",
+                            (now, draft["id"]),
+                        )
+
+            connection.execute(
+                "update local_book_characters set derived_from_id=null where derived_from_id=?",
+                (character_id,),
+            )
+            connection.execute(
+                "delete from local_book_characters where id=? and book_id=?", (character_id, book_id)
+            )
+
+        directory = (self.root / "characters" / book_id / character_id).resolve()
+        character_root = (self.root / "characters" / book_id).resolve()
+        try:
+            directory.relative_to(character_root)
+        except ValueError:
+            raise UploadError("Der gespeicherte Charakterbildpfad ist ungültig.", 503) from None
+        if directory.is_dir():
+            shutil.rmtree(directory)
 
     @staticmethod
     def merge_analysis_in_connection(
